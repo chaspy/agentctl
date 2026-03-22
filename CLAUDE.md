@@ -96,4 +96,4 @@ go test ./...
 
 ### DB Location
 
-SQLite database is stored at `.claude/manager.db` (gitignored).
+SQLite database is stored at `~/.agentctl/manager.db` (override with `AGENTCTL_DB_PATH` env var).
