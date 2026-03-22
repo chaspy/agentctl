@@ -34,6 +34,32 @@ func (t tmuxAdapter) SendKeys(session string, text string) error {
 	return nil
 }
 
+func (t tmuxAdapter) SendEnter(session string) error {
+	resolved, err := t.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("tmux", "send-keys", "-t", resolved, "Enter")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux send-enter failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func (t tmuxAdapter) DumpScreen(session string) (string, error) {
+	resolved, err := t.ResolveSession(session)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command("tmux", "capture-pane", "-t", resolved, "-p")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tmux capture-pane failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
 func (tmuxAdapter) ListSessions() ([]string, error) {
 	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
 	output, err := cmd.CombinedOutput()

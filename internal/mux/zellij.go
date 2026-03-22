@@ -2,6 +2,7 @@ package mux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -21,18 +22,21 @@ func (z zellijAdapter) ResolveSession(query string) (string, error) {
 	return resolveSession(z, query)
 }
 
+// focusFirstPane moves focus to the top-left pane where the agent runs.
+func (zellijAdapter) focusFirstPane(resolved string) {
+	for _, dir := range []string{"up", "left"} {
+		focus := exec.Command("zellij", "--session", resolved, "action", "move-focus", dir)
+		_ = focus.Run()
+	}
+}
+
 func (z zellijAdapter) SendKeys(session string, text string) error {
 	resolved, err := z.ResolveSession(session)
 	if err != nil {
 		return err
 	}
 
-	// Focus the first pane (top-left) by moving focus up and left.
-	// This ensures we send to pane #1 where the agent is expected to run.
-	for _, dir := range []string{"up", "left"} {
-		focus := exec.Command("zellij", "--session", resolved, "action", "move-focus", dir)
-		_ = focus.Run()
-	}
+	z.focusFirstPane(resolved)
 
 	writeChars := exec.Command("zellij", "--session", resolved, "action", "write-chars", text)
 	output, err := writeChars.CombinedOutput()
@@ -40,12 +44,55 @@ func (z zellijAdapter) SendKeys(session string, text string) error {
 		return fmt.Errorf("zellij write-chars failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 
+	return z.sendEnterResolved(resolved)
+}
+
+func (z zellijAdapter) SendEnter(session string) error {
+	resolved, err := z.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	z.focusFirstPane(resolved)
+	return z.sendEnterResolved(resolved)
+}
+
+func (zellijAdapter) sendEnterResolved(resolved string) error {
 	writeEnter := exec.Command("zellij", "--session", resolved, "action", "write", "13")
-	output, err = writeEnter.CombinedOutput()
+	output, err := writeEnter.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("zellij write enter failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func (z zellijAdapter) DumpScreen(session string) (string, error) {
+	resolved, err := z.ResolveSession(session)
+	if err != nil {
+		return "", err
+	}
+
+	tmpFile, err := os.CreateTemp("", "agentctl-screen-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	z.focusFirstPane(resolved)
+
+	cmd := exec.Command("zellij", "--session", resolved, "action", "dump-screen", tmpPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("zellij dump-screen failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("reading screen dump: %w", err)
+	}
+
+	return string(data), nil
 }
 
 func (zellijAdapter) ListSessions() ([]string, error) {

@@ -52,6 +52,9 @@ func runSend(cmd *cobra.Command, args []string) error {
 		if err := adapter.SendKeys(sessionName, instruction); err != nil {
 			return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
 		}
+		if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
+			return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
+		}
 		fmt.Printf("Sent instruction to %s session %q\n", adapter.Name(), sessionName)
 		logSendAction(sessionName, instruction, "(no-wait)")
 		return nil
@@ -75,6 +78,9 @@ func runSend(cmd *cobra.Command, args []string) error {
 	// Send the instruction
 	if err := adapter.SendKeys(sessionName, instruction); err != nil {
 		return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
+		return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
 	}
 	fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q. Waiting for response...\n", adapter.Name(), sessionName)
 
