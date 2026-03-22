@@ -32,6 +32,7 @@ brews:
   - repository:
       owner: chaspy
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/chaspy/agentctl
     description: CLI tool for managing multiple coding agent sessions
     license: MIT
