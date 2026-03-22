@@ -9,8 +9,33 @@ import (
 )
 
 // DefaultDBPath returns the default database file path.
+// Priority: AGENTCTL_DB_PATH env var > ~/.agentctl/manager.db > .claude/manager.db (fallback)
 func DefaultDBPath() string {
-	return filepath.Join(".claude", "manager.db")
+	if p := os.Getenv("AGENTCTL_DB_PATH"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".claude", "manager.db") // fallback
+	}
+	return filepath.Join(home, ".agentctl", "manager.db")
+}
+
+// migrateOldDB copies the old .claude/manager.db to the new location if needed.
+func migrateOldDB(newPath string) {
+	if _, err := os.Stat(newPath); err == nil {
+		return // new DB already exists
+	}
+	oldPath := filepath.Join(".claude", "manager.db")
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		return // old DB doesn't exist
+	}
+	dir := filepath.Dir(newPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	os.WriteFile(newPath, data, 0644)
 }
 
 // Open opens or creates the SQLite database at the given path.
@@ -18,6 +43,11 @@ func DefaultDBPath() string {
 func Open(path string) (*sql.DB, error) {
 	if path == "" {
 		path = DefaultDBPath()
+	}
+
+	// Attempt migration from old location
+	if path != ":memory:" {
+		migrateOldDB(path)
 	}
 
 	dir := filepath.Dir(path)

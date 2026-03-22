@@ -91,7 +91,7 @@ agentctl detects session status by analyzing the last JSONL message and process 
 
 ## State Management
 
-agentctl uses SQLite (stored at `.claude/manager.db`) for persistent state:
+agentctl uses SQLite for persistent state. The database is stored at `~/.agentctl/manager.db` by default, and can be overridden with the `AGENTCTL_DB_PATH` environment variable. On first run, if the new location doesn't exist but `.claude/manager.db` does, the old database is automatically copied over.
 
 - **Sessions**: Synced from live scans, preserving status history
 - **Tasks**: Track work items per session
