@@ -1,0 +1,13 @@
+# Built binary
+agentctl
+
+# SQLite DB (runtime data)
+.claude/manager.db
+.claude/manager.db-wal
+.claude/manager.db-shm
+
+# Runtime state files
+.claude/status-last-run
+.claude/status-no-change-count
+.claude/status-patrol-last-run
+.claude/scheduled_tasks.lock

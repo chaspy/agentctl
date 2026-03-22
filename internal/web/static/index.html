@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<title>Agents Manager</title>
+<style>
+:root {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --border: #334155;
+  --text: #e2e8f0;
+  --text-dim: #94a3b8;
+  --blue: #38bdf8;
+  --green: #4ade80;
+  --orange: #fb923c;
+  --red: #f87171;
+  --gray: #64748b;
+  --purple: #c084fc;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: env(safe-area-inset-top) 12px env(safe-area-inset-bottom);
+  min-height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 4px 8px;
+}
+header h1 { font-size: 20px; font-weight: 700; }
+.updated { font-size: 12px; color: var(--text-dim); }
+
+/* Tab navigation */
+.tab-nav {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+}
+.tab-btn.active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+}
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.rate-bar {
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+}
+.rate-bar h2 { font-size: 13px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.rate-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.rate-label { font-size: 13px; width: 52px; flex-shrink: 0; }
+.rate-track { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.rate-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.rate-fill.ok { background: var(--green); }
+.rate-fill.warn { background: var(--orange); }
+.rate-fill.danger { background: var(--red); }
+.rate-pct { font-size: 12px; width: 42px; text-align: right; flex-shrink: 0; font-weight: 600; }
+.rate-extra { font-size: 11px; color: var(--text-dim); margin-left: 4px; }
+
+.section-title {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 12px 4px 6px;
+}
+.card {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border-left: 4px solid var(--gray);
+}
+.card.blocked { border-left-color: var(--orange); }
+.card.error { border-left-color: var(--red); }
+.card.active { border-left-color: var(--blue); }
+.card.idle { border-left-color: var(--green); }
+.card.dead { border-left-color: var(--gray); opacity: 0.6; }
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.project { font-size: 15px; font-weight: 600; }
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge.blocked { background: rgba(251,146,60,0.2); color: var(--orange); }
+.badge.error { background: rgba(248,113,113,0.2); color: var(--red); }
+.badge.active { background: rgba(56,189,248,0.2); color: var(--blue); }
+.badge.idle { background: rgba(74,222,128,0.2); color: var(--green); }
+.badge.dead { background: rgba(100,116,139,0.2); color: var(--gray); }
+.badge.manager { background: rgba(168,85,247,0.2); color: var(--purple); }
+.card.manager-card { border: 1px solid rgba(168,85,247,0.4); }
+.card-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.card-msg {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.card-task {
+  font-size: 12px;
+  color: var(--blue);
+  margin-top: 4px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.card-task:hover { text-decoration: underline; }
+.card-task-empty {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  cursor: pointer;
+  font-style: italic;
+}
+.card-task-empty:hover { color: var(--blue); }
+
+.actions-list { margin-top: 4px; }
+.action-item {
+  font-size: 13px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+}
+.action-item:last-child { border-bottom: none; }
+.action-time { color: var(--text-dim); font-size: 12px; min-width: 44px; }
+.action-type {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(56,189,248,0.15);
+  color: var(--blue);
+  min-width: 50px;
+  text-align: center;
+}
+.action-content { flex: 1; color: var(--text); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.badge.active { animation: pulse 2s ease-in-out infinite; }
+
+.empty { text-align: center; padding: 40px; color: var(--text-dim); }
+.loading {
+  text-align: center;
+  padding: 32px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+.loading::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.pull-indicator {
+  text-align: center;
+  color: var(--blue);
+  font-size: 13px;
+  overflow: hidden;
+  height: 0;
+  transition: height 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pull-indicator.visible { height: 40px; }
+.pull-indicator .spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+}
+.updating-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--blue);
+  border-radius: 50%;
+  margin-left: 8px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.updating-dot.active {
+  animation: pulse 1s ease-in-out infinite;
+}
+.dead-toggle {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dead-toggle:active { background: var(--border); }
+.resume-btn {
+  background: rgba(56,189,248,0.15);
+  color: var(--blue);
+  border: 1px solid rgba(56,189,248,0.3);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 8px;
+}
+.resume-btn:active { background: rgba(56,189,248,0.3); }
+.resume-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.card-id-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.card-id {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: 'SF Mono', Menlo, monospace;
+}
+.copy-btn {
+  background: rgba(56,189,248,0.1);
+  color: var(--blue);
+  border: 1px solid rgba(56,189,248,0.2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.copy-btn:active { background: rgba(56,189,248,0.3); }
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 100;
+  display: none;
+  align-items: stretch;
+  justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--bg);
+  width: 100%;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.modal-header h2 { font-size: 16px; font-weight: 600; }
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chat-msg {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-msg.user {
+  align-self: flex-end;
+  background: rgba(56,189,248,0.2);
+  color: var(--blue);
+  border-bottom-right-radius: 4px;
+}
+.chat-msg.assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+.chat-loading {
+  text-align: center;
+  padding: 32px;
+  color: var(--text-dim);
+}
+
+/* DB View styles */
+.db-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+.db-table th {
+  background: var(--surface);
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+.db-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.db-table tr:hover td { background: rgba(56,189,248,0.05); }
+.db-table td.archived { color: var(--text-dim); font-style: italic; }
+.db-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--blue);
+  padding: 12px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.db-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+.db-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+</style>
+</head>
+<body>
+<div class="pull-indicator" id="pull-indicator"><span id="pull-text">Pull to refresh</span></div>
+<header>
+  <h1>Agents Manager</h1>
+  <span class="updated" id="updated"><span class="updating-dot" id="updating-dot"></span></span>
+</header>
+
+<div class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
+  <button class="tab-btn" onclick="switchTab('database')">Database</button>
+</div>
+
+<div id="tab-dashboard" class="tab-content active">
+  <div id="rate"></div>
+  <div class="section-title">Sessions</div>
+  <div id="sessions"></div>
+  <div id="dead-section"></div>
+  <div class="section-title" id="tasks-title" style="display:none">Active Tasks</div>
+  <div id="tasks"></div>
+  <div class="section-title" id="actions-title" style="display:none">Recent Actions</div>
+  <div id="actions"></div>
+</div>
+
+<div id="tab-database" class="tab-content">
+  <div id="db-content"><div class="loading">Loading...</div></div>
+</div>
+
+<div class="modal-overlay" id="chat-modal" onclick="closeChatModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2 id="chat-modal-title">Chat History</h2>
+      <button class="modal-close" onclick="closeChatModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="chat-modal-body">
+      <div class="chat-loading">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let isRefreshing = false;
+let hasInitialData = false;
+let currentTab = 'dashboard';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector(`.tab-btn[onclick*="${tab}"]`).classList.add('active');
+  $('tab-' + tab).classList.add('active');
+  if (tab === 'database') loadDatabase();
+}
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  return r.ok ? r.json() : null;
+}
+
+function ago(ts) {
+  if (!ts) return '-';
+  const d = Date.now() - new Date(ts).getTime();
+  if (d < 60000) return Math.floor(d/1000) + 's ago';
+  if (d < 3600000) return Math.floor(d/60000) + 'm ago';
+  if (d < 86400000) return Math.floor(d/3600000) + 'h ago';
+  return Math.floor(d/86400000) + 'd ago';
+}
+
+function truncate(s, n) {
+  if (!s) return '-';
+  const t = s.length > n ? s.slice(0, n) + '...' : s;
+  return escapeHTML(t);
+}
+
+function escapeHTML(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/`/g,'&#96;').replace(/\$/g,'&#36;');
+}
+
+function renderSessionCard(s, showResume) {
+  try {
+    const safeId = escapeHTML(s.id || '');
+    const isManager = s.role === 'manager';
+    const resumeBtn = showResume && s.agent === 'claude'
+      ? `<button class="resume-btn" onclick="event.stopPropagation(); resumeSession('${safeId}', this)">Resume</button>`
+      : '';
+    const managerBadge = isManager ? '<span class="badge manager">MGR</span>' : '';
+    const idParts = (s.id || '').split(':');
+    const uuid = idParts.length >= 3 ? idParts.slice(2).join(':') : s.id || '';
+    const shortId = uuid.slice(0, 8);
+    const taskEl = s.task_summary
+      ? `<div class="card-task" onclick="event.stopPropagation(); editSummary('${safeId}', this)">${escapeHTML(s.task_summary)}</div>`
+      : `<div class="card-task-empty" onclick="event.stopPropagation(); editSummary('${safeId}', this)">+ Add summary</div>`;
+    return `
+      <div class="card ${escapeHTML(s.status || '')}${isManager ? ' manager-card' : ''}" onclick="openChatModal('${safeId}', '${escapeHTML(s.repository || '')}')">
+        <div class="card-header">
+          <span class="project">${escapeHTML(s.repository || '')}</span>
+          <span>${managerBadge}<span class="badge ${escapeHTML(s.status || '')}">${escapeHTML(s.status || '')}</span></span>
+        </div>
+        <div class="card-id-row">
+          <span class="card-id">${escapeHTML(shortId)}</span>
+          <button class="copy-btn" onclick="event.stopPropagation(); copyId('${escapeHTML(uuid)}', this)">Copy</button>
+        </div>
+        <div class="card-meta">
+          <span>${escapeHTML(s.agent || '')}</span>
+          <span>${escapeHTML(s.git_branch || '-')}</span>
+          <span>${ago(s.last_active)}</span>
+        </div>
+        <div class="card-msg">${truncate(s.last_message, 120)}</div>
+        ${taskEl}
+        ${resumeBtn}
+      </div>`;
+  } catch (e) {
+    console.error('renderSessionCard error:', s.id, e);
+    return `<div class="card error"><div class="card-header"><span class="project">[render error]</span></div></div>`;
+  }
+}
+
+async function editSummary(sessionId, el) {
+  const current = el.classList.contains('card-task') ? el.textContent : '';
+  const summary = prompt('Session summary:', current);
+  if (summary === null) return;
+  try {
+    await fetch('/api/sessions/summary', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: sessionId, summary: summary}),
+    });
+    el.textContent = summary || '+ Add summary';
+    el.className = summary ? 'card-task' : 'card-task-empty';
+  } catch (e) {
+    alert('Failed to update summary');
+  }
+}
+
+function copyId(uuid, btn) {
+  const orig = btn.textContent;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(uuid).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    }).catch(() => {
+      fallbackCopy(uuid, btn, orig);
+    });
+  } else {
+    fallbackCopy(uuid, btn, orig);
+  }
+}
+
+function fallbackCopy(text, btn, orig) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    btn.textContent = 'Copied!';
+  } catch (e) {
+    btn.textContent = 'Failed';
+  }
+  document.body.removeChild(ta);
+  setTimeout(() => { btn.textContent = orig; }, 1500);
+}
+
+async function openChatModal(compositeId, projectName) {
+  const modal = $('chat-modal');
+  const body = $('chat-modal-body');
+  const title = $('chat-modal-title');
+  title.textContent = projectName || 'Chat History';
+  body.innerHTML = '<div class="chat-loading">Loading...</div>';
+  modal.classList.add('open');
+
+  try {
+    const messages = await fetchJSON('/api/sessions/messages?id=' + encodeURIComponent(compositeId) + '&limit=20');
+    if (!messages || messages.length === 0) {
+      body.innerHTML = '<div class="chat-loading">No messages found.</div>';
+      return;
+    }
+    body.innerHTML = messages.map(m =>
+      `<div class="chat-msg ${escapeHTML(m.role)}">${escapeHTML(m.content)}</div>`
+    ).join('');
+    body.scrollTop = body.scrollHeight;
+  } catch (e) {
+    body.innerHTML = '<div class="chat-loading">Failed to load messages.</div>';
+  }
+}
+
+function closeChatModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  $('chat-modal').classList.remove('open');
+}
+
+function toggleDead() {
+  const el = $('dead-section');
+  el.dataset.expanded = el.dataset.expanded === 'true' ? 'false' : 'true';
+  refresh();
+}
+
+async function resumeSession(sessionId, btn) {
+  const parts = sessionId.split(':');
+  const uuid = parts.length >= 3 ? parts.slice(2).join(':') : sessionId;
+
+  btn.disabled = true;
+  btn.textContent = 'Resuming...';
+  try {
+    const r = await fetch('/api/resume', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_id: uuid}),
+    });
+    if (r.ok) {
+      btn.textContent = 'Resumed!';
+      setTimeout(() => { fetch('/api/sync', {method:'POST'}).then(() => refresh()); }, 3000);
+    } else {
+      const text = await r.text();
+      btn.textContent = 'Failed';
+      alert('Resume failed: ' + text);
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+    alert('Resume error: ' + e.message);
+  }
+}
+
+async function refresh() {
+  if (isRefreshing) return;
+  isRefreshing = true;
+
+  const dot = $('updating-dot');
+
+  if (!hasInitialData) {
+    $('sessions').innerHTML = '<div class="loading">Loading...</div>';
+  } else if (dot) {
+    dot.classList.add('active');
+  }
+
+  try {
+    const [sessions, tasks, actions, rate] = await Promise.all([
+      fetchJSON('/api/sessions'),
+      fetchJSON('/api/tasks'),
+      fetchJSON('/api/actions?limit=10'),
+      fetchJSON('/api/rate'),
+    ]);
+
+    const timeStr = new Date().toLocaleTimeString('ja-JP');
+    $('updated').innerHTML = 'Updated ' + timeStr + '<span class="updating-dot" id="updating-dot"></span>';
+
+    // Rate
+    if (rate) {
+      let html = '<div class="rate-bar"><h2>Rate Limits</h2>';
+      for (const r of rate) {
+        const pct = r.percent >= 0 ? r.percent : 0;
+        const unknown = r.percent < 0;
+        const cls = unknown ? 'warn' : pct > 70 ? 'ok' : pct > 30 ? 'warn' : 'danger';
+        const pctText = unknown ? '?' : pct + '%';
+        const resetText = r.resets ? ` (resets ${r.resets})` : '';
+        html += `<div class="rate-row">
+          <span class="rate-label">${escapeHTML(r.agent)}</span>
+          <div class="rate-track"><div class="rate-fill ${cls}" style="width:${unknown ? 0 : pct}%"></div></div>
+          <span class="rate-pct">${pctText}</span>
+        </div>`;
+        if (r.detail || resetText) {
+          html += `<div style="margin-left:60px;margin-bottom:4px"><span class="rate-extra">${escapeHTML(r.detail || '')}${resetText}</span></div>`;
+        }
+      }
+      html += '</div>';
+      $('rate').innerHTML = html;
+    }
+
+    // Sessions
+    if (sessions && sessions.length > 0) {
+      hasInitialData = true;
+      const alive = sessions.filter(s => s.status !== 'dead')
+        .sort((a, b) => (b.role === 'manager') - (a.role === 'manager'));
+      const dead = sessions.filter(s => s.status === 'dead');
+
+      if (alive.length > 0) {
+        $('sessions').innerHTML = alive.map(s => renderSessionCard(s, false)).join('');
+      } else {
+        $('sessions').innerHTML = '<div class="empty">No active sessions.</div>';
+      }
+
+      if (dead.length > 0) {
+        const expanded = $('dead-section').dataset.expanded === 'true';
+        let html = `<div class="dead-toggle" onclick="toggleDead()">
+          <span>Dead Sessions (${dead.length})</span>
+          <span>${expanded ? '▲' : '▼'}</span>
+        </div>`;
+        if (expanded) {
+          html += dead.map(s => renderSessionCard(s, true)).join('');
+        }
+        $('dead-section').innerHTML = html;
+      } else {
+        $('dead-section').innerHTML = '';
+      }
+    } else if (!hasInitialData) {
+      $('sessions').innerHTML = '<div class="empty">No sessions. Run `go run . state sync` first.</div>';
+      $('dead-section').innerHTML = '';
+    }
+
+    // Tasks
+    if (tasks && tasks.length > 0) {
+      $('tasks-title').style.display = '';
+      $('tasks').innerHTML = tasks.map(t => `
+        <div class="card">
+          <div class="card-header">
+            <span class="project">#${t.id} ${truncate(t.description, 60)}</span>
+            <span class="badge ${t.status === 'in_progress' ? 'active' : ''}">${t.status}</span>
+          </div>
+          <div class="card-meta"><span>${t.session_id}</span></div>
+        </div>
+      `).join('');
+    } else {
+      $('tasks-title').style.display = 'none';
+      $('tasks').innerHTML = '';
+    }
+
+    // Actions
+    if (actions && actions.length > 0) {
+      $('actions-title').style.display = '';
+      $('actions').innerHTML = '<div class="rate-bar"><div class="actions-list">' +
+        actions.map(a => `
+          <div class="action-item">
+            <span class="action-time">${new Date(a.created_at).toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'})}</span>
+            <span class="action-type">${a.action_type}</span>
+            <span class="action-content">${truncate(a.content, 80)}</span>
+          </div>
+        `).join('') + '</div></div>';
+    } else {
+      $('actions-title').style.display = 'none';
+      $('actions').innerHTML = '';
+    }
+  } finally {
+    isRefreshing = false;
+  }
+}
+
+// Database view
+async function loadDatabase() {
+  const el = $('db-content');
+  el.innerHTML = '<div class="loading">Loading...</div>';
+
+  const [allSessions, tasks, actions, state] = await Promise.all([
+    fetchJSON('/api/sessions?all=true'),
+    fetchJSON('/api/tasks'),
+    fetchJSON('/api/actions?limit=50'),
+    fetchJSON('/api/state'),
+  ]);
+
+  let html = '';
+
+  // Sessions table
+  if (allSessions && allSessions.length > 0) {
+    html += `<div class="db-section-title">Sessions <span class="db-count">(${allSessions.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>Status</th><th>Agent</th><th>Repository</th><th>Branch</th><th>Role</th><th>Alive</th><th>Summary</th><th>Last Active</th><th>Archived</th><th>Last Message</th>';
+    html += '</tr></thead><tbody>';
+    for (const s of allSessions) {
+      const cls = s.archived ? ' class="archived"' : '';
+      html += `<tr>
+        <td${cls}><span class="badge ${escapeHTML(s.status)}">${escapeHTML(s.status)}</span></td>
+        <td${cls}>${escapeHTML(s.agent)}</td>
+        <td${cls}>${escapeHTML(s.repository)}</td>
+        <td${cls}>${escapeHTML(s.git_branch || '-')}</td>
+        <td${cls}>${escapeHTML(s.role || 'worker')}</td>
+        <td${cls}>${s.alive ? 'yes' : 'no'}</td>
+        <td${cls}>${escapeHTML(s.task_summary || '-')}</td>
+        <td${cls}>${ago(s.last_active)}</td>
+        <td${cls}>${s.archived ? 'yes' : 'no'}</td>
+        <td${cls} title="${escapeHTML(s.last_message || '')}">${truncate(s.last_message, 40)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  // Tasks table
+  if (tasks && tasks.length > 0) {
+    html += `<div class="db-section-title">Tasks <span class="db-count">(${tasks.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Status</th><th>Session</th><th>Description</th><th>Assigned</th><th>Result</th>';
+    html += '</tr></thead><tbody>';
+    for (const t of tasks) {
+      html += `<tr>
+        <td>#${t.id}</td>
+        <td><span class="badge ${t.status === 'in_progress' ? 'active' : ''}">${escapeHTML(t.status)}</span></td>
+        <td>${truncate(t.session_id, 30)}</td>
+        <td>${escapeHTML(t.description)}</td>
+        <td>${ago(t.assigned_at)}</td>
+        <td>${truncate(t.result, 40)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  // Actions table
+  if (actions && actions.length > 0) {
+    html += `<div class="db-section-title">Actions <span class="db-count">(${actions.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>Time</th><th>Type</th><th>Session</th><th>Content</th><th>Result</th>';
+    html += '</tr></thead><tbody>';
+    for (const a of actions) {
+      html += `<tr>
+        <td>${new Date(a.created_at).toLocaleString('ja-JP', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+        <td><span class="action-type">${escapeHTML(a.action_type)}</span></td>
+        <td>${truncate(a.session_id, 20)}</td>
+        <td title="${escapeHTML(a.content)}">${truncate(a.content, 60)}</td>
+        <td>${truncate(a.result, 40)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  // State
+  if (state && Object.keys(state).length > 0) {
+    html += `<div class="db-section-title">State</div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
+    for (const [k, v] of Object.entries(state)) {
+      html += `<tr><td>${escapeHTML(k)}</td><td>${escapeHTML(String(v))}</td></tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  el.innerHTML = html || '<div class="empty">No data in database.</div>';
+}
+
+// Pull-to-refresh for mobile
+(function initPullToRefresh() {
+  let startY = 0;
+  let pulling = false;
+  const threshold = 60;
+  const indicator = $('pull-indicator');
+  const pullText = $('pull-text');
+
+  document.addEventListener('touchstart', (e) => {
+    if (window.scrollY === 0) {
+      startY = e.touches[0].clientY;
+      pulling = true;
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!pulling) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 10 && window.scrollY === 0) {
+      indicator.classList.add('visible');
+      pullText.textContent = dy > threshold ? 'Release to refresh' : 'Pull to refresh';
+    } else {
+      indicator.classList.remove('visible');
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    if (!pulling) return;
+    pulling = false;
+    const dy = (e.changedTouches[0]?.clientY || 0) - startY;
+    if (dy > threshold && window.scrollY === 0) {
+      pullText.innerHTML = '<span class="spinner"></span>Refreshing...';
+      refresh().then(() => {
+        indicator.classList.remove('visible');
+      });
+    } else {
+      indicator.classList.remove('visible');
+    }
+  }, { passive: true });
+})();
+
+refresh();
+setInterval(refresh, 12000);
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
+</body>
+</html>
