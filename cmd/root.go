@@ -6,6 +6,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var Version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:   "agentctl",
 	Short: "Orchestrate Claude Code and Codex CLI sessions",
@@ -13,6 +15,7 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	rootCmd.Version = Version
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
