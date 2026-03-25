@@ -12,7 +12,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check if only workflow/CI files changed
+        id: check-scope
+        run: |
+          changes=$(git diff --name-only origin/main...HEAD)
+          non_ci_changes=$(echo "$changes" | grep -v '^\.github/workflows/' || true)
+          if [ -z "$non_ci_changes" ]; then
+            echo "Only CI/workflow files changed. Skipping version check."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check VERSION file was changed
+        if: steps.check-scope.outputs.skip == 'false'
         run: |
           if git diff --name-only origin/main...HEAD | grep -q '^VERSION$'; then
             echo "VERSION file was updated."
@@ -22,6 +35,7 @@ jobs:
           fi
 
       - name: Validate VERSION format
+        if: steps.check-scope.outputs.skip == 'false'
         run: |
           version=$(cat VERSION | tr -d '[:space:]')
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -31,6 +45,7 @@ jobs:
           echo "Version: $version"
 
       - name: Check version is not already tagged
+        if: steps.check-scope.outputs.skip == 'false'
         run: |
           version=$(cat VERSION | tr -d '[:space:]')
           if git tag -l "v$version" | grep -q .; then
