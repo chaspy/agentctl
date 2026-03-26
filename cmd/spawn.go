@@ -66,25 +66,35 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			sessionName = repoBaseName
 		}
 	} else if spawnBranch != "" {
-		worktreeName := "worktree-" + sanitizeBranchName(spawnBranch)
-		worktreePath := filepath.Join(repo.FullPath, worktreeName)
-
-		if _, err := os.Stat(worktreePath); err == nil {
-			fmt.Fprintf(os.Stderr, "Reusing existing worktree: %s\n", worktreePath)
-		} else {
-			// Create worktree — try -b (new branch) first, then existing branch
-			gitCmd := exec.Command("git", "-C", repo.FullPath, "worktree", "add", worktreePath, "-b", spawnBranch)
-			output, err := gitCmd.CombinedOutput()
-			if err != nil {
-				gitCmd = exec.Command("git", "-C", repo.FullPath, "worktree", "add", worktreePath, spawnBranch)
-				output, err = gitCmd.CombinedOutput()
-				if err != nil {
-					return fmt.Errorf("git worktree add failed: %w\n%s", err, strings.TrimSpace(string(output)))
-				}
-			}
-			fmt.Fprintf(os.Stderr, "Created worktree: %s\n", worktreePath)
+		// Check if the branch is already checked out somewhere (main dir or existing worktree)
+		existingPath, err := findExistingWorktree(repo.FullPath, spawnBranch)
+		if err != nil {
+			return err
 		}
-		workDir = worktreePath
+		if existingPath != "" {
+			fmt.Fprintf(os.Stderr, "Reusing existing checkout: %s\n", existingPath)
+			workDir = existingPath
+		} else {
+			worktreeName := "worktree-" + sanitizeBranchName(spawnBranch)
+			worktreePath := filepath.Join(repo.FullPath, worktreeName)
+
+			if _, err := os.Stat(worktreePath); err == nil {
+				fmt.Fprintf(os.Stderr, "Reusing existing worktree: %s\n", worktreePath)
+			} else {
+				// Create worktree — try -b (new branch) first, then existing branch
+				gitCmd := exec.Command("git", "-C", repo.FullPath, "worktree", "add", worktreePath, "-b", spawnBranch)
+				output, err := gitCmd.CombinedOutput()
+				if err != nil {
+					gitCmd = exec.Command("git", "-C", repo.FullPath, "worktree", "add", worktreePath, spawnBranch)
+					output, err = gitCmd.CombinedOutput()
+					if err != nil {
+						return fmt.Errorf("git worktree add failed: %w\n%s", err, strings.TrimSpace(string(output)))
+					}
+				}
+				fmt.Fprintf(os.Stderr, "Created worktree: %s\n", worktreePath)
+			}
+			workDir = worktreePath
+		}
 
 		if sessionName == "" {
 			sessionName = repoBaseName + "-" + sanitizeBranchName(spawnBranch)
@@ -197,4 +207,28 @@ func waitForSession(name string, timeout time.Duration) error {
 func sanitizeBranchName(branch string) string {
 	r := strings.NewReplacer("/", "-", "\\", "-", " ", "-")
 	return r.Replace(branch)
+}
+
+// findExistingWorktree returns the path where the given branch is already
+// checked out (main dir or any worktree), or "" if not found.
+func findExistingWorktree(repoPath, branch string) (string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return "", fmt.Errorf("git worktree list failed: %w", err)
+	}
+	return parseWorktreePath(string(out), branch), nil
+}
+
+// parseWorktreePath parses `git worktree list --porcelain` output and returns
+// the path of the entry whose branch matches the given branch name.
+func parseWorktreePath(output, branch string) string {
+	var currentPath string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimPrefix(line, "worktree ")
+		} else if line == "branch refs/heads/"+branch {
+			return currentPath
+		}
+	}
+	return ""
 }
