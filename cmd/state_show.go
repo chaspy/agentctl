@@ -35,7 +35,7 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("=== Sessions ===")
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tALIVE\tLAST ACTIVE\tTASK")
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tALIVE\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range sessions {
 		alive := "no"
 		if s.Alive {
@@ -60,8 +60,12 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if s.IsLoop {
 			status = status + " 🔁"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			s.Agent, s.Repository, branch, status, alive, age, task)
+		pr := s.PRURL
+		if pr == "" {
+			pr = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.Agent, s.Repository, branch, status, alive, age, pr, task)
 	}
 	w.Flush()
 

@@ -163,6 +163,16 @@ func DeleteSession(db *sql.DB, id string) error {
 	return err
 }
 
+// GetSessionPRURL returns the cached pr_url for a session ID, or "" if not found.
+func GetSessionPRURL(db *sql.DB, id string) string {
+	var prURL string
+	err := db.QueryRow("SELECT pr_url FROM sessions WHERE id = ?", id).Scan(&prURL)
+	if err != nil {
+		return ""
+	}
+	return prURL
+}
+
 // SetSessionRole updates the role for sessions matching the given zellij session name.
 func SetSessionRole(db *sql.DB, zellijSession string, role string) error {
 	_, err := db.Exec("UPDATE sessions SET role = ? WHERE zellij_session = ?", role, zellijSession)
