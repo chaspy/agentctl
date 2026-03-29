@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.8] - 2026-03-29
+
+### Fixed
+
+- `read` command now resolves short zellij session names (e.g. `myassistant-tts`) by falling back to the DB's `zellij_session` column when no repository match is found
+
 ## [0.2.7] - 2026-03-29
 
 ### Fixed
