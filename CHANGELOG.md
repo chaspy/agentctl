@@ -8,6 +8,13 @@
 - Reads the first 3 user messages from the session JSONL and calls `claude -p` to produce a 20-char Japanese title
 - Generation is skipped when `task_summary` is already set (preserves existing values)
 - 15-second timeout; failures are silently skipped so sync is never blocked
+- `state sync --regenerate-summaries` flag to force-regenerate `task_summary` for all sessions
+- Fallback to first-message truncation (40 runes) when `claude` command is not found
+
+### Changed
+
+- `GenerateTaskTitle` now uses `exec.LookPath` to check for `claude` availability before calling it
+- On `claude -p` failure (timeout, error), falls back to truncation instead of returning empty string
 
 ## [0.2.10] - 2026-03-30
 

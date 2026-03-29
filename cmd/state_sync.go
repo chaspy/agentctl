@@ -17,8 +17,9 @@ import (
 )
 
 var (
-	syncAgent string
-	syncHours int
+	syncAgent              string
+	syncHours              int
+	syncRegenerateSummaries bool
 )
 
 var stateSyncCmd = &cobra.Command{
@@ -31,6 +32,7 @@ func init() {
 	stateCmd.AddCommand(stateSyncCmd)
 	stateSyncCmd.Flags().StringVar(&syncAgent, "agent", "all", "Filter by agent: all, claude, codex")
 	stateSyncCmd.Flags().IntVar(&syncHours, "hours", 24, "Scan sessions active within the last N hours")
+	stateSyncCmd.Flags().BoolVar(&syncRegenerateSummaries, "regenerate-summaries", false, "Regenerate task_summary for all sessions")
 }
 
 func runStateSync(cmd *cobra.Command, args []string) error {
@@ -40,7 +42,7 @@ func runStateSync(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	count, err := syncSessionsToDB(db, syncAgent, syncHours)
+	count, err := syncSessionsToDB(db, syncAgent, syncHours, syncRegenerateSummaries)
 	if err != nil {
 		return err
 	}
@@ -52,7 +54,7 @@ func runStateSync(cmd *cobra.Command, args []string) error {
 // syncSessionsToDB scans live JSONL sessions and upserts them into the database.
 // It deduplicates by CWD (keeping most recent) and marks stale sessions as dead.
 // Returns the number of synced sessions.
-func syncSessionsToDB(db *sql.DB, agentFilter string, hours int) (int, error) {
+func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSummaries bool) (int, error) {
 	agents, err := selectedAgents(agentFilter)
 	if err != nil {
 		return 0, err
@@ -135,7 +137,7 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int) (int, error) {
 
 		// Generate task summary via claude -p if not already set in DB
 		taskSummary := ""
-		if s.FilePath != "" {
+		if s.FilePath != "" && !regenerateSummaries {
 			existing, err := store.GetSession(db, id)
 			if err != nil || existing.TaskSummary == "" {
 				taskSummary = session.GenerateTaskTitle(s.FilePath)
@@ -161,6 +163,14 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int) (int, error) {
 			fmt.Printf("warning: could not upsert session %s: %v\n", id, err)
 			continue
 		}
+
+		// Force-regenerate task_summary when --regenerate-summaries is set
+		if regenerateSummaries && s.FilePath != "" {
+			if title := session.GenerateTaskTitle(s.FilePath); title != "" {
+				_ = store.UpdateTaskSummary(db, id, title)
+			}
+		}
+
 		upserted++
 	}
 

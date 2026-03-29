@@ -14,11 +14,16 @@ import (
 
 // GenerateTaskTitle generates a short Japanese title for a session by reading
 // the first few user messages from the JSONL file and calling claude -p.
-// Returns empty string if generation fails or times out.
+// Falls back to truncating the first user message if claude is not available.
 func GenerateTaskTitle(filePath string) string {
 	messages := firstUserMessages(filePath, 3)
 	if len(messages) == 0 {
 		return ""
+	}
+
+	// Check if claude command is available
+	if _, err := exec.LookPath("claude"); err != nil {
+		return truncateFallback(messages[0])
 	}
 
 	input := strings.Join(messages, "\n\n")
@@ -34,7 +39,7 @@ func GenerateTaskTitle(filePath string) string {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return ""
+		return truncateFallback(messages[0])
 	}
 
 	title := strings.TrimSpace(out.String())
@@ -43,6 +48,19 @@ func GenerateTaskTitle(filePath string) string {
 		title = string(runes[:20])
 	}
 	return title
+}
+
+// truncateFallback returns a truncated version of the first user message (up to 40 runes).
+func truncateFallback(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return ""
+	}
+	runes := []rune(msg)
+	if len(runes) > 40 {
+		return string(runes[:40]) + "..."
+	}
+	return msg
 }
 
 // firstUserMessages reads a JSONL file and returns the first `limit` user messages
