@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.7] - 2026-03-29
+
+### Fixed
+
+- `kill`: send `/exit` to session before killing so Stop hooks (e.g. sui-memory) run before termination
+
 ## [0.2.6] - 2026-03-29
 
 ### Added
