@@ -2,11 +2,19 @@
 
 ## [0.2.12] - 2026-03-30
 
+### Added
+
+- `spawn --summary` flag to set task_summary at spawn time (skips LLM generation)
+
 ### Fixed
 
 - Live-scan path (web server) no longer overwrites LLM-generated `task_summary` with truncated text
 - `state sync` no longer passes `task_summary` via upsert; uses `UpdateTaskSummary` after checking DB emptiness
 - Normal sync generates `task_summary` only once per session; `--regenerate-summaries` forces re-generation
+
+### Removed
+
+- `GenerateAutoSummary` function (replaced by `GenerateTaskTitle` with claude -p)
 
 ## [0.2.11] - 2026-03-30
 

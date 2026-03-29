@@ -85,12 +85,16 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 	codexProcs, _ := process.FindCodexProcesses()
 	managerName, _ := store.GetState(db, "manager_session_name")
 
-	// Build set of CWDs marked as loop sessions
+	// Build sets from state KV store
 	allState, _ := store.AllState(db)
 	loopCWDs := make(map[string]bool)
+	spawnSummaries := make(map[string]string)
 	for k, v := range allState {
 		if len(k) > 9 && k[:9] == "loop:cwd:" && v == "1" {
 			loopCWDs[k[9:]] = true
+		}
+		if strings.HasPrefix(k, "spawn_summary:cwd:") && v != "" {
+			spawnSummaries[k[len("spawn_summary:cwd:"):]] = v
 		}
 	}
 
@@ -154,20 +158,20 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			continue
 		}
 
-		// Generate task_summary only when needed:
-		// --regenerate-summaries: always regenerate
-		// normal sync: generate only if DB has empty task_summary
-		if s.FilePath != "" {
-			shouldGenerate := false
-			if regenerateSummaries {
-				shouldGenerate = true
-			} else {
-				existing, err := store.GetSession(db, id)
-				if err == nil && existing.TaskSummary == "" {
-					shouldGenerate = true
-				}
+		// Apply task_summary:
+		// 1. spawn --summary: use the pre-set value (one-shot, consumed after use)
+		// 2. --regenerate-summaries: always regenerate via claude -p
+		// 3. normal sync: generate only if DB has empty task_summary
+		if summary, ok := spawnSummaries[s.CWD]; ok {
+			_ = store.UpdateTaskSummary(db, id, summary)
+			_ = store.DeleteState(db, "spawn_summary:cwd:"+s.CWD)
+		} else if regenerateSummaries && s.FilePath != "" {
+			if title := session.GenerateTaskTitle(s.FilePath); title != "" {
+				_ = store.UpdateTaskSummary(db, id, title)
 			}
-			if shouldGenerate {
+		} else if s.FilePath != "" {
+			existing, err := store.GetSession(db, id)
+			if err == nil && existing.TaskSummary == "" {
 				if title := session.GenerateTaskTitle(s.FilePath); title != "" {
 					_ = store.UpdateTaskSummary(db, id, title)
 				}
