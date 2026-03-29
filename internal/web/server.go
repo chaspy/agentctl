@@ -319,7 +319,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			LastRole:    sess.LastRole,
 			LastActive:  sess.ModTime,
 			Role:        role,
-			TaskSummary: session.GenerateAutoSummary(sess.LastMessage, sess.LastRole),
+			TaskSummary: "",
 		})
 		count++
 	}

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.12] - 2026-03-30
+
+### Fixed
+
+- Live-scan path (web server) no longer overwrites LLM-generated `task_summary` with truncated text
+- `state sync` no longer passes `task_summary` via upsert; uses `UpdateTaskSummary` after checking DB emptiness
+- Normal sync generates `task_summary` only once per session; `--regenerate-summaries` forces re-generation
+
 ## [0.2.11] - 2026-03-30
 
 ### Added
