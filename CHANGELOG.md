@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.3] - 2026-03-29
+
+### Added
+
+- Support mux session name as `send` command target
+
 ## [0.2.2] - 2026-03-29
 
 ### Fixed
