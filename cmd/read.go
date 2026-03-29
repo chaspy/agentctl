@@ -8,6 +8,7 @@ import (
 
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
+	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +63,23 @@ func runRead(cmd *cobra.Command, args []string) error {
 	for _, s := range sessions {
 		if strings.Contains(strings.ToLower(s.Repository), strings.ToLower(query)) {
 			matched = append(matched, s)
+		}
+	}
+
+	// Fallback: try matching by zellij_session name in DB
+	if len(matched) == 0 {
+		if db, err := store.Open(""); err == nil {
+			defer db.Close()
+			if dbSessions, err := store.FindSessionByZellijSession(db, query); err == nil && len(dbSessions) > 0 {
+				// Use the repository name from the DB match to find the JSONL session
+				for _, dbs := range dbSessions {
+					for _, s := range sessions {
+						if strings.EqualFold(s.Repository, dbs.Repository) {
+							matched = append(matched, s)
+						}
+					}
+				}
+			}
 		}
 	}
 
