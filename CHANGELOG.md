@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.9] - 2026-03-30
+
+### Fixed
+
+- `state sync` no longer picks up preview worktree directories (`worktree-preview-*`) as Claude sessions
+
 ## [0.2.8] - 2026-03-29
 
 ### Fixed
