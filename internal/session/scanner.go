@@ -44,6 +44,12 @@ func ScanSessions(maxAge time.Duration) ([]SessionInfo, error) {
 			continue
 		}
 
+		// Skip preview worktree directories — these are temporary Python
+		// servers started by preview-start.sh and are not real Claude sessions.
+		if strings.Contains(entry.Name(), "worktree-preview-") {
+			continue
+		}
+
 		dirPath := filepath.Join(projectsDir, entry.Name())
 		jsonlFiles, err := filepath.Glob(filepath.Join(dirPath, "*.jsonl"))
 		if err != nil {
