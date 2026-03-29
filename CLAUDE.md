@@ -94,6 +94,19 @@ go build ./...
 go test ./...
 ```
 
+## PR 完了基準（必須）
+
+PR を作成・修正した後、「完了」と報告する前に以下を**必ず**確認すること:
+
+1. `gh pr checks <PR番号> --repo chaspy/agentctl --watch` で全 CI が PASS になるまで待つ
+2. **check-version-bump** と **build-and-test** の両方が SUCCESS であること
+3. **CI が FAILURE のまま「完了」「PR 作成しました」と報告するな**
+
+### VERSION バンプルール
+
+コード変更を含む PR は必ず `VERSION` ファイルをパッチバンプし、`CHANGELOG.md` にエントリを追加すること。
+ワークフロー変更のみの PR はバンプ不要（`validate-version.yml` が自動スキップ）。
+
 ### DB Location
 
 SQLite database is stored at `~/.agentctl/manager.db` (override with `AGENTCTL_DB_PATH` env var).
