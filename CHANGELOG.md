@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.11] - 2026-03-30
+
+### Added
+
+- `state sync` now auto-generates `task_summary` for sessions with no existing summary
+- Reads the first 3 user messages from the session JSONL and calls `claude -p` to produce a 20-char Japanese title
+- Generation is skipped when `task_summary` is already set (preserves existing values)
+- 15-second timeout; failures are silently skipped so sync is never blocked
+
 ## [0.2.10] - 2026-03-30
 
 ### Added
