@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5] - 2026-03-29
+
+### Added
+
+- `blocked` sessions now show a reason in the STATUS column: `blocked(awaiting_approval)`, `blocked(awaiting_input)`, or `blocked(rate_limit)`
+- Rate limit messages without API metadata are now detected as `blocked` instead of `idle`
+
 ## [0.2.4] - 2026-03-29
 
 ### Fixed

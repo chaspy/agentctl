@@ -9,6 +9,7 @@ var migrations = []string{
 	migrationV4,
 	migrationV5,
 	migrationV6,
+	migrationV7,
 }
 
 // Migrate applies all pending schema migrations.
@@ -127,4 +128,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_repository ON sessions(repository);
 
 const migrationV6 = `
 ALTER TABLE repo_config ADD COLUMN description TEXT NOT NULL DEFAULT '';
+`
+
+const migrationV7 = `
+ALTER TABLE sessions ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT '';
 `

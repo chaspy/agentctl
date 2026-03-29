@@ -53,8 +53,12 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if branch == "" {
 			branch = "-"
 		}
+		status := s.Status
+		if s.BlockedReason != "" {
+			status = s.Status + "(" + s.BlockedReason + ")"
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			s.Agent, s.Repository, branch, s.Status, alive, age, task)
+			s.Agent, s.Repository, branch, status, alive, age, task)
 	}
 	w.Flush()
 

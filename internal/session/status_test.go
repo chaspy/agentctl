@@ -2,6 +2,74 @@ package session
 
 import "testing"
 
+func TestDetectBlockedReason(t *testing.T) {
+	tests := []struct {
+		name        string
+		lastMessage string
+		want        string
+	}{
+		{
+			name:        "awaiting_approval: 承認",
+			lastMessage: "次のタスクを提案します。承認しますか？",
+			want:        BlockedReasonAwaitingApproval,
+		},
+		{
+			name:        "awaiting_approval: してください",
+			lastMessage: "Chrome を再起動してください",
+			want:        BlockedReasonAwaitingApproval,
+		},
+		{
+			name:        "awaiting_approval: please confirm",
+			lastMessage: "Please confirm before I push to main.",
+			want:        BlockedReasonAwaitingApproval,
+		},
+		{
+			name:        "awaiting_approval: shall i proceed",
+			lastMessage: "Shall I proceed with the refactoring?",
+			want:        BlockedReasonAwaitingApproval,
+		},
+		{
+			name:        "awaiting_input: どうしますか",
+			lastMessage: "どうしますか？",
+			want:        BlockedReasonAwaitingInput,
+		},
+		{
+			name:        "awaiting_input: 教えてください",
+			lastMessage: "リポジトリ名を教えてください",
+			want:        BlockedReasonAwaitingInput,
+		},
+		{
+			name:        "awaiting_input: let me know",
+			lastMessage: "Let me know if you want any changes.",
+			want:        BlockedReasonAwaitingInput,
+		},
+		{
+			name:        "awaiting_input: full-width question mark",
+			lastMessage: "この方針で進めてよいですか？",
+			want:        BlockedReasonAwaitingInput,
+		},
+		{
+			name:        "rate_limit: you've hit your limit",
+			lastMessage: "You've hit your limit · resets 6pm (Asia/Tokyo)",
+			want:        BlockedReasonRateLimit,
+		},
+		{
+			name:        "rate_limit: rate limit",
+			lastMessage: "Rate limit exceeded, please wait",
+			want:        BlockedReasonRateLimit,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectBlockedReason(tt.lastMessage)
+			if got != tt.want {
+				t.Errorf("DetectBlockedReason(%q) = %q, want %q", tt.lastMessage, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDetectStatus(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -69,13 +137,13 @@ func TestDetectStatus(t *testing.T) {
 			want:        StatusIdle,
 		},
 		{
-			name:        "no false positive: message mentions rate limit but no metadata",
+			name:        "rate limit text without metadata is blocked (not error)",
 			lastMessage: "Rate limit exceeded, please wait",
 			lastRole:    "assistant",
 			alive:       true,
 			errorType:   "",
 			isAPIError:  false,
-			want:        StatusIdle,
+			want:        StatusBlocked,
 		},
 		// Blocked patterns (unchanged)
 		{
