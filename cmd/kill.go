@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
@@ -96,6 +97,17 @@ func runKill(cmd *cobra.Command, args []string) error {
 }
 
 func killSessionAndWorktree(name string) error {
+	// 0. Graceful exit: send /exit to trigger Stop hook (e.g. sui-memory)
+	if !killDryRun {
+		exitCmd := exec.Command("env", "-u", "ZELLIJ", "zellij", "--session", name, "action", "write-chars", "/exit\n")
+		if err := exitCmd.Run(); err == nil {
+			fmt.Printf("Sent /exit to session %q, waiting for Stop hook...\n", name)
+			time.Sleep(10 * time.Second)
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to send /exit to session %q: %v\n", name, err)
+		}
+	}
+
 	// 1. Kill the zellij session
 	// Try kill-session first (for active sessions), then delete-session (for EXITED sessions)
 	if killDryRun {
