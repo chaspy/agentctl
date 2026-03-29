@@ -135,15 +135,6 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
 		scannedIDs = append(scannedIDs, id)
 
-		// Generate task summary via claude -p if not already set in DB
-		taskSummary := ""
-		if s.FilePath != "" && !regenerateSummaries {
-			existing, err := store.GetSession(db, id)
-			if err != nil || existing.TaskSummary == "" {
-				taskSummary = session.GenerateTaskTitle(s.FilePath)
-			}
-		}
-
 		if err := store.UpsertSession(db, &store.Session{
 			ID:          id,
 			Agent:       string(s.Agent),
@@ -157,17 +148,29 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			LastRole:    s.LastRole,
 			LastActive:  s.ModTime,
 			Role:        role,
-			TaskSummary: taskSummary,
 			IsLoop:      loopCWDs[s.CWD],
 		}); err != nil {
 			fmt.Printf("warning: could not upsert session %s: %v\n", id, err)
 			continue
 		}
 
-		// Force-regenerate task_summary when --regenerate-summaries is set
-		if regenerateSummaries && s.FilePath != "" {
-			if title := session.GenerateTaskTitle(s.FilePath); title != "" {
-				_ = store.UpdateTaskSummary(db, id, title)
+		// Generate task_summary only when needed:
+		// --regenerate-summaries: always regenerate
+		// normal sync: generate only if DB has empty task_summary
+		if s.FilePath != "" {
+			shouldGenerate := false
+			if regenerateSummaries {
+				shouldGenerate = true
+			} else {
+				existing, err := store.GetSession(db, id)
+				if err == nil && existing.TaskSummary == "" {
+					shouldGenerate = true
+				}
+			}
+			if shouldGenerate {
+				if title := session.GenerateTaskTitle(s.FilePath); title != "" {
+					_ = store.UpdateTaskSummary(db, id, title)
+				}
 			}
 		}
 
