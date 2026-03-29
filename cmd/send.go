@@ -61,9 +61,22 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 
 	// Find all matching sessions and record their baseline file sizes
-	matched, err := findMatchingSessions(sessionName)
+	matched, err := findMatchingSessions(sessionName, adapter)
 	if err != nil {
 		return fmt.Errorf("could not find session for %q: %w", sessionName, err)
+	}
+
+	// Mux session matched but no JSONL sessions available for monitoring — just send.
+	if len(matched) == 0 {
+		if err := adapter.SendKeys(sessionName, instruction); err != nil {
+			return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
+		}
+		if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
+			return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
+		}
+		fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q (no JSONL session found for monitoring)\n", adapter.Name(), sessionName)
+		logSendAction(sessionName, instruction, "(sent, no monitoring)")
+		return nil
 	}
 
 	baselines := make(map[string]int64)
@@ -125,7 +138,12 @@ func runSend(cmd *cobra.Command, args []string) error {
 	return fmt.Errorf("timed out after %s waiting for response", timeout)
 }
 
-func findMatchingSessions(query string) ([]provider.SessionInfo, error) {
+// sessionResolver is satisfied by mux.Adapter and allows resolving a mux session by name.
+type sessionResolver interface {
+	ResolveSession(query string) (string, error)
+}
+
+func findMatchingSessions(query string, resolver sessionResolver) ([]provider.SessionInfo, error) {
 	agents, err := selectedAgents(sendAgent)
 	if err != nil {
 		return nil, err
@@ -150,6 +168,38 @@ func findMatchingSessions(query string) ([]provider.SessionInfo, error) {
 		}
 	}
 
+	return resolveSessionsForSend(sessions, query, resolver)
+}
+
+// resolveSessionsForSend selects sessions to use for response monitoring.
+// It first tries repository substring match. If nothing matches, it falls back to checking
+// the mux adapter for a direct session name match, returning all scanned sessions as
+// best-effort monitoring candidates.
+func resolveSessionsForSend(sessions []provider.SessionInfo, query string, resolver sessionResolver) ([]provider.SessionInfo, error) {
+	matched := matchByRepository(sessions, query)
+	if len(matched) > 0 {
+		sort.Slice(matched, func(i, j int) bool {
+			return matched[i].ModTime.After(matched[j].ModTime)
+		})
+		return matched, nil
+	}
+
+	// No repository match — check if the query is a direct mux session name.
+	if _, err := resolver.ResolveSession(query); err != nil {
+		return nil, fmt.Errorf("no session found matching %q", query)
+	}
+
+	// Mux session found: return all scanned sessions for best-effort response monitoring.
+	// We cannot directly link a mux session name to a specific JSONL file without a
+	// CWD mapping, so we monitor all recent sessions and return the first one that responds.
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].ModTime.After(sessions[j].ModTime)
+	})
+	return sessions, nil
+}
+
+// matchByRepository returns sessions whose Repository field contains query (case-insensitive).
+func matchByRepository(sessions []provider.SessionInfo, query string) []provider.SessionInfo {
 	var matched []provider.SessionInfo
 	q := strings.ToLower(query)
 	for _, s := range sessions {
@@ -157,16 +207,7 @@ func findMatchingSessions(query string) ([]provider.SessionInfo, error) {
 			matched = append(matched, s)
 		}
 	}
-
-	if len(matched) == 0 {
-		return nil, fmt.Errorf("no session found matching %q", query)
-	}
-
-	sort.Slice(matched, func(i, j int) bool {
-		return matched[i].ModTime.After(matched[j].ModTime)
-	})
-
-	return matched, nil
+	return matched
 }
 
 // logSendAction logs a send action to the database (fire-and-forget).
