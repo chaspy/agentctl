@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.10] - 2026-03-30
+
+### Added
+
+- Auto-fetch PR URL from GitHub during `state sync` and `list --sync` using `gh pr list`
+- Display PR URL column in `list` and `state show` output
+- PR URLs are cached in DB; only fetched once per session
+
 ## [0.2.9] - 2026-03-30
 
 ### Fixed

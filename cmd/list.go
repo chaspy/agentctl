@@ -100,7 +100,7 @@ func runListFromDB() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST ACTIVE\tALIVE\tSTATUS\tROLE\tLAST MESSAGE")
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST ACTIVE\tALIVE\tSTATUS\tROLE\tPR\tLAST MESSAGE")
 
 	for _, s := range filtered {
 		age := formatAge(time.Since(s.LastActive))
@@ -127,8 +127,12 @@ func runListFromDB() error {
 		if s.IsLoop {
 			status = status + " 🔁"
 		}
+		pr := s.PRURL
+		if pr == "" {
+			pr = "-"
+		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent,
 			s.Repository,
 			branch,
@@ -136,6 +140,7 @@ func runListFromDB() error {
 			alive,
 			status,
 			role,
+			pr,
 			msg,
 		)
 	}
@@ -234,6 +239,24 @@ func runSyncToDB() error {
 
 	// Mark sessions in DB but not found in scan as dead
 	_ = store.MarkStaleSessionsDead(db, scannedIDs)
+
+	// Fetch PR URLs for sessions that don't have one yet
+	for _, s := range sessions {
+		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
+		if s.GitBranch == "" || s.GitBranch == "main" || s.GitBranch == "master" {
+			continue
+		}
+		if existing := store.GetSessionPRURL(db, id); existing != "" {
+			continue
+		}
+		repo := repoFromRepository(s.Repository)
+		if repo == "" {
+			continue
+		}
+		if prURL := lookupPRURL(repo, s.GitBranch); prURL != "" {
+			db.Exec("UPDATE sessions SET pr_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", prURL, id)
+		}
+	}
 
 	fmt.Fprintf(os.Stderr, "Synced %d sessions to database\n", len(sessions))
 	return nil
