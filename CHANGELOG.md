@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.6] - 2026-03-29
+
+### Added
+
+- `spawn --loop` flag: marks a session as a loop session (`is_loop=1` in DB)
+- `is_loop` column added to sessions table via DB migration (v8)
+- `list` and `state show` display 🔁 after STATUS for loop sessions
+
 ## [0.2.5] - 2026-03-29
 
 ### Added

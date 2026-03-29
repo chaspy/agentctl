@@ -17,6 +17,7 @@ var (
 	spawnBranch  string
 	spawnName    string
 	spawnMessage string
+	spawnLoop    bool
 )
 
 var spawnCmd = &cobra.Command{
@@ -39,6 +40,7 @@ func init() {
 	spawnCmd.Flags().StringVar(&spawnBranch, "branch", "", "Create a worktree with this branch name")
 	spawnCmd.Flags().StringVar(&spawnName, "name", "", "Zellij session name (auto-generated if not set)")
 	spawnCmd.Flags().StringVar(&spawnMessage, "message", "", "Initial instruction to send after claude starts")
+	spawnCmd.Flags().BoolVar(&spawnLoop, "loop", false, "Mark this session as a loop session (is_loop=1 in DB)")
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
@@ -164,6 +166,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			ActionType: "spawn",
 			Content:    fmt.Sprintf("Spawned %s in %s (branch: %s)", sessionName, workDir, spawnBranch),
 		})
+		if spawnLoop {
+			_ = store.SetState(db, "loop:cwd:"+workDir, "1")
+		}
 	}
 
 	// Send initial message if specified

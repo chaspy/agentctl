@@ -124,6 +124,9 @@ func runListFromDB() error {
 		if s.BlockedReason != "" {
 			status = s.Status + "(" + s.BlockedReason + ")"
 		}
+		if s.IsLoop {
+			status = status + " 🔁"
+		}
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent,
@@ -177,6 +180,15 @@ func runSyncToDB() error {
 	claudeProcs, _ := process.FindClaudeProcesses()
 	codexProcs, _ := process.FindCodexProcesses()
 
+	// Build set of CWDs marked as loop sessions
+	allState, _ := store.AllState(db)
+	loopCWDs := make(map[string]bool)
+	for k, v := range allState {
+		if len(k) > 9 && k[:9] == "loop:cwd:" && v == "1" {
+			loopCWDs[k[9:]] = true
+		}
+	}
+
 	var scannedIDs []string
 	for _, s := range sessions {
 		alive := false
@@ -216,6 +228,7 @@ func runSyncToDB() error {
 			LastRole:      s.LastRole,
 			LastActive:    s.ModTime,
 			Role:          role,
+			IsLoop:        loopCWDs[s.CWD],
 		})
 	}
 

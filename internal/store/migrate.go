@@ -10,6 +10,7 @@ var migrations = []string{
 	migrationV5,
 	migrationV6,
 	migrationV7,
+	migrationV8,
 }
 
 // Migrate applies all pending schema migrations.
@@ -132,4 +133,8 @@ ALTER TABLE repo_config ADD COLUMN description TEXT NOT NULL DEFAULT '';
 
 const migrationV7 = `
 ALTER TABLE sessions ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT '';
+`
+
+const migrationV8 = `
+ALTER TABLE sessions ADD COLUMN is_loop INTEGER NOT NULL DEFAULT 0;
 `

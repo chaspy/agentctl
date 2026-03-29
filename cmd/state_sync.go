@@ -80,6 +80,15 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int) (int, error) {
 	codexProcs, _ := process.FindCodexProcesses()
 	managerName, _ := store.GetState(db, "manager_session_name")
 
+	// Build set of CWDs marked as loop sessions
+	allState, _ := store.AllState(db)
+	loopCWDs := make(map[string]bool)
+	for k, v := range allState {
+		if len(k) > 9 && k[:9] == "loop:cwd:" && v == "1" {
+			loopCWDs[k[9:]] = true
+		}
+	}
+
 	// Deduplicate by CWD: keep only the most recent session per CWD
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].ModTime.After(sessions[j].ModTime)
@@ -135,6 +144,7 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int) (int, error) {
 			LastActive:  s.ModTime,
 			Role:        role,
 			TaskSummary: session.GenerateAutoSummary(s.LastMessage, s.LastRole),
+			IsLoop:      loopCWDs[s.CWD],
 		}); err != nil {
 			fmt.Printf("warning: could not upsert session %s: %v\n", id, err)
 			continue

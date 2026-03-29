@@ -57,6 +57,9 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if s.BlockedReason != "" {
 			status = s.Status + "(" + s.BlockedReason + ")"
 		}
+		if s.IsLoop {
+			status = status + " 🔁"
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent, s.Repository, branch, status, alive, age, task)
 	}
