@@ -11,30 +11,26 @@ const (
 	StatusDead    = "dead"
 )
 
-// blockedPatterns are Japanese/English phrases that indicate the session is
-// waiting for human action.
-var blockedPatterns = []string{
+// BlockedReason constants for why a session is blocked.
+const (
+	BlockedReasonAwaitingApproval = "awaiting_approval"
+	BlockedReasonAwaitingInput    = "awaiting_input"
+	BlockedReasonRateLimit        = "rate_limit"
+)
+
+// awaitingApprovalPatterns indicate the agent needs explicit human approval.
+var awaitingApprovalPatterns = []string{
 	// Japanese patterns
 	"してください",
 	"してもらう必要",
-	"待ち",
 	"承認",
-	"どうしますか",
-	"どれから",
 	"よろしいですか",
-	"教えてください",
 	"確認が必要",
 	"判断が必要",
 	"再起動してもらう",
-	"どう思いますか",
-	"次は何をしましょう",
 	"いかがでしょうか",
-	"ご意見",
 	"ご確認",
 	// English patterns
-	"waiting for",
-	"need your",
-	"blocked on",
 	"would you like to proceed",
 	"shall i proceed",
 	"should i proceed",
@@ -42,7 +38,39 @@ var blockedPatterns = []string{
 	"would you like me to",
 	"please confirm",
 	"please review",
+}
+
+// awaitingInputPatterns indicate the agent needs user input or a choice.
+var awaitingInputPatterns = []string{
+	// Japanese patterns
+	"待ち",
+	"どうしますか",
+	"どれから",
+	"教えてください",
+	"どう思いますか",
+	"次は何をしましょう",
+	"ご意見",
+	// English patterns
+	"waiting for",
+	"need your",
+	"blocked on",
 	"let me know",
+}
+
+// rateLimitPatterns indicate a rate limit has been hit.
+var rateLimitPatterns = []string{
+	"you've hit your limit",
+	"rate limit",
+	"レート制限",
+}
+
+// blockedPatterns combines all patterns that indicate a blocked session.
+var blockedPatterns []string
+
+func init() {
+	blockedPatterns = append(blockedPatterns, awaitingApprovalPatterns...)
+	blockedPatterns = append(blockedPatterns, awaitingInputPatterns...)
+	blockedPatterns = append(blockedPatterns, rateLimitPatterns...)
 }
 
 // DetectStatus determines the session status from its last message, last role,
@@ -81,6 +109,27 @@ func DetectStatus(lastMessage, lastRole string, alive bool, errorType string, is
 	}
 
 	return StatusIdle
+}
+
+// DetectBlockedReason classifies why a blocked session is blocked.
+// Returns one of BlockedReasonRateLimit, BlockedReasonAwaitingApproval,
+// BlockedReasonAwaitingInput, or "" if the reason cannot be determined.
+// Should only be called when DetectStatus returns StatusBlocked.
+func DetectBlockedReason(lastMessage string) string {
+	if containsAny(lastMessage, rateLimitPatterns) {
+		return BlockedReasonRateLimit
+	}
+	if containsAny(lastMessage, awaitingApprovalPatterns) {
+		return BlockedReasonAwaitingApproval
+	}
+	if containsAny(lastMessage, awaitingInputPatterns) {
+		return BlockedReasonAwaitingInput
+	}
+	// Full-width question mark → awaiting_input
+	if endsWithQuestion(lastMessage) {
+		return BlockedReasonAwaitingInput
+	}
+	return ""
 }
 
 // endsWithQuestion checks if the message ends with a full-width question mark (？).

@@ -7,26 +7,27 @@ import (
 
 // Session represents a tracked agent session.
 type Session struct {
-	ID             string
-	Agent          string
-	Repository     string
-	SessionID      string
-	CWD            string
-	GitBranch      string
-	ZellijSession  string
-	Status         string
-	Alive          bool
-	LastMessage    string
-	LastRole       string
-	LastActive     time.Time
-	PRNumber       int
-	PRURL          string
-	PRState        string
-	TaskSummary    string
-	Role           string
-	Archived       bool
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID            string
+	Agent         string
+	Repository    string
+	SessionID     string
+	CWD           string
+	GitBranch     string
+	ZellijSession string
+	Status        string
+	BlockedReason string
+	Alive         bool
+	LastMessage   string
+	LastRole      string
+	LastActive    time.Time
+	PRNumber      int
+	PRURL         string
+	PRState       string
+	TaskSummary   string
+	Role          string
+	Archived      bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // UpsertSession inserts or updates a session record.
@@ -37,14 +38,15 @@ func UpsertSession(db *sql.DB, s *Session) error {
 	}
 	_, err := db.Exec(`
 		INSERT INTO sessions (id, agent, repository, session_id, cwd, git_branch,
-			zellij_session, status, alive, last_message, last_role, last_active,
+			zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 			pr_number, pr_url, pr_state, task_summary, role, archived, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			agent=excluded.agent, repository=excluded.repository,
 			session_id=excluded.session_id, cwd=excluded.cwd,
 			git_branch=excluded.git_branch, zellij_session=excluded.zellij_session,
-			status=excluded.status, alive=excluded.alive,
+			status=excluded.status, blocked_reason=excluded.blocked_reason,
+			alive=excluded.alive,
 			last_message=excluded.last_message, last_role=excluded.last_role,
 			last_active=excluded.last_active,
 			pr_number=CASE WHEN excluded.pr_number IS NOT NULL AND excluded.pr_number != 0 THEN excluded.pr_number ELSE sessions.pr_number END,
@@ -55,7 +57,7 @@ func UpsertSession(db *sql.DB, s *Session) error {
 			archived=sessions.archived,
 			updated_at=CURRENT_TIMESTAMP`,
 		s.ID, s.Agent, s.Repository, s.SessionID, s.CWD, s.GitBranch,
-		s.ZellijSession, s.Status, s.Alive, s.LastMessage, s.LastRole, s.LastActive,
+		s.ZellijSession, s.Status, s.BlockedReason, s.Alive, s.LastMessage, s.LastRole, s.LastActive,
 		s.PRNumber, s.PRURL, s.PRState, s.TaskSummary, role, s.Archived)
 	return err
 }
@@ -67,11 +69,11 @@ func GetSession(db *sql.DB, id string) (*Session, error) {
 	var prNumber sql.NullInt64
 	var lastActive sql.NullTime
 	err := db.QueryRow(`SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, created_at, updated_at
 		FROM sessions WHERE id = ?`, id).Scan(
 		&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
-		&s.ZellijSession, &s.Status, &alive, &s.LastMessage, &s.LastRole, &lastActive,
+		&s.ZellijSession, &s.Status, &s.BlockedReason, &alive, &s.LastMessage, &s.LastRole, &lastActive,
 		&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -90,7 +92,7 @@ func GetSession(db *sql.DB, id string) (*Session, error) {
 // ListSessions returns all sessions ordered by last_active descending.
 func ListSessions(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, created_at, updated_at
 		FROM sessions ORDER BY last_active DESC`)
 }
@@ -98,7 +100,7 @@ func ListSessions(db *sql.DB) ([]Session, error) {
 // ListActiveSessions returns non-archived sessions ordered by last_active descending.
 func ListActiveSessions(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, created_at, updated_at
 		FROM sessions WHERE archived = 0 ORDER BY last_active DESC`)
 }
@@ -106,7 +108,7 @@ func ListActiveSessions(db *sql.DB) ([]Session, error) {
 // ListSessionsByStatus returns sessions with the given status.
 func ListSessionsByStatus(db *sql.DB, status string) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, created_at, updated_at
 		FROM sessions WHERE status = ? ORDER BY last_active DESC`, status)
 }
@@ -126,7 +128,7 @@ func UnarchiveSession(db *sql.DB, id string) error {
 // MarkStaleSessionsDead marks sessions not in scannedIDs as dead and not alive.
 func MarkStaleSessionsDead(db *sql.DB, scannedIDs []string) error {
 	if len(scannedIDs) == 0 {
-		_, err := db.Exec(`UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP
+		_, err := db.Exec(`UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP
 			WHERE archived = 0 AND alive = 1`)
 		return err
 	}
@@ -139,7 +141,7 @@ func MarkStaleSessionsDead(db *sql.DB, scannedIDs []string) error {
 		placeholders += "?"
 		args[i] = id
 	}
-	_, err := db.Exec(`UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP
+	_, err := db.Exec(`UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP
 		WHERE archived = 0 AND alive = 1 AND id NOT IN (`+placeholders+`)`, args...)
 	return err
 }
@@ -147,7 +149,7 @@ func MarkStaleSessionsDead(db *sql.DB, scannedIDs []string) error {
 // FindSessionByRepository finds sessions whose repository contains the query (case-insensitive).
 func FindSessionByRepository(db *sql.DB, query string) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, created_at, updated_at
 		FROM sessions WHERE repository LIKE '%' || ? || '%' ORDER BY last_active DESC`, query)
 }
@@ -179,7 +181,7 @@ func querySessions(db *sql.DB, query string, args ...any) ([]Session, error) {
 		var lastActive sql.NullTime
 		if err := rows.Scan(
 			&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
-			&s.ZellijSession, &s.Status, &alive, &s.LastMessage, &s.LastRole, &lastActive,
+			&s.ZellijSession, &s.Status, &s.BlockedReason, &alive, &s.LastMessage, &s.LastRole, &lastActive,
 			&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err

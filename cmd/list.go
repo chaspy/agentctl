@@ -120,6 +120,10 @@ func runListFromDB() error {
 		if role == "" {
 			role = "worker"
 		}
+		status := s.Status
+		if s.BlockedReason != "" {
+			status = s.Status + "(" + s.BlockedReason + ")"
+		}
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent,
@@ -127,7 +131,7 @@ func runListFromDB() error {
 			branch,
 			age,
 			alive,
-			s.Status,
+			status,
 			role,
 			msg,
 		)
@@ -187,6 +191,10 @@ func runSyncToDB() error {
 			statusMsg = s.LastMessage
 		}
 		status := session.DetectStatus(statusMsg, s.LastRole, alive, s.ErrorType, s.IsAPIError)
+		blockedReason := ""
+		if status == session.StatusBlocked {
+			blockedReason = session.DetectBlockedReason(statusMsg)
+		}
 
 		// Role is "worker" by default; manager role is preserved in DB via UpsertSession.
 		role := "worker"
@@ -195,18 +203,19 @@ func runSyncToDB() error {
 		scannedIDs = append(scannedIDs, id)
 
 		_ = store.UpsertSession(db, &store.Session{
-			ID:          id,
-			Agent:       string(s.Agent),
-			Repository: s.Repository,
-			SessionID:   s.SessionID,
-			CWD:         s.CWD,
-			GitBranch:   s.GitBranch,
-			Status:      status,
-			Alive:       alive,
-			LastMessage: s.LastMessage,
-			LastRole:    s.LastRole,
-			LastActive:  s.ModTime,
-			Role:        role,
+			ID:            id,
+			Agent:         string(s.Agent),
+			Repository:    s.Repository,
+			SessionID:     s.SessionID,
+			CWD:           s.CWD,
+			GitBranch:     s.GitBranch,
+			Status:        status,
+			BlockedReason: blockedReason,
+			Alive:         alive,
+			LastMessage:   s.LastMessage,
+			LastRole:      s.LastRole,
+			LastActive:    s.ModTime,
+			Role:          role,
 		})
 	}
 
@@ -289,6 +298,11 @@ func runListLive() error {
 			statusMsg = s.LastMessage
 		}
 		status := session.DetectStatus(statusMsg, s.LastRole, alive == "yes", s.ErrorType, s.IsAPIError)
+		if status == session.StatusBlocked {
+			if reason := session.DetectBlockedReason(statusMsg); reason != "" {
+				status = status + "(" + reason + ")"
+			}
+		}
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent,
