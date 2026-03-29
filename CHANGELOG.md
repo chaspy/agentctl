@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.4] - 2026-03-29
+
+### Fixed
+
+- Delete zellij session after `kill` to free the session name
+
 ## [0.2.3] - 2026-03-29
 
 ### Added

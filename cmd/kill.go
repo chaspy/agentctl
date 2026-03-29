@@ -114,6 +114,15 @@ func killSessionAndWorktree(name string) error {
 			fmt.Printf("Deleted exited zellij session %q\n", name)
 		} else {
 			fmt.Printf("Killed zellij session %q\n", name)
+			// kill-session transitions the session to EXITED state but does not remove it.
+			// Always run delete-session afterward so the session name is freed for reuse.
+			delExec := exec.Command("env", "-u", "ZELLIJ", "zellij", "delete-session", name)
+			delOutput, delErr := delExec.CombinedOutput()
+			if delErr != nil {
+				// Non-fatal: session is dead, but the name may linger until zellij GCs it.
+				fmt.Fprintf(os.Stderr, "Warning: failed to delete session %q after kill: %s\n",
+					name, strings.TrimSpace(string(delOutput)))
+			}
 		}
 	}
 
