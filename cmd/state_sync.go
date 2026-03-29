@@ -3,7 +3,10 @@ package cmd
 import (
 	"database/sql"
 	"fmt"
+	"os/exec"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/chaspy/agentctl/internal/process"
@@ -155,5 +158,51 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int) (int, error) {
 	// Mark sessions in DB but not found in scan as dead
 	_ = store.MarkStaleSessionsDead(db, scannedIDs)
 
+	// Fetch PR URLs for sessions that don't have one yet
+	for _, s := range deduped {
+		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
+		if s.GitBranch == "" || s.GitBranch == "main" || s.GitBranch == "master" {
+			continue
+		}
+		// Skip if already cached in DB
+		if existing := store.GetSessionPRURL(db, id); existing != "" {
+			continue
+		}
+		repo := repoFromRepository(s.Repository)
+		if repo == "" {
+			continue
+		}
+		if prURL := lookupPRURL(repo, s.GitBranch); prURL != "" {
+			db.Exec("UPDATE sessions SET pr_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", prURL, id)
+		}
+	}
+
 	return upserted, nil
+}
+
+// worktreeSuffix matches "-worktree-<branch>" or "/worktree-<branch>" suffixes
+// that spawn creates for git worktrees.
+var worktreeSuffix = regexp.MustCompile(`[/-]worktree-.+$`)
+
+// repoFromRepository extracts the clean GitHub "owner/repo" from the repository field.
+// Handles worktree-suffixed names like "chaspy/agentctl/worktree-feat-xxx" -> "chaspy/agentctl".
+func repoFromRepository(repository string) string {
+	// Strip worktree suffix if present
+	cleaned := worktreeSuffix.ReplaceAllString(repository, "")
+	// Expect "owner/repo" format
+	parts := strings.Split(cleaned, "/")
+	if len(parts) >= 2 {
+		return parts[0] + "/" + parts[1]
+	}
+	return ""
+}
+
+// lookupPRURL uses gh CLI to find the PR URL for a given branch and repo.
+func lookupPRURL(repo, branch string) string {
+	cmd := exec.Command("gh", "pr", "list", "--head", branch, "--repo", repo, "--json", "url", "--jq", ".[0].url")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
