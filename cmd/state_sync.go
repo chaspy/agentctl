@@ -110,11 +110,18 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		if s.CWD != "" && seen[s.CWD] {
 			continue
 		}
+		// Skip preview worktree sessions (defense in depth; scanner also filters)
+		if strings.Contains(s.CWD, "worktree-preview-") {
+			continue
+		}
 		if s.CWD != "" {
 			seen[s.CWD] = true
 		}
 		deduped = append(deduped, s)
 	}
+
+	// Build mux session set for alive validation
+	muxSessionSet := buildMuxSessionSet()
 
 	var scannedIDs []string
 	var upserted int
@@ -125,6 +132,14 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			alive = process.IsAliveForCWD(claudeProcs, s.CWD)
 		case provider.AgentCodex:
 			alive = process.IsAliveForCWD(codexProcs, s.CWD)
+		}
+
+		// Validate alive against actual mux sessions:
+		// Only allow alive=true if the session has a known zellij_session
+		// that exists in the mux session list. This prevents ghost sessions
+		// from JSONL files that have no corresponding mux session.
+		if alive {
+			alive = validateAliveWithMux(db, s, muxSessionSet)
 		}
 
 		statusMsg := s.LastFullMessage
@@ -429,6 +444,38 @@ func normalizeExistingRepoNames(db *sql.DB) {
 	}
 }
 
+// buildMuxSessionSet returns a set of lowercased mux session names, or nil if mux unavailable.
+func buildMuxSessionSet() map[string]bool {
+	sessions := listMuxSessions()
+	if sessions == nil {
+		return nil
+	}
+	set := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		set[strings.ToLower(s)] = true
+	}
+	return set
+}
+
+// validateAliveWithMux checks whether a session should be considered alive
+// by verifying it has a zellij_session that exists in the mux session list.
+// Sessions without a zellij_session (not spawned via agentctl) are not considered alive.
+func validateAliveWithMux(db *sql.DB, s provider.SessionInfo, muxSet map[string]bool) bool {
+	if muxSet == nil {
+		// No mux available; fall back to process-only detection
+		return true
+	}
+	// Check if DB already has a zellij_session for this session
+	id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
+	existing, err := store.GetSession(db, id)
+	if err != nil || existing.ZellijSession == "" {
+		// No zellij_session known -> not alive
+		return false
+	}
+	// Verify the zellij session actually exists
+	return muxSet[strings.ToLower(existing.ZellijSession)]
+}
+
 // listMuxSessions returns the list of active mux session names.
 // Extracted as a variable for testability.
 var listMuxSessions = func() []string {
@@ -446,6 +493,7 @@ var listMuxSessions = func() []string {
 // markOrphanedSessionsDead marks sessions as dead when they are alive in DB
 // but have no corresponding mux session. This handles cases where a zellij
 // session was killed externally without going through agentctl.
+// Sessions without a zellij_session are also marked dead (ghost sessions).
 func markOrphanedSessionsDead(db *sql.DB) {
 	muxSessions := listMuxSessions()
 	if muxSessions == nil {
@@ -464,6 +512,8 @@ func markOrphanedSessionsDead(db *sql.DB) {
 
 	for _, s := range aliveSessions {
 		if s.ZellijSession == "" {
+			// No zellij_session -> ghost session, mark dead
+			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			continue
 		}
 		if !muxSet[strings.ToLower(s.ZellijSession)] {

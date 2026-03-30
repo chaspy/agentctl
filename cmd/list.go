@@ -203,6 +203,16 @@ func runSyncToDB() error {
 		case provider.AgentCodex:
 			alive = process.IsAliveForCWD(codexProcs, s.CWD)
 		}
+
+		// Don't mark as alive unless the session has a known zellij_session in DB
+		if alive {
+			id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
+			existing, err := store.GetSession(db, id)
+			if err != nil || existing.ZellijSession == "" {
+				alive = false
+			}
+		}
+
 		statusMsg := s.LastFullMessage
 		if statusMsg == "" {
 			statusMsg = s.LastMessage

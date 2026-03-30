@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/store"
 )
 
@@ -121,7 +122,7 @@ func TestMarkOrphanedSessionsDead(t *testing.T) {
 		Status: "active", Alive: true, ZellijSession: "c-d",
 		LastActive: time.Now(),
 	})
-	// Alive session without zellij session (should not be affected)
+	// Alive session without zellij session (ghost — should be marked dead)
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:e/f:s3", Agent: "claude", Repository: "e/f", SessionID: "s3",
 		Status: "active", Alive: true,
@@ -152,10 +153,13 @@ func TestMarkOrphanedSessionsDead(t *testing.T) {
 		t.Errorf("s2 status = %q, want %q", s2.Status, "dead")
 	}
 
-	// s3 should still be alive (no zellij session to check)
+	// s3 should be dead (ghost: no zellij session at all)
 	s3, _ := store.GetSession(db, "claude:e/f:s3")
-	if !s3.Alive {
-		t.Error("s3 should still be alive (no zellij session)")
+	if s3.Alive {
+		t.Error("s3 should be dead (ghost: no zellij session)")
+	}
+	if s3.Status != "dead" {
+		t.Errorf("s3 status = %q, want %q", s3.Status, "dead")
 	}
 }
 
@@ -185,6 +189,52 @@ func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if !s1.Alive {
 		t.Error("s1 should still be alive when mux is unavailable")
+	}
+}
+
+func TestValidateAliveWithMux(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Session with zellij_session set
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+	// Session without zellij_session
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:c/d:s2", Agent: "claude", Repository: "c/d", SessionID: "s2",
+		Status: "active", Alive: true,
+		LastActive: time.Now(),
+	})
+
+	muxSet := map[string]bool{"a-b": true}
+
+	// Session with zellij_session that exists in mux -> alive
+	s1 := provider.SessionInfo{Agent: "claude", Repository: "a/b", SessionID: "s1"}
+	if !validateAliveWithMux(db, s1, muxSet) {
+		t.Error("s1 should be alive (zellij session exists in mux)")
+	}
+
+	// Session without zellij_session -> not alive
+	s2 := provider.SessionInfo{Agent: "claude", Repository: "c/d", SessionID: "s2"}
+	if validateAliveWithMux(db, s2, muxSet) {
+		t.Error("s2 should not be alive (no zellij_session)")
+	}
+
+	// Session not in DB -> not alive
+	s3 := provider.SessionInfo{Agent: "claude", Repository: "x/y", SessionID: "s99"}
+	if validateAliveWithMux(db, s3, muxSet) {
+		t.Error("s3 should not be alive (not in DB)")
+	}
+
+	// nil muxSet (no mux available) -> fall back to true
+	if !validateAliveWithMux(db, s1, nil) {
+		t.Error("should return true when muxSet is nil")
 	}
 }
 

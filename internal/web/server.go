@@ -293,6 +293,16 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		case provider.AgentCodex:
 			alive = process.IsAliveForCWD(codexProcs, sess.CWD)
 		}
+
+		// Don't mark as alive unless the session has a known zellij_session in DB
+		if alive {
+			id := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Repository, sess.SessionID)
+			existing, err := store.GetSession(s.db, id)
+			if err != nil || existing.ZellijSession == "" {
+				alive = false
+			}
+		}
+
 		statusMsg := sess.LastFullMessage
 		if statusMsg == "" {
 			statusMsg = sess.LastMessage
