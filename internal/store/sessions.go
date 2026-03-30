@@ -116,6 +116,14 @@ func ListSessionsByStatus(db *sql.DB, status string) ([]Session, error) {
 		FROM sessions WHERE status = ? ORDER BY last_active DESC`, status)
 }
 
+// ListAliveSessionsWithPR returns alive sessions that have a pr_url set.
+func ListAliveSessionsWithPR(db *sql.DB) ([]Session, error) {
+	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at
+		FROM sessions WHERE alive = 1 AND pr_url != '' ORDER BY last_active DESC`)
+}
+
 // ArchiveSession sets archived=1 for the given session ID.
 func ArchiveSession(db *sql.DB, id string) error {
 	_, err := db.Exec("UPDATE sessions SET archived = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", id)

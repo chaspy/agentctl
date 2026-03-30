@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.14] - 2026-03-30
+
+### Added
+
+- `state sync` now auto-detects PR conflicts and sends rebase instructions to conflicting sessions
+- Checks `gh pr view --json mergeable` for alive sessions with PR URLs
+- Sends rebase instruction via mux (zellij/tmux) to the session
+- 1-hour cooldown to prevent duplicate rebase instructions to the same PR
+- Dead sessions are skipped (cannot receive instructions)
+
 ## [0.2.13] - 2026-03-30
 
 ### Added
