@@ -83,6 +83,13 @@ func EnrichSession(s *SessionInfo) error {
 		s.IsAPIError = lastUserOrAssistant.IsApiErrorMessage
 	}
 
+	// Override Repository with accurate name from git remote origin
+	if s.CWD != "" {
+		if repo := RepoNameFromCWD(s.CWD); repo != "" {
+			s.Repository = repo
+		}
+	}
+
 	return scanner.Err()
 }
 

@@ -76,6 +76,73 @@ func TestScanSessionsExcludesPreviewWorktrees(t *testing.T) {
 	}
 }
 
+func TestDecodeRepository(t *testing.T) {
+	tests := []struct {
+		encoded string
+		want    string
+	}{
+		// Standard: owner/repo
+		{"-Users-chaspy-go-src-github-com-chaspy-agentctl", "chaspy/agentctl"},
+		// Subdirectory should NOT be included in repo name
+		{"-Users-chaspy-go-src-github-com-chaspy-myassistant-server", "chaspy/myassistant"},
+		// Worktree suffix
+		{"-Users-chaspy-go-src-github-com-chaspy-agentctl-worktree-fix-bug", "chaspy/agentctl"},
+		// Deep subdirectory
+		{"-Users-chaspy-go-src-github-com-chaspy-myapp-cmd-api", "chaspy/myapp"},
+		// Different user path
+		{"-home-user-projects-github-com-org-repo", "org/repo"},
+	}
+	for _, tt := range tests {
+		got := decodeRepository(tt.encoded)
+		if got != tt.want {
+			t.Errorf("decodeRepository(%q) = %q, want %q", tt.encoded, got, tt.want)
+		}
+	}
+}
+
+func TestParseRepoFromRemoteURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://github.com/chaspy/myassistant.git", "chaspy/myassistant"},
+		{"https://github.com/chaspy/agentctl.git", "chaspy/agentctl"},
+		{"https://github.com/chaspy/agentctl", "chaspy/agentctl"},
+		{"git@github.com:chaspy/myassistant.git", "chaspy/myassistant"},
+		{"git@github.com:chaspy/agentctl.git", "chaspy/agentctl"},
+		{"git@github.com:org/repo.git", "org/repo"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := parseRepoFromRemoteURL(tt.url)
+		if got != tt.want {
+			t.Errorf("parseRepoFromRemoteURL(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestRepoNameFromCWD_WithMock(t *testing.T) {
+	// Mock the git remote command
+	orig := repoNameFromGitRemote
+	defer func() { repoNameFromGitRemote = orig }()
+
+	repoNameFromGitRemote = func(cwd string) string {
+		return parseRepoFromRemoteURL("https://github.com/chaspy/myassistant.git")
+	}
+
+	got := RepoNameFromCWD("/Users/chaspy/go/src/github.com/chaspy/myassistant/server")
+	if got != "chaspy/myassistant" {
+		t.Errorf("RepoNameFromCWD() = %q, want %q", got, "chaspy/myassistant")
+	}
+}
+
+func TestRepoNameFromCWD_EmptyCWD(t *testing.T) {
+	got := RepoNameFromCWD("")
+	if got != "" {
+		t.Errorf("RepoNameFromCWD(\"\") = %q, want empty", got)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }
