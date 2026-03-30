@@ -466,7 +466,7 @@ func TestArchiveDeadSessions(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create sessions: active, idle, dead, error
+	// Create sessions: active, idle, dead, error, blocked(alive=false)
 	_ = UpsertSession(db, &Session{
 		ID: "claude:a:s1", Agent: "claude", Repository: "a", SessionID: "s1",
 		Status: "active", Alive: true, LastActive: time.Now(),
@@ -483,14 +483,18 @@ func TestArchiveDeadSessions(t *testing.T) {
 		ID: "claude:d:s4", Agent: "claude", Repository: "d", SessionID: "s4",
 		Status: "error", Alive: false, LastActive: time.Now(),
 	})
+	_ = UpsertSession(db, &Session{
+		ID: "claude:e:s5", Agent: "claude", Repository: "e", SessionID: "s5",
+		Status: "blocked", Alive: false, BlockedReason: "rate_limit", LastActive: time.Now(),
+	})
 
-	// Archive dead/error sessions
+	// Archive all alive=0 sessions (dead, error, blocked)
 	count, err := ArchiveDeadSessions(db)
 	if err != nil {
 		t.Fatalf("ArchiveDeadSessions: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("expected 2 archived, got %d", count)
+	if count != 3 {
+		t.Errorf("expected 3 archived, got %d", count)
 	}
 
 	// Active sessions should remain
@@ -499,10 +503,10 @@ func TestArchiveDeadSessions(t *testing.T) {
 		t.Errorf("expected 2 active sessions, got %d", len(sessions))
 	}
 
-	// Archive should have 2
+	// Archive should have 3
 	archived, _ := ListArchivedSessions(db)
-	if len(archived) != 2 {
-		t.Errorf("expected 2 archived sessions, got %d", len(archived))
+	if len(archived) != 3 {
+		t.Errorf("expected 3 archived sessions, got %d", len(archived))
 	}
 
 	// GetArchivedSessionCount
@@ -510,8 +514,8 @@ func TestArchiveDeadSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if archCount != 2 {
-		t.Errorf("expected archive count 2, got %d", archCount)
+	if archCount != 3 {
+		t.Errorf("expected archive count 3, got %d", archCount)
 	}
 }
 
