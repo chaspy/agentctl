@@ -205,13 +205,30 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		if repo == "" {
 			continue
 		}
+		// Skip if we recently checked and found no PR (avoid repeated API calls)
+		noPRKey := "no_pr_checked:" + repo + ":" + s.GitBranch
+		if lastChecked, _ := store.GetState(db, noPRKey); lastChecked != "" {
+			if t, err := time.Parse(time.RFC3339, lastChecked); err == nil && time.Since(t) < 5*time.Minute {
+				continue
+			}
+		}
 		if prURL := lookupPRURL(repo, s.GitBranch); prURL != "" {
 			db.Exec("UPDATE sessions SET pr_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", prURL, id)
+		} else {
+			// Cache the negative result to avoid re-querying every 30 seconds
+			_ = store.SetState(db, noPRKey, time.Now().Format(time.RFC3339))
 		}
 	}
 
-	// Check PR conflicts and send rebase instructions
+	// Check PR conflicts and send rebase instructions (throttled to every 5 minutes)
+	conflictCheckKey := "last_conflict_check"
+	if lastCheck, _ := store.GetState(db, conflictCheckKey); lastCheck != "" {
+		if t, err := time.Parse(time.RFC3339, lastCheck); err == nil && time.Since(t) < 5*time.Minute {
+			return upserted, nil
+		}
+	}
 	checkPRConflicts(db)
+	_ = store.SetState(db, conflictCheckKey, time.Now().Format(time.RFC3339))
 
 	return upserted, nil
 }
@@ -247,7 +264,23 @@ func checkPRConflicts(db *sql.DB) {
 			}
 		}
 
-		mergeable := checkPRMergeable(repo, prNum)
+		// Check cached mergeable state (5 min TTL) to avoid redundant API calls
+		mergeableCacheKey := "mergeable_cache:" + prURL
+		mergeable := ""
+		if cached, _ := store.GetState(db, mergeableCacheKey); cached != "" {
+			// Format: "STATE|RFC3339_TIME"
+			if parts := strings.SplitN(cached, "|", 2); len(parts) == 2 {
+				if t, err := time.Parse(time.RFC3339, parts[1]); err == nil && time.Since(t) < 5*time.Minute {
+					mergeable = parts[0]
+				}
+			}
+		}
+		if mergeable == "" {
+			mergeable = checkPRMergeable(repo, prNum)
+			if mergeable != "" {
+				_ = store.SetState(db, mergeableCacheKey, mergeable+"|"+time.Now().Format(time.RFC3339))
+			}
+		}
 		if mergeable != "CONFLICTING" {
 			continue
 		}
