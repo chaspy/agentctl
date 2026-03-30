@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -85,6 +86,11 @@ func ScanSessions(maxAge time.Duration) ([]SessionInfo, error) {
 // decodeRepository converts the directory-encoded name back to a readable path.
 // e.g. "-Users-01045513-go-src-github-com-chaspy-agentctl"
 // becomes "chaspy/agentctl"
+//
+// Note: This is a best-effort heuristic based on directory names. It only takes
+// owner + repo (2 segments) after "github-com" to avoid misidentifying
+// subdirectories as part of the repo name. The accurate repository name is
+// determined later by RepoNameFromCWD using `git remote get-url origin`.
 func decodeRepository(encoded string) string {
 	// Split by "-" and reconstruct
 	parts := strings.Split(encoded, "-")
@@ -92,14 +98,12 @@ func decodeRepository(encoded string) string {
 	// Find "github-com" or similar pattern and extract owner/repo
 	for i := 0; i < len(parts)-1; i++ {
 		if parts[i] == "github" && i+1 < len(parts) && parts[i+1] == "com" {
-			// Everything after "github-com" is the project path
+			// Take only owner + repo (2 segments) after "github-com"
+			if i+3 < len(parts) {
+				return parts[i+2] + "/" + parts[i+3]
+			}
 			if i+2 < len(parts) {
-				remaining := parts[i+2:]
-				// Group into owner/repo (first two segments)
-				if len(remaining) >= 2 {
-					return remaining[0] + "/" + strings.Join(remaining[1:], "-")
-				}
-				return strings.Join(remaining, "/")
+				return parts[i+2]
 			}
 		}
 	}
@@ -115,4 +119,57 @@ func decodeRepository(encoded string) string {
 	}
 
 	return encoded
+}
+
+// RepoNameFromCWD determines the repository name from the working directory
+// by running `git remote get-url origin`. Falls back to path-based heuristic
+// if git command fails.
+func RepoNameFromCWD(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	return repoNameFromGitRemote(cwd)
+}
+
+// repoNameFromGitRemote runs `git remote get-url origin` in the given directory
+// and extracts "owner/repo" from the URL.
+var repoNameFromGitRemote = func(cwd string) string {
+	cmd := exec.Command("git", "-C", cwd, "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return parseRepoFromRemoteURL(strings.TrimSpace(string(out)))
+}
+
+// parseRepoFromRemoteURL extracts "owner/repo" from a git remote URL.
+// Supports both HTTPS and SSH formats:
+//   - https://github.com/owner/repo.git
+//   - git@github.com:owner/repo.git
+func parseRepoFromRemoteURL(remoteURL string) string {
+	remoteURL = strings.TrimSuffix(remoteURL, ".git")
+
+	// SSH format: git@github.com:owner/repo
+	if strings.Contains(remoteURL, ":") && strings.Contains(remoteURL, "@") {
+		parts := strings.SplitN(remoteURL, ":", 2)
+		if len(parts) == 2 {
+			path := strings.Trim(parts[1], "/")
+			segments := strings.Split(path, "/")
+			if len(segments) >= 2 {
+				return segments[len(segments)-2] + "/" + segments[len(segments)-1]
+			}
+		}
+	}
+
+	// HTTPS format: https://github.com/owner/repo
+	path := remoteURL
+	if idx := strings.Index(remoteURL, "://"); idx >= 0 {
+		path = remoteURL[idx+3:]
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segments) >= 3 {
+		return segments[len(segments)-2] + "/" + segments[len(segments)-1]
+	}
+
+	return ""
 }

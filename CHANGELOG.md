@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.17] - 2026-03-30
+
+### Fixed
+
+- Fix repository name detection: CWD subdirectories (e.g. `/myassistant/server/`) were incorrectly appended to repo name (e.g. `chaspy/myassistant-server` instead of `chaspy/myassistant`)
+- `decodeRepository` now takes only owner + repo (2 segments) after `github-com` in directory-encoded names
+- `EnrichSession` now uses `git remote get-url origin` to accurately determine repository name from CWD
+
 ## [0.2.16] - 2026-03-30
 
 ### Fixed
