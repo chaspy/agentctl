@@ -76,7 +76,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	var sessions []store.Session
 	var err error
 	if showAll {
-		sessions, err = store.ListSessions(s.db)
+		sessions, err = store.ListAllSessionsWithArchive(s.db)
 	} else {
 		sessions, err = store.ListActiveSessions(s.db)
 	}

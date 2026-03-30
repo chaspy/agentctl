@@ -184,6 +184,11 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 	// Mark sessions in DB but not found in scan as dead
 	_ = store.MarkStaleSessionsDead(db, scannedIDs)
 
+	// Auto-archive dead/error sessions to sessions_archive table
+	if archived, err := store.ArchiveDeadSessions(db); err == nil && archived > 0 {
+		fmt.Printf("Auto-archived %d dead/error session(s)\n", archived)
+	}
+
 	// Fetch PR URLs for sessions that don't have one yet
 	for _, s := range deduped {
 		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)

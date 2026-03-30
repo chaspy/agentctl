@@ -33,7 +33,9 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
 
-	fmt.Println("=== Sessions ===")
+	archiveCount, _ := store.GetArchivedSessionCount(db)
+
+	fmt.Printf("=== Sessions (%d active, %d archived) ===\n", len(sessions), archiveCount)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tALIVE\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range sessions {
