@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/mux"
 	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
@@ -208,7 +210,124 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		}
 	}
 
+	// Check PR conflicts and send rebase instructions
+	checkPRConflicts(db)
+
 	return upserted, nil
+}
+
+// checkPRConflicts checks mergeable state for alive sessions with PRs
+// and sends rebase instructions to sessions with conflicting PRs.
+func checkPRConflicts(db *sql.DB) {
+	sessions, err := store.ListAliveSessionsWithPR(db)
+	if err != nil || len(sessions) == 0 {
+		return
+	}
+
+	adapter, muxErr := mux.Resolve("auto")
+
+	for _, s := range sessions {
+		prURL := s.PRURL
+		prNum := extractPRNumber(prURL)
+		if prNum == "" {
+			continue
+		}
+
+		repo := repoFromRepository(s.Repository)
+		if repo == "" {
+			continue
+		}
+
+		// Check if we already sent a rebase instruction recently (within 1 hour)
+		stateKey := "rebase_sent:" + prURL
+		if lastSent, _ := store.GetState(db, stateKey); lastSent != "" {
+			t, err := time.Parse(time.RFC3339, lastSent)
+			if err == nil && time.Since(t) < time.Hour {
+				continue
+			}
+		}
+
+		mergeable := checkPRMergeable(repo, prNum)
+		if mergeable != "CONFLICTING" {
+			continue
+		}
+
+		if muxErr != nil {
+			fmt.Printf("[sync] PR #%s is CONFLICTING but no mux available: %v\n", prNum, muxErr)
+			continue
+		}
+
+		// Find the mux session name to send to
+		sessionName := resolveMuxSessionName(s, adapter)
+		if sessionName == "" {
+			fmt.Printf("[sync] PR #%s is CONFLICTING but could not resolve mux session for %s\n", prNum, s.Repository)
+			continue
+		}
+
+		fmt.Printf("[sync] PR #%s is CONFLICTING, sending rebase instruction to session %s\n", prNum, sessionName)
+
+		rebaseMsg := "PR がコンフリクトしています。git fetch origin && git rebase origin/main でコンフリクトを解消して git push --force-with-lease してください。"
+		if err := adapter.SendKeys(sessionName, rebaseMsg); err != nil {
+			fmt.Printf("[sync] failed to send rebase instruction to %s: %v\n", sessionName, err)
+			continue
+		}
+
+		// Record the time we sent the rebase instruction
+		_ = store.SetState(db, stateKey, time.Now().Format(time.RFC3339))
+
+		// Log the action
+		_ = store.LogAction(db, &store.Action{
+			SessionID:  s.ID,
+			ActionType: "rebase_instruction",
+			Content:    rebaseMsg,
+			Result:     fmt.Sprintf("PR #%s CONFLICTING", prNum),
+		})
+	}
+}
+
+// extractPRNumber extracts the PR number from a GitHub PR URL.
+// e.g., "https://github.com/owner/repo/pull/42" -> "42"
+func extractPRNumber(prURL string) string {
+	parts := strings.Split(prURL, "/")
+	if len(parts) < 2 || parts[len(parts)-2] != "pull" {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+// prMergeableResult is used to parse gh pr view JSON output.
+type prMergeableResult struct {
+	Mergeable string `json:"mergeable"`
+}
+
+// checkPRMergeable returns the mergeable state of a PR.
+// Returns "MERGEABLE", "CONFLICTING", "UNKNOWN", or "" on error.
+var checkPRMergeable = func(repo, prNumber string) string {
+	cmd := exec.Command("gh", "pr", "view", prNumber, "--repo", repo, "--json", "mergeable")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	var result prMergeableResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		return ""
+	}
+	return result.Mergeable
+}
+
+// resolveMuxSessionName finds the mux session name for a given DB session.
+func resolveMuxSessionName(s store.Session, adapter mux.Adapter) string {
+	// Try zellij_session field first
+	if s.ZellijSession != "" {
+		if resolved, err := adapter.ResolveSession(s.ZellijSession); err == nil {
+			return resolved
+		}
+	}
+	// Try repository name
+	if resolved, err := adapter.ResolveSession(s.Repository); err == nil {
+		return resolved
+	}
+	return ""
 }
 
 // worktreeSuffix matches "-worktree-<branch>" or "/worktree-<branch>" suffixes
