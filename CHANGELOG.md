@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.15] - 2026-03-30
+
+### Fixed
+
+- `ArchiveDeadSessions` now archives all sessions with `alive=0`, not just `dead`/`error` status
+- Previously, blocked sessions (e.g. rate_limit, awaiting_input) with `alive=0` were not archived
+
 ## [0.2.14] - 2026-03-30
 
 ### Added
