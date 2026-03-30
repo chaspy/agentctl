@@ -14,18 +14,18 @@ var (
 
 var archiveCmd = &cobra.Command{
 	Use:   "archive [project]",
-	Short: "Archive dead/error sessions to archive table",
-	Long: `Moves dead/error sessions from the active sessions table to sessions_archive.
-Without arguments, archives all sessions where alive=false and status is dead or error.
+	Short: "Archive non-alive sessions to archive table",
+	Long: `Moves non-alive (alive=false) sessions from the active sessions table to sessions_archive.
+Without arguments, archives all sessions where alive=false regardless of status.
 Use --id to archive a specific session by ID.
-Use a project name argument to archive matching sessions.`,
+Use a project name argument to archive matching non-alive sessions.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runArchive,
 }
 
 func init() {
 	archiveCmd.Flags().StringVar(&archiveID, "id", "", "Target a specific session by composite ID")
-	archiveCmd.Flags().BoolVar(&archiveAll, "all", false, "Archive all dead/error sessions")
+	archiveCmd.Flags().BoolVar(&archiveAll, "all", false, "Archive all non-alive sessions")
 	rootCmd.AddCommand(archiveCmd)
 }
 
@@ -52,7 +52,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("archive: %w", err)
 		}
 		if count == 0 {
-			fmt.Println("No dead/error sessions to archive")
+			fmt.Println("No non-alive sessions to archive")
 		} else {
 			fmt.Printf("Archived %d session(s)\n", count)
 		}
@@ -72,7 +72,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 
 	var count int
 	for _, s := range sessions {
-		if s.Alive || (s.Status != "dead" && s.Status != "error") {
+		if s.Alive {
 			continue
 		}
 		if err := store.MoveToArchive(db, s.ID); err != nil {
@@ -84,7 +84,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	}
 
 	if count == 0 {
-		fmt.Println("No dead/error sessions to archive")
+		fmt.Println("No non-alive sessions to archive")
 	} else {
 		fmt.Printf("Archived %d session(s)\n", count)
 	}

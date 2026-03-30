@@ -220,7 +220,7 @@ func MoveToArchive(db *sql.DB, id string) error {
 	return tx.Commit()
 }
 
-// ArchiveDeadSessions moves all dead/error sessions (alive=0) from sessions to sessions_archive.
+// ArchiveDeadSessions moves all non-alive sessions (alive=0) from sessions to sessions_archive.
 // Returns the number of sessions archived.
 func ArchiveDeadSessions(db *sql.DB) (int, error) {
 	tx, err := db.Begin()
@@ -235,14 +235,14 @@ func ArchiveDeadSessions(db *sql.DB) (int, error) {
 		SELECT id, agent, repository, session_id, cwd, git_branch,
 			zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at, CURRENT_TIMESTAMP
-		FROM sessions WHERE alive = 0 AND status IN ('dead', 'error')`)
+		FROM sessions WHERE alive = 0`)
 	if err != nil {
 		return 0, err
 	}
 
 	count, _ := result.RowsAffected()
 
-	_, err = tx.Exec("DELETE FROM sessions WHERE alive = 0 AND status IN ('dead', 'error')")
+	_, err = tx.Exec("DELETE FROM sessions WHERE alive = 0")
 	if err != nil {
 		return 0, err
 	}

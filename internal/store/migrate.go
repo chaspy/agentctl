@@ -171,7 +171,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_archive_repository ON sessions_archive(r
 CREATE INDEX IF NOT EXISTS idx_sessions_archive_status ON sessions_archive(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_archive_archived_at ON sessions_archive(archived_at);
 
--- Migrate existing dead/error sessions to archive
+-- Migrate existing non-alive sessions to archive
 INSERT INTO sessions_archive (id, agent, repository, session_id, cwd, git_branch,
 	zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 	pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at, archived_at)
@@ -179,7 +179,7 @@ SELECT id, agent, repository, session_id, cwd, git_branch,
 	zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 	pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at, CURRENT_TIMESTAMP
 FROM sessions
-WHERE alive = 0 AND status IN ('dead', 'error');
+WHERE alive = 0;
 
-DELETE FROM sessions WHERE alive = 0 AND status IN ('dead', 'error');
+DELETE FROM sessions WHERE alive = 0;
 `
