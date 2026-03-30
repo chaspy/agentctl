@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.13] - 2026-03-30
+
+### Added
+
+- `sessions_archive` table: dead/error sessions are moved to a separate archive table for faster `list` queries
+- `archive` command: moves dead/error sessions from `sessions` to `sessions_archive` table
+- `list --all` now uses UNION of `sessions` + `sessions_archive` to show all sessions including archived
+- `state sync` auto-archives dead/error sessions after marking stale sessions
+- `state show` displays archived session count alongside active count
+- Migration V9: creates `sessions_archive` table and migrates existing dead/error sessions
+
 ## [0.2.12] - 2026-03-30
 
 ### Added

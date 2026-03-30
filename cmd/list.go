@@ -66,7 +66,7 @@ func runListFromDB() error {
 
 	var sessions []store.Session
 	if listAll {
-		sessions, err = store.ListSessions(db)
+		sessions, err = store.ListAllSessionsWithArchive(db)
 	} else {
 		sessions, err = store.ListActiveSessions(db)
 	}

@@ -421,6 +421,153 @@ func TestManagerState(t *testing.T) {
 	}
 }
 
+func TestMoveToArchive(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create a session
+	_ = UpsertSession(db, &Session{
+		ID: "claude:test:s1", Agent: "claude", Repository: "test", SessionID: "s1",
+		Status: "dead", Alive: false, LastActive: time.Now(),
+		GitBranch: "feat/x", TaskSummary: "do X",
+	})
+
+	// Move to archive
+	if err := MoveToArchive(db, "claude:test:s1"); err != nil {
+		t.Fatalf("MoveToArchive: %v", err)
+	}
+
+	// Should not be in sessions anymore
+	_, err = GetSession(db, "claude:test:s1")
+	if err == nil {
+		t.Error("expected session to be gone from sessions table")
+	}
+
+	// Should be in archive
+	archived, err := ListArchivedSessions(db)
+	if err != nil {
+		t.Fatalf("ListArchivedSessions: %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("expected 1 archived session, got %d", len(archived))
+	}
+	if archived[0].ID != "claude:test:s1" || archived[0].TaskSummary != "do X" {
+		t.Errorf("archived session mismatch: %+v", archived[0])
+	}
+}
+
+func TestArchiveDeadSessions(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create sessions: active, idle, dead, error
+	_ = UpsertSession(db, &Session{
+		ID: "claude:a:s1", Agent: "claude", Repository: "a", SessionID: "s1",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+	_ = UpsertSession(db, &Session{
+		ID: "claude:b:s2", Agent: "claude", Repository: "b", SessionID: "s2",
+		Status: "idle", Alive: true, LastActive: time.Now(),
+	})
+	_ = UpsertSession(db, &Session{
+		ID: "claude:c:s3", Agent: "claude", Repository: "c", SessionID: "s3",
+		Status: "dead", Alive: false, LastActive: time.Now(),
+	})
+	_ = UpsertSession(db, &Session{
+		ID: "claude:d:s4", Agent: "claude", Repository: "d", SessionID: "s4",
+		Status: "error", Alive: false, LastActive: time.Now(),
+	})
+
+	// Archive dead/error sessions
+	count, err := ArchiveDeadSessions(db)
+	if err != nil {
+		t.Fatalf("ArchiveDeadSessions: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 archived, got %d", count)
+	}
+
+	// Active sessions should remain
+	sessions, _ := ListSessions(db)
+	if len(sessions) != 2 {
+		t.Errorf("expected 2 active sessions, got %d", len(sessions))
+	}
+
+	// Archive should have 2
+	archived, _ := ListArchivedSessions(db)
+	if len(archived) != 2 {
+		t.Errorf("expected 2 archived sessions, got %d", len(archived))
+	}
+
+	// GetArchivedSessionCount
+	archCount, err := GetArchivedSessionCount(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archCount != 2 {
+		t.Errorf("expected archive count 2, got %d", archCount)
+	}
+}
+
+func TestListAllSessionsWithArchive(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create active session
+	_ = UpsertSession(db, &Session{
+		ID: "claude:a:s1", Agent: "claude", Repository: "a", SessionID: "s1",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+	// Create and archive a dead session
+	_ = UpsertSession(db, &Session{
+		ID: "claude:b:s2", Agent: "claude", Repository: "b", SessionID: "s2",
+		Status: "dead", Alive: false, LastActive: time.Now().Add(-time.Hour),
+	})
+	_ = MoveToArchive(db, "claude:b:s2")
+
+	// ListAllSessionsWithArchive should return both
+	all, err := ListAllSessionsWithArchive(db)
+	if err != nil {
+		t.Fatalf("ListAllSessionsWithArchive: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 total sessions, got %d", len(all))
+	}
+
+	// ListActiveSessions should return only 1
+	active, _ := ListActiveSessions(db)
+	if len(active) != 1 {
+		t.Errorf("expected 1 active session, got %d", len(active))
+	}
+}
+
+func TestMigrationArchivesExisting(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// After migration V9, existing dead/error sessions should have been moved.
+	// Since we start fresh, verify the archive table exists and is queryable.
+	count, err := GetArchivedSessionCount(db)
+	if err != nil {
+		t.Fatalf("sessions_archive table should exist: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 archived in fresh db, got %d", count)
+	}
+}
+
 func TestRepoConfigCRUD(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {
