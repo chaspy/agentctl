@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.16] - 2026-03-30
+
+### Fixed
+
+- Reduce GitHub API calls to prevent rate limit exhaustion (5000/hour)
+- PR conflict check (`checkPRConflicts`) now runs every 5 minutes instead of every 30 seconds
+- Per-PR mergeable state cached for 5 minutes to avoid redundant `gh pr view` calls
+- PR URL lookup caches negative results for 5 minutes to avoid repeated `gh pr list` calls for sessions without PRs
+
 ## [0.2.15] - 2026-03-30
 
 ### Fixed
