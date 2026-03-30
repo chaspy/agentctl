@@ -36,12 +36,155 @@ func TestRepoFromRepository(t *testing.T) {
 		{"owner/repo-name/worktree-fix-bug", "owner/repo-name"},
 		{"single", ""},
 		{"", ""},
+		// Known corrections
+		{"chaspy/myassistant-server", "chaspy/myassistant"},
+		{"studiuos/jp-Studious-JP", "studiuos-jp/Studious_JP"},
+		// Worktree + correction
+		{"chaspy/myassistant-server/worktree-fix-foo", "chaspy/myassistant"},
 	}
 	for _, tt := range tests {
 		got := repoFromRepository(tt.input)
 		if got != tt.want {
 			t.Errorf("repoFromRepository(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestNormalizeExistingRepoNames(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert sessions with incorrect repo names
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:chaspy/myassistant-server:s1", Agent: "claude",
+		Repository: "chaspy/myassistant-server", SessionID: "s1",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:studiuos/jp-Studious-JP:s2", Agent: "claude",
+		Repository: "studiuos/jp-Studious-JP", SessionID: "s2",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+	// Correct repo name should not be changed
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:chaspy/agentctl:s3", Agent: "claude",
+		Repository: "chaspy/agentctl", SessionID: "s3",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+
+	normalizeExistingRepoNames(db)
+
+	s1, err := store.GetSession(db, "claude:chaspy/myassistant-server:s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s1.Repository != "chaspy/myassistant" {
+		t.Errorf("s1 repository = %q, want %q", s1.Repository, "chaspy/myassistant")
+	}
+
+	s2, err := store.GetSession(db, "claude:studiuos/jp-Studious-JP:s2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Repository != "studiuos-jp/Studious_JP" {
+		t.Errorf("s2 repository = %q, want %q", s2.Repository, "studiuos-jp/Studious_JP")
+	}
+
+	s3, err := store.GetSession(db, "claude:chaspy/agentctl:s3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s3.Repository != "chaspy/agentctl" {
+		t.Errorf("s3 repository = %q, want %q", s3.Repository, "chaspy/agentctl")
+	}
+}
+
+func TestMarkOrphanedSessionsDead(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Alive session with zellij session that exists
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+	// Alive session with zellij session that does NOT exist
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:c/d:s2", Agent: "claude", Repository: "c/d", SessionID: "s2",
+		Status: "active", Alive: true, ZellijSession: "c-d",
+		LastActive: time.Now(),
+	})
+	// Alive session without zellij session (should not be affected)
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:e/f:s3", Agent: "claude", Repository: "e/f", SessionID: "s3",
+		Status: "active", Alive: true,
+		LastActive: time.Now(),
+	})
+
+	// Mock listMuxSessions to return only "a-b"
+	orig := listMuxSessions
+	listMuxSessions = func() []string {
+		return []string{"a-b"}
+	}
+	defer func() { listMuxSessions = orig }()
+
+	markOrphanedSessionsDead(db)
+
+	// s1 should still be alive (zellij session exists)
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if !s1.Alive {
+		t.Error("s1 should still be alive")
+	}
+
+	// s2 should be dead (zellij session not found)
+	s2, _ := store.GetSession(db, "claude:c/d:s2")
+	if s2.Alive {
+		t.Error("s2 should be dead (orphaned)")
+	}
+	if s2.Status != "dead" {
+		t.Errorf("s2 status = %q, want %q", s2.Status, "dead")
+	}
+
+	// s3 should still be alive (no zellij session to check)
+	s3, _ := store.GetSession(db, "claude:e/f:s3")
+	if !s3.Alive {
+		t.Error("s3 should still be alive (no zellij session)")
+	}
+}
+
+func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+
+	// Mock listMuxSessions to return nil (no mux available)
+	orig := listMuxSessions
+	listMuxSessions = func() []string {
+		return nil
+	}
+	defer func() { listMuxSessions = orig }()
+
+	markOrphanedSessionsDead(db)
+
+	// Should not change anything when mux is unavailable
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if !s1.Alive {
+		t.Error("s1 should still be alive when mux is unavailable")
 	}
 }
 

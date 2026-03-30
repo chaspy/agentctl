@@ -116,6 +116,18 @@ func ListSessionsByStatus(db *sql.DB, status string) ([]Session, error) {
 		FROM sessions WHERE status = ? ORDER BY last_active DESC`, status)
 }
 
+// ListSessionsByAlive returns sessions filtered by alive status.
+func ListSessionsByAlive(db *sql.DB, alive bool) ([]Session, error) {
+	aliveInt := 0
+	if alive {
+		aliveInt = 1
+	}
+	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at
+		FROM sessions WHERE alive = ? ORDER BY last_active DESC`, aliveInt)
+}
+
 // ListAliveSessionsWithPR returns alive sessions that have a pr_url set.
 func ListAliveSessionsWithPR(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,

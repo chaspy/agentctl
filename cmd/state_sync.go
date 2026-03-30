@@ -138,13 +138,19 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			role = "manager"
 		}
 
-		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
+		// Normalize repository name before building session ID
+		repoName := s.Repository
+		if corrected, ok := knownRepoCorrections[repoName]; ok {
+			repoName = corrected
+		}
+
+		id := fmt.Sprintf("%s:%s:%s", s.Agent, repoName, s.SessionID)
 		scannedIDs = append(scannedIDs, id)
 
 		if err := store.UpsertSession(db, &store.Session{
 			ID:          id,
 			Agent:       string(s.Agent),
-			Repository:  s.Repository,
+			Repository:  repoName,
 			SessionID:   s.SessionID,
 			CWD:         s.CWD,
 			GitBranch:   s.GitBranch,
@@ -186,6 +192,12 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 	// Mark sessions in DB but not found in scan as dead
 	_ = store.MarkStaleSessionsDead(db, scannedIDs)
 
+	// Cross-check alive sessions against actual mux sessions
+	markOrphanedSessionsDead(db)
+
+	// Normalize known incorrect repository names in existing records
+	normalizeExistingRepoNames(db)
+
 	// Auto-archive dead/error sessions to sessions_archive table
 	if archived, err := store.ArchiveDeadSessions(db); err == nil && archived > 0 {
 		fmt.Printf("Auto-archived %d dead/error session(s)\n", archived)
@@ -206,6 +218,7 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			continue
 		}
 		// Skip if we recently checked and found no PR (avoid repeated API calls)
+		// But always allow the first check (when no cache key exists yet)
 		noPRKey := "no_pr_checked:" + repo + ":" + s.GitBranch
 		if lastChecked, _ := store.GetState(db, noPRKey); lastChecked != "" {
 			if t, err := time.Parse(time.RFC3339, lastChecked); err == nil && time.Since(t) < 5*time.Minute {
@@ -367,17 +380,97 @@ func resolveMuxSessionName(s store.Session, adapter mux.Adapter) string {
 // that spawn creates for git worktrees.
 var worktreeSuffix = regexp.MustCompile(`[/-]worktree-.+$`)
 
+// knownRepoCorrections maps incorrect repository names to their correct values.
+// These are known data quality issues from historical sync data.
+var knownRepoCorrections = map[string]string{
+	"chaspy/myassistant-server": "chaspy/myassistant",
+	"studiuos/jp-Studious-JP":  "studiuos-jp/Studious_JP",
+}
+
 // repoFromRepository extracts the clean GitHub "owner/repo" from the repository field.
 // Handles worktree-suffixed names like "chaspy/agentctl/worktree-feat-xxx" -> "chaspy/agentctl".
+// Also applies known corrections for historically incorrect repository names.
 func repoFromRepository(repository string) string {
 	// Strip worktree suffix if present
 	cleaned := worktreeSuffix.ReplaceAllString(repository, "")
 	// Expect "owner/repo" format
 	parts := strings.Split(cleaned, "/")
+	var repo string
 	if len(parts) >= 2 {
-		return parts[0] + "/" + parts[1]
+		repo = parts[0] + "/" + parts[1]
 	}
-	return ""
+	if repo == "" {
+		return ""
+	}
+	// Apply known corrections
+	if corrected, ok := knownRepoCorrections[repo]; ok {
+		return corrected
+	}
+	return repo
+}
+
+// normalizeExistingRepoNames updates repository names in the DB for sessions
+// that have known incorrect names.
+func normalizeExistingRepoNames(db *sql.DB) {
+	for incorrect, correct := range knownRepoCorrections {
+		result, err := db.Exec(
+			"UPDATE sessions SET repository = ?, updated_at = CURRENT_TIMESTAMP WHERE repository = ?",
+			correct, incorrect)
+		if err != nil {
+			continue
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			fmt.Printf("Normalized %d session(s): %s -> %s\n", n, incorrect, correct)
+		}
+		// Also fix in archive table
+		db.Exec(
+			"UPDATE sessions_archive SET repository = ?, updated_at = CURRENT_TIMESTAMP WHERE repository = ?",
+			correct, incorrect)
+	}
+}
+
+// listMuxSessions returns the list of active mux session names.
+// Extracted as a variable for testability.
+var listMuxSessions = func() []string {
+	adapter, err := mux.Resolve("auto")
+	if err != nil {
+		return nil
+	}
+	sessions, err := adapter.ListSessions()
+	if err != nil {
+		return nil
+	}
+	return sessions
+}
+
+// markOrphanedSessionsDead marks sessions as dead when they are alive in DB
+// but have no corresponding mux session. This handles cases where a zellij
+// session was killed externally without going through agentctl.
+func markOrphanedSessionsDead(db *sql.DB) {
+	muxSessions := listMuxSessions()
+	if muxSessions == nil {
+		return // no mux available, skip check
+	}
+
+	muxSet := make(map[string]bool)
+	for _, s := range muxSessions {
+		muxSet[strings.ToLower(s)] = true
+	}
+
+	aliveSessions, err := store.ListSessionsByAlive(db, true)
+	if err != nil || len(aliveSessions) == 0 {
+		return
+	}
+
+	for _, s := range aliveSessions {
+		if s.ZellijSession == "" {
+			continue
+		}
+		if !muxSet[strings.ToLower(s.ZellijSession)] {
+			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+			fmt.Printf("Marked orphaned session as dead: %s (zellij session %q not found)\n", s.ID, s.ZellijSession)
+		}
+	}
 }
 
 // lookupPRURL uses gh CLI to find the PR URL for a given branch and repo.

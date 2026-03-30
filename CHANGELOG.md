@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.18] - 2026-03-30
+
+### Fixed
+
+- Repo name normalization: known incorrect names (e.g. `chaspy/myassistant-server`, `studiuos/jp-Studious-JP`) are corrected during sync and in existing DB records
+- PR URL lookup now always executes on first encounter (negative cache only applies after first check)
+- Orphaned sessions (alive in DB but no corresponding mux session) are marked as dead during sync
+- Added `ListSessionsByAlive` store query for alive-status filtering
+
 ## [0.2.17] - 2026-03-30
 
 ### Fixed
