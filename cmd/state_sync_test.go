@@ -216,25 +216,89 @@ func TestValidateAliveWithMux(t *testing.T) {
 
 	// Session with zellij_session that exists in mux -> alive
 	s1 := provider.SessionInfo{Agent: "claude", Repository: "a/b", SessionID: "s1"}
-	if !validateAliveWithMux(db, s1, muxSet) {
+	alive, zs := validateAliveWithMux(db, s1, muxSet)
+	if !alive {
 		t.Error("s1 should be alive (zellij session exists in mux)")
+	}
+	if zs != "a-b" {
+		t.Errorf("s1 zellij_session = %q, want %q", zs, "a-b")
 	}
 
 	// Session without zellij_session -> not alive
 	s2 := provider.SessionInfo{Agent: "claude", Repository: "c/d", SessionID: "s2"}
-	if validateAliveWithMux(db, s2, muxSet) {
+	alive, _ = validateAliveWithMux(db, s2, muxSet)
+	if alive {
 		t.Error("s2 should not be alive (no zellij_session)")
 	}
 
 	// Session not in DB -> not alive
 	s3 := provider.SessionInfo{Agent: "claude", Repository: "x/y", SessionID: "s99"}
-	if validateAliveWithMux(db, s3, muxSet) {
+	alive, _ = validateAliveWithMux(db, s3, muxSet)
+	if alive {
 		t.Error("s3 should not be alive (not in DB)")
 	}
 
 	// nil muxSet (no mux available) -> fall back to true
-	if !validateAliveWithMux(db, s1, nil) {
+	alive, _ = validateAliveWithMux(db, s1, nil)
+	if !alive {
 		t.Error("should return true when muxSet is nil")
+	}
+}
+
+func TestInferZellijSession(t *testing.T) {
+	muxSet := map[string]bool{
+		"agentctl":                    true,
+		"agentctl-fix-sync":          true,
+		"myassistant":                true,
+		"myassistant-fix-tts-bug":    true,
+	}
+
+	tests := []struct {
+		cwd  string
+		want string
+	}{
+		// Non-worktree
+		{"/Users/chaspy/go/src/github.com/chaspy/agentctl", "agentctl"},
+		{"/Users/chaspy/go/src/github.com/chaspy/myassistant", "myassistant"},
+		// Worktree
+		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-fix-sync", "agentctl-fix-sync"},
+		{"/Users/chaspy/go/src/github.com/chaspy/myassistant/worktree-fix-tts-bug", "myassistant-fix-tts-bug"},
+		// Not in mux -> empty
+		{"/Users/chaspy/go/src/github.com/chaspy/unknown-repo", ""},
+		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-unknown-branch", ""},
+		// Empty CWD
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := inferZellijSession(tt.cwd, muxSet)
+		if got != tt.want {
+			t.Errorf("inferZellijSession(%q) = %q, want %q", tt.cwd, got, tt.want)
+		}
+	}
+}
+
+func TestValidateAliveWithMux_InferFromCWD(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Session NOT in DB yet, but CWD matches a mux session
+	muxSet := map[string]bool{"myrepo-fix-bug": true}
+
+	s := provider.SessionInfo{
+		Agent:      "claude",
+		Repository: "owner/myrepo",
+		SessionID:  "new-session-id",
+		CWD:        "/Users/chaspy/go/src/github.com/owner/myrepo/worktree-fix-bug",
+	}
+	alive, zs := validateAliveWithMux(db, s, muxSet)
+	if !alive {
+		t.Error("should be alive (inferred from CWD)")
+	}
+	if zs != "myrepo-fix-bug" {
+		t.Errorf("zellij_session = %q, want %q", zs, "myrepo-fix-bug")
 	}
 }
 

@@ -134,12 +134,11 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			alive = process.IsAliveForCWD(codexProcs, s.CWD)
 		}
 
-		// Validate alive against actual mux sessions:
-		// Only allow alive=true if the session has a known zellij_session
-		// that exists in the mux session list. This prevents ghost sessions
-		// from JSONL files that have no corresponding mux session.
+		// Validate alive against actual mux sessions and infer zellij_session.
+		// This prevents ghost sessions from JSONL files that have no corresponding mux session.
+		zellijSession := ""
 		if alive {
-			alive = validateAliveWithMux(db, s, muxSessionSet)
+			alive, zellijSession = validateAliveWithMux(db, s, muxSessionSet)
 		}
 
 		statusMsg := s.LastFullMessage
@@ -163,19 +162,20 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		scannedIDs = append(scannedIDs, id)
 
 		if err := store.UpsertSession(db, &store.Session{
-			ID:          id,
-			Agent:       string(s.Agent),
-			Repository:  repoName,
-			SessionID:   s.SessionID,
-			CWD:         s.CWD,
-			GitBranch:   s.GitBranch,
-			Status:      status,
-			Alive:       alive,
-			LastMessage: s.LastMessage,
-			LastRole:    s.LastRole,
-			LastActive:  s.ModTime,
-			Role:        role,
-			IsLoop:      loopCWDs[s.CWD],
+			ID:            id,
+			Agent:         string(s.Agent),
+			Repository:    repoName,
+			SessionID:     s.SessionID,
+			CWD:           s.CWD,
+			GitBranch:     s.GitBranch,
+			ZellijSession: zellijSession,
+			Status:        status,
+			Alive:         alive,
+			LastMessage:   s.LastMessage,
+			LastRole:      s.LastRole,
+			LastActive:    s.ModTime,
+			Role:          role,
+			IsLoop:        loopCWDs[s.CWD],
 		}); err != nil {
 			fmt.Printf("warning: could not upsert session %s: %v\n", id, err)
 			continue
@@ -444,6 +444,48 @@ func normalizeExistingRepoNames(db *sql.DB) {
 	}
 }
 
+// inferZellijSession derives the expected zellij session name from a CWD path
+// by matching spawn's naming convention, then checks if it exists in the mux session list.
+// Returns the matched session name or "".
+//
+// Spawn naming convention:
+//   - /path/to/repo                          -> "repo"
+//   - /path/to/repo/worktree-fix-bug         -> "repo-fix-bug"
+func inferZellijSession(cwd string, muxSet map[string]bool) string {
+	if cwd == "" || muxSet == nil {
+		return ""
+	}
+
+	// Determine repo base name and optional worktree branch
+	parts := strings.Split(strings.TrimRight(cwd, "/"), "/")
+	if len(parts) == 0 {
+		return ""
+	}
+
+	lastPart := parts[len(parts)-1]
+
+	// Check if last part is a worktree directory (worktree-<branch>)
+	if strings.HasPrefix(lastPart, "worktree-") && len(parts) >= 2 {
+		repoBase := parts[len(parts)-2]
+		branch := strings.TrimPrefix(lastPart, "worktree-")
+		candidate := repoBase + "-" + branch
+		if muxSet[strings.ToLower(candidate)] {
+			return candidate
+		}
+		// Also try exact case match
+		if muxSet[candidate] {
+			return candidate
+		}
+	}
+
+	// Non-worktree: session name = directory name
+	if muxSet[strings.ToLower(lastPart)] {
+		return lastPart
+	}
+
+	return ""
+}
+
 // buildMuxSessionSet returns a set of lowercased mux session names, or nil if mux unavailable.
 func buildMuxSessionSet() map[string]bool {
 	sessions := listMuxSessions()
@@ -459,21 +501,32 @@ func buildMuxSessionSet() map[string]bool {
 
 // validateAliveWithMux checks whether a session should be considered alive
 // by verifying it has a zellij_session that exists in the mux session list.
-// Sessions without a zellij_session (not spawned via agentctl) are not considered alive.
-func validateAliveWithMux(db *sql.DB, s provider.SessionInfo, muxSet map[string]bool) bool {
+// If no zellij_session is stored, tries to infer one from CWD.
+// Returns (alive bool, zellijSession string to set on the record).
+func validateAliveWithMux(db *sql.DB, s provider.SessionInfo, muxSet map[string]bool) (bool, string) {
 	if muxSet == nil {
 		// No mux available; fall back to process-only detection
-		return true
+		return true, ""
 	}
+
 	// Check if DB already has a zellij_session for this session
 	id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
 	existing, err := store.GetSession(db, id)
-	if err != nil || existing.ZellijSession == "" {
-		// No zellij_session known -> not alive
-		return false
+	if err == nil && existing.ZellijSession != "" {
+		// Verify the zellij session actually exists
+		if muxSet[strings.ToLower(existing.ZellijSession)] {
+			return true, existing.ZellijSession
+		}
+		return false, existing.ZellijSession
 	}
-	// Verify the zellij session actually exists
-	return muxSet[strings.ToLower(existing.ZellijSession)]
+
+	// No zellij_session in DB — try to infer from CWD
+	if inferred := inferZellijSession(s.CWD, muxSet); inferred != "" {
+		return true, inferred
+	}
+
+	// No zellij_session known or inferable -> not alive
+	return false, ""
 }
 
 // listMuxSessions returns the list of active mux session names.

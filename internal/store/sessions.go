@@ -45,7 +45,8 @@ func UpsertSession(db *sql.DB, s *Session) error {
 		ON CONFLICT(id) DO UPDATE SET
 			agent=excluded.agent, repository=excluded.repository,
 			session_id=excluded.session_id, cwd=excluded.cwd,
-			git_branch=excluded.git_branch, zellij_session=excluded.zellij_session,
+			git_branch=excluded.git_branch,
+			zellij_session=CASE WHEN excluded.zellij_session != '' THEN excluded.zellij_session ELSE sessions.zellij_session END,
 			status=excluded.status, blocked_reason=excluded.blocked_reason,
 			alive=excluded.alive,
 			last_message=excluded.last_message, last_role=excluded.last_role,

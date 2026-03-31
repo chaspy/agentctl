@@ -283,6 +283,9 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	claudeProcs, _ := process.FindClaudeProcesses()
 	codexProcs, _ := process.FindCodexProcesses()
 
+	// Build mux session set for alive validation
+	muxSet := buildWebMuxSessionSet()
+
 	var scannedIDs []string
 	var count int
 	for _, sess := range sessions {
@@ -294,12 +297,25 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			alive = process.IsAliveForCWD(codexProcs, sess.CWD)
 		}
 
-		// Don't mark as alive unless the session has a known zellij_session in DB
-		if alive {
+		// Validate alive against actual mux sessions and infer zellij_session
+		zellijSession := ""
+		if alive && muxSet != nil {
 			id := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Repository, sess.SessionID)
 			existing, err := store.GetSession(s.db, id)
-			if err != nil || existing.ZellijSession == "" {
-				alive = false
+			if err == nil && existing.ZellijSession != "" {
+				if muxSet[strings.ToLower(existing.ZellijSession)] {
+					zellijSession = existing.ZellijSession
+				} else {
+					alive = false
+					zellijSession = existing.ZellijSession
+				}
+			} else {
+				// Try to infer zellij session from CWD
+				if inferred := inferWebZellijSession(sess.CWD, muxSet); inferred != "" {
+					zellijSession = inferred
+				} else {
+					alive = false
+				}
 			}
 		}
 
@@ -317,19 +333,20 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		scannedIDs = append(scannedIDs, id)
 
 		_ = store.UpsertSession(s.db, &store.Session{
-			ID:          id,
-			Agent:       string(sess.Agent),
-			Repository:  sess.Repository,
-			SessionID:   sess.SessionID,
-			CWD:         sess.CWD,
-			GitBranch:   sess.GitBranch,
-			Status:      status,
-			Alive:       alive,
-			LastMessage: sess.LastMessage,
-			LastRole:    sess.LastRole,
-			LastActive:  sess.ModTime,
-			Role:        role,
-			TaskSummary: "",
+			ID:            id,
+			Agent:         string(sess.Agent),
+			Repository:    sess.Repository,
+			SessionID:     sess.SessionID,
+			CWD:           sess.CWD,
+			GitBranch:     sess.GitBranch,
+			ZellijSession: zellijSession,
+			Status:        status,
+			Alive:         alive,
+			LastMessage:   sess.LastMessage,
+			LastRole:      sess.LastRole,
+			LastActive:    sess.ModTime,
+			Role:          role,
+			TaskSummary:   "",
 		})
 		count++
 	}
@@ -453,6 +470,47 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, messages)
+}
+
+// buildWebMuxSessionSet returns a set of lowercased mux session names.
+func buildWebMuxSessionSet() map[string]bool {
+	out, err := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
+	if err != nil {
+		return nil
+	}
+	lines := splitLines(string(out))
+	if len(lines) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(lines))
+	for _, l := range lines {
+		set[strings.ToLower(l)] = true
+	}
+	return set
+}
+
+// inferWebZellijSession derives the expected zellij session name from a CWD path.
+func inferWebZellijSession(cwd string, muxSet map[string]bool) string {
+	if cwd == "" || muxSet == nil {
+		return ""
+	}
+	parts := strings.Split(strings.TrimRight(cwd, "/"), "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	lastPart := parts[len(parts)-1]
+	if strings.HasPrefix(lastPart, "worktree-") && len(parts) >= 2 {
+		repoBase := parts[len(parts)-2]
+		branch := strings.TrimPrefix(lastPart, "worktree-")
+		candidate := repoBase + "-" + branch
+		if muxSet[strings.ToLower(candidate)] {
+			return candidate
+		}
+	}
+	if muxSet[strings.ToLower(lastPart)] {
+		return lastPart
+	}
+	return ""
 }
 
 func splitLines(s string) []string {

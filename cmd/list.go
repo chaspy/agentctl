@@ -194,6 +194,9 @@ func runSyncToDB() error {
 		}
 	}
 
+	// Build mux session set for alive validation and zellij_session inference
+	muxSessionSet := buildMuxSessionSet()
+
 	var scannedIDs []string
 	for _, s := range sessions {
 		alive := false
@@ -204,13 +207,10 @@ func runSyncToDB() error {
 			alive = process.IsAliveForCWD(codexProcs, s.CWD)
 		}
 
-		// Don't mark as alive unless the session has a known zellij_session in DB
+		// Validate alive against actual mux sessions and infer zellij_session
+		zellijSession := ""
 		if alive {
-			id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
-			existing, err := store.GetSession(db, id)
-			if err != nil || existing.ZellijSession == "" {
-				alive = false
-			}
+			alive, zellijSession = validateAliveWithMux(db, s, muxSessionSet)
 		}
 
 		statusMsg := s.LastFullMessage
@@ -236,6 +236,7 @@ func runSyncToDB() error {
 			SessionID:     s.SessionID,
 			CWD:           s.CWD,
 			GitBranch:     s.GitBranch,
+			ZellijSession: zellijSession,
 			Status:        status,
 			BlockedReason: blockedReason,
 			Alive:         alive,
