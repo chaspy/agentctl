@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.18] - 2026-03-31
+
+### Fixed
+
+- **Ghost session prevention**: Sessions without a `zellij_session` are no longer marked `alive=true` during sync (prevents 1000+ ghost records from JSONL scan)
+- **Alive validation with mux**: All 3 sync paths (state sync, list --sync, web /api/sync) now cross-check alive status against actual mux session list
+- **Orphan cleanup**: `markOrphanedSessionsDead` now also marks sessions without `zellij_session` as dead (ghost sessions)
+- **Preview worktree filtering**: CWD-based `worktree-preview-*` filter added as defense in depth alongside existing scanner filter
+- Repo name normalization: known incorrect names (e.g. `chaspy/myassistant-server`, `studiuos/jp-Studious-JP`) are corrected during sync and in existing DB records
+- PR URL lookup now always executes on first encounter (negative cache only applies after first check)
+- Added `ListSessionsByAlive` store query for alive-status filtering
+
 ## [0.2.17] - 2026-03-30
 
 ### Fixed

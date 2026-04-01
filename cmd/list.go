@@ -194,6 +194,9 @@ func runSyncToDB() error {
 		}
 	}
 
+	// Build mux session set for alive validation and zellij_session inference
+	muxSessionSet := buildMuxSessionSet()
+
 	var scannedIDs []string
 	for _, s := range sessions {
 		alive := false
@@ -203,6 +206,13 @@ func runSyncToDB() error {
 		case provider.AgentCodex:
 			alive = process.IsAliveForCWD(codexProcs, s.CWD)
 		}
+
+		// Validate alive against actual mux sessions and infer zellij_session
+		zellijSession := ""
+		if alive {
+			alive, zellijSession = validateAliveWithMux(db, s, muxSessionSet)
+		}
+
 		statusMsg := s.LastFullMessage
 		if statusMsg == "" {
 			statusMsg = s.LastMessage
@@ -226,6 +236,7 @@ func runSyncToDB() error {
 			SessionID:     s.SessionID,
 			CWD:           s.CWD,
 			GitBranch:     s.GitBranch,
+			ZellijSession: zellijSession,
 			Status:        status,
 			BlockedReason: blockedReason,
 			Alive:         alive,

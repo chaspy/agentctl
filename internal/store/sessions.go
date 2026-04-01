@@ -45,7 +45,8 @@ func UpsertSession(db *sql.DB, s *Session) error {
 		ON CONFLICT(id) DO UPDATE SET
 			agent=excluded.agent, repository=excluded.repository,
 			session_id=excluded.session_id, cwd=excluded.cwd,
-			git_branch=excluded.git_branch, zellij_session=excluded.zellij_session,
+			git_branch=excluded.git_branch,
+			zellij_session=CASE WHEN excluded.zellij_session != '' THEN excluded.zellij_session ELSE sessions.zellij_session END,
 			status=excluded.status, blocked_reason=excluded.blocked_reason,
 			alive=excluded.alive,
 			last_message=excluded.last_message, last_role=excluded.last_role,
@@ -114,6 +115,18 @@ func ListSessionsByStatus(db *sql.DB, status string) ([]Session, error) {
 		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at
 		FROM sessions WHERE status = ? ORDER BY last_active DESC`, status)
+}
+
+// ListSessionsByAlive returns sessions filtered by alive status.
+func ListSessionsByAlive(db *sql.DB, alive bool) ([]Session, error) {
+	aliveInt := 0
+	if alive {
+		aliveInt = 1
+	}
+	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at
+		FROM sessions WHERE alive = ? ORDER BY last_active DESC`, aliveInt)
 }
 
 // ListAliveSessionsWithPR returns alive sessions that have a pr_url set.

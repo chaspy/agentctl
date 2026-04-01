@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/store"
 )
 
@@ -36,12 +37,268 @@ func TestRepoFromRepository(t *testing.T) {
 		{"owner/repo-name/worktree-fix-bug", "owner/repo-name"},
 		{"single", ""},
 		{"", ""},
+		// Known corrections
+		{"chaspy/myassistant-server", "chaspy/myassistant"},
+		{"studiuos/jp-Studious-JP", "studiuos-jp/Studious_JP"},
+		// Worktree + correction
+		{"chaspy/myassistant-server/worktree-fix-foo", "chaspy/myassistant"},
 	}
 	for _, tt := range tests {
 		got := repoFromRepository(tt.input)
 		if got != tt.want {
 			t.Errorf("repoFromRepository(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestNormalizeExistingRepoNames(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert sessions with incorrect repo names
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:chaspy/myassistant-server:s1", Agent: "claude",
+		Repository: "chaspy/myassistant-server", SessionID: "s1",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:studiuos/jp-Studious-JP:s2", Agent: "claude",
+		Repository: "studiuos/jp-Studious-JP", SessionID: "s2",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+	// Correct repo name should not be changed
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:chaspy/agentctl:s3", Agent: "claude",
+		Repository: "chaspy/agentctl", SessionID: "s3",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+
+	normalizeExistingRepoNames(db)
+
+	s1, err := store.GetSession(db, "claude:chaspy/myassistant-server:s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s1.Repository != "chaspy/myassistant" {
+		t.Errorf("s1 repository = %q, want %q", s1.Repository, "chaspy/myassistant")
+	}
+
+	s2, err := store.GetSession(db, "claude:studiuos/jp-Studious-JP:s2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Repository != "studiuos-jp/Studious_JP" {
+		t.Errorf("s2 repository = %q, want %q", s2.Repository, "studiuos-jp/Studious_JP")
+	}
+
+	s3, err := store.GetSession(db, "claude:chaspy/agentctl:s3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s3.Repository != "chaspy/agentctl" {
+		t.Errorf("s3 repository = %q, want %q", s3.Repository, "chaspy/agentctl")
+	}
+}
+
+func TestMarkOrphanedSessionsDead(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Alive session with zellij session that exists
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+	// Alive session with zellij session that does NOT exist
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:c/d:s2", Agent: "claude", Repository: "c/d", SessionID: "s2",
+		Status: "active", Alive: true, ZellijSession: "c-d",
+		LastActive: time.Now(),
+	})
+	// Alive session without zellij session (ghost — should be marked dead)
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:e/f:s3", Agent: "claude", Repository: "e/f", SessionID: "s3",
+		Status: "active", Alive: true,
+		LastActive: time.Now(),
+	})
+
+	// Mock listMuxSessions to return only "a-b"
+	orig := listMuxSessions
+	listMuxSessions = func() []string {
+		return []string{"a-b"}
+	}
+	defer func() { listMuxSessions = orig }()
+
+	markOrphanedSessionsDead(db)
+
+	// s1 should still be alive (zellij session exists)
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if !s1.Alive {
+		t.Error("s1 should still be alive")
+	}
+
+	// s2 should be dead (zellij session not found)
+	s2, _ := store.GetSession(db, "claude:c/d:s2")
+	if s2.Alive {
+		t.Error("s2 should be dead (orphaned)")
+	}
+	if s2.Status != "dead" {
+		t.Errorf("s2 status = %q, want %q", s2.Status, "dead")
+	}
+
+	// s3 should be dead (ghost: no zellij session at all)
+	s3, _ := store.GetSession(db, "claude:e/f:s3")
+	if s3.Alive {
+		t.Error("s3 should be dead (ghost: no zellij session)")
+	}
+	if s3.Status != "dead" {
+		t.Errorf("s3 status = %q, want %q", s3.Status, "dead")
+	}
+}
+
+func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+
+	// Mock listMuxSessions to return nil (no mux available)
+	orig := listMuxSessions
+	listMuxSessions = func() []string {
+		return nil
+	}
+	defer func() { listMuxSessions = orig }()
+
+	markOrphanedSessionsDead(db)
+
+	// Should not change anything when mux is unavailable
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if !s1.Alive {
+		t.Error("s1 should still be alive when mux is unavailable")
+	}
+}
+
+func TestValidateAliveWithMux(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Session with zellij_session set
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+	// Session without zellij_session
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:c/d:s2", Agent: "claude", Repository: "c/d", SessionID: "s2",
+		Status: "active", Alive: true,
+		LastActive: time.Now(),
+	})
+
+	muxSet := map[string]bool{"a-b": true}
+
+	// Session with zellij_session that exists in mux -> alive
+	s1 := provider.SessionInfo{Agent: "claude", Repository: "a/b", SessionID: "s1"}
+	alive, zs := validateAliveWithMux(db, s1, muxSet)
+	if !alive {
+		t.Error("s1 should be alive (zellij session exists in mux)")
+	}
+	if zs != "a-b" {
+		t.Errorf("s1 zellij_session = %q, want %q", zs, "a-b")
+	}
+
+	// Session without zellij_session -> not alive
+	s2 := provider.SessionInfo{Agent: "claude", Repository: "c/d", SessionID: "s2"}
+	alive, _ = validateAliveWithMux(db, s2, muxSet)
+	if alive {
+		t.Error("s2 should not be alive (no zellij_session)")
+	}
+
+	// Session not in DB -> not alive
+	s3 := provider.SessionInfo{Agent: "claude", Repository: "x/y", SessionID: "s99"}
+	alive, _ = validateAliveWithMux(db, s3, muxSet)
+	if alive {
+		t.Error("s3 should not be alive (not in DB)")
+	}
+
+	// nil muxSet (no mux available) -> fall back to true
+	alive, _ = validateAliveWithMux(db, s1, nil)
+	if !alive {
+		t.Error("should return true when muxSet is nil")
+	}
+}
+
+func TestInferZellijSession(t *testing.T) {
+	muxSet := map[string]bool{
+		"agentctl":                    true,
+		"agentctl-fix-sync":          true,
+		"myassistant":                true,
+		"myassistant-fix-tts-bug":    true,
+	}
+
+	tests := []struct {
+		cwd  string
+		want string
+	}{
+		// Non-worktree
+		{"/Users/chaspy/go/src/github.com/chaspy/agentctl", "agentctl"},
+		{"/Users/chaspy/go/src/github.com/chaspy/myassistant", "myassistant"},
+		// Worktree
+		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-fix-sync", "agentctl-fix-sync"},
+		{"/Users/chaspy/go/src/github.com/chaspy/myassistant/worktree-fix-tts-bug", "myassistant-fix-tts-bug"},
+		// Not in mux -> empty
+		{"/Users/chaspy/go/src/github.com/chaspy/unknown-repo", ""},
+		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-unknown-branch", ""},
+		// Empty CWD
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := inferZellijSession(tt.cwd, muxSet)
+		if got != tt.want {
+			t.Errorf("inferZellijSession(%q) = %q, want %q", tt.cwd, got, tt.want)
+		}
+	}
+}
+
+func TestValidateAliveWithMux_InferFromCWD(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Session NOT in DB yet, but CWD matches a mux session
+	muxSet := map[string]bool{"myrepo-fix-bug": true}
+
+	s := provider.SessionInfo{
+		Agent:      "claude",
+		Repository: "owner/myrepo",
+		SessionID:  "new-session-id",
+		CWD:        "/Users/chaspy/go/src/github.com/owner/myrepo/worktree-fix-bug",
+	}
+	alive, zs := validateAliveWithMux(db, s, muxSet)
+	if !alive {
+		t.Error("should be alive (inferred from CWD)")
+	}
+	if zs != "myrepo-fix-bug" {
+		t.Errorf("zellij_session = %q, want %q", zs, "myrepo-fix-bug")
 	}
 }
 
