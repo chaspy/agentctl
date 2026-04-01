@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.19] - 2026-04-02
+
+### Fixed
+
+- **Spawn DB registration**: Sessions are now immediately registered in the DB at spawn time with `zellij_session`, eliminating the need for CWD-based inference during sync
+- **Ghost session prevention**: `validateAliveWithMux` now returns `false` when mux session list is unavailable (`muxSet==nil`), preventing ghost session creation
+
 ## [0.2.18] - 2026-03-31
 
 ### Fixed

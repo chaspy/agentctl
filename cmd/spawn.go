@@ -160,7 +160,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Spawned session %q in %s\n", sessionName, workDir)
 
-	// Log spawn to database (fire-and-forget)
+	// Log spawn to database and register session immediately (fire-and-forget)
 	if db, err := store.Open(""); err == nil {
 		defer db.Close()
 		_ = store.LogAction(db, &store.Action{
@@ -168,6 +168,23 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			ActionType: "spawn",
 			Content:    fmt.Sprintf("Spawned %s in %s (branch: %s)", sessionName, workDir, spawnBranch),
 		})
+
+		// Register session in DB so sync can find it by zellij_session
+		sessionID := fmt.Sprintf("claude:%s:zellij-%s", repo.ShortName, sessionName)
+		_ = store.UpsertSession(db, &store.Session{
+			ID:            sessionID,
+			Agent:         "claude",
+			Repository:    repo.ShortName,
+			SessionID:     "zellij-" + sessionName,
+			CWD:           workDir,
+			GitBranch:     spawnBranch,
+			ZellijSession: sessionName,
+			Status:        "active",
+			Alive:         true,
+			Role:          "worker",
+			IsLoop:        spawnLoop,
+		})
+
 		if spawnLoop {
 			_ = store.SetState(db, "loop:cwd:"+workDir, "1")
 		}

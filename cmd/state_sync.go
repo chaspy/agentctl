@@ -505,8 +505,8 @@ func buildMuxSessionSet() map[string]bool {
 // Returns (alive bool, zellijSession string to set on the record).
 func validateAliveWithMux(db *sql.DB, s provider.SessionInfo, muxSet map[string]bool) (bool, string) {
 	if muxSet == nil {
-		// No mux available; fall back to process-only detection
-		return true, ""
+		// No mux available; cannot validate — treat as not alive
+		return false, ""
 	}
 
 	// Check if DB already has a zellij_session for this session
