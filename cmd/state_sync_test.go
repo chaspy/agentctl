@@ -238,10 +238,10 @@ func TestValidateAliveWithMux(t *testing.T) {
 		t.Error("s3 should not be alive (not in DB)")
 	}
 
-	// nil muxSet (no mux available) -> fall back to true
+	// nil muxSet (no mux available) -> treat as not alive
 	alive, _ = validateAliveWithMux(db, s1, nil)
-	if !alive {
-		t.Error("should return true when muxSet is nil")
+	if alive {
+		t.Error("should return false when muxSet is nil")
 	}
 }
 
