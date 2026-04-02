@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/chaspy/agentctl/internal/mux"
-	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
 	"github.com/chaspy/agentctl/internal/store"
@@ -54,16 +53,16 @@ func runStateSync(cmd *cobra.Command, args []string) error {
 }
 
 // syncSessionsToDB performs a two-stage sync:
-//   Stage 1 (Zellij Truth): Use zellij sessions as the source of truth for alive status.
-//   Stage 2 (JSONL Enrichment): Read JSONL only for sessions already in DB, updating metadata only.
-// New sessions are NOT created from JSONL — they must be registered via spawn.
+//   Stage 1 (Zellij Truth): Sync alive status from zellij sessions.
+//     - DB + zellij = alive=1
+//     - DB + no zellij = alive=0
+//     - no DB + zellij = new record alive=1
+//   Stage 2 (JSONL Enrichment): Read JSONL only for alive DB sessions, updating metadata only.
+// New sessions are NOT created from JSONL — only from zellij session list.
 func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSummaries bool) (int, error) {
 	// ── Stage 1: Zellij Truth ──
-	// Mark DB sessions dead if their zellij session no longer exists.
-	markOrphanedSessionsDead(db)
-
-	// Build mux session set
-	muxSessionSet := buildMuxSessionSet()
+	// Sync alive status: zellij is the runtime truth, DB is the persistent record.
+	syncAliveFromZellij(db)
 
 	// ── Stage 2: JSONL Enrichment ──
 	// Scan JSONL files, but only use them to enrich existing DB sessions.
@@ -93,8 +92,6 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		}
 	}
 
-	claudeProcs, _ := process.FindClaudeProcesses()
-	codexProcs, _ := process.FindCodexProcesses()
 	managerName, _ := store.GetState(db, "manager_session_name")
 
 	// Build sets from state KV store
@@ -137,7 +134,8 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		}
 	}
 
-	// Enrich existing DB sessions with JSONL metadata
+	// Enrich existing alive DB sessions with JSONL metadata.
+	// alive status was already set by Stage 1 — do not change it here.
 	aliveSessions, _ := store.ListSessionsByAlive(db, true)
 	var enriched int
 	for _, dbSess := range aliveSessions {
@@ -146,34 +144,11 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			continue
 		}
 
-		// Determine alive status from process list
-		alive := false
-		switch provider.Agent(dbSess.Agent) {
-		case provider.AgentClaude:
-			alive = process.IsAliveForCWD(claudeProcs, dbSess.CWD)
-		case provider.AgentCodex:
-			alive = process.IsAliveForCWD(codexProcs, dbSess.CWD)
-		}
-
-		// Validate alive against mux
-		zellijSession := dbSess.ZellijSession
-		if alive && muxSessionSet != nil {
-			if zellijSession != "" {
-				if !muxSessionSet[strings.ToLower(zellijSession)] {
-					alive = false
-				}
-			} else {
-				alive = false
-			}
-		} else if alive && muxSessionSet == nil {
-			alive = false
-		}
-
 		statusMsg := jsonl.LastFullMessage
 		if statusMsg == "" {
 			statusMsg = jsonl.LastMessage
 		}
-		status := session.DetectStatus(statusMsg, jsonl.LastRole, alive, jsonl.ErrorType, jsonl.IsAPIError)
+		status := session.DetectStatus(statusMsg, jsonl.LastRole, dbSess.Alive, jsonl.ErrorType, jsonl.IsAPIError)
 
 		role := dbSess.Role
 		if role == "" {
@@ -190,9 +165,9 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			SessionID:     dbSess.SessionID,
 			CWD:           dbSess.CWD,
 			GitBranch:     jsonl.GitBranch,
-			ZellijSession: zellijSession,
+			ZellijSession: dbSess.ZellijSession,
 			Status:        status,
-			Alive:         alive,
+			Alive:         dbSess.Alive,
 			LastMessage:   jsonl.LastMessage,
 			LastRole:      jsonl.LastRole,
 			LastActive:    jsonl.ModTime,
@@ -491,49 +466,6 @@ func inferZellijSession(cwd string, muxSet map[string]bool) string {
 	return ""
 }
 
-// buildMuxSessionSet returns a set of lowercased mux session names, or nil if mux unavailable.
-func buildMuxSessionSet() map[string]bool {
-	sessions := listMuxSessions()
-	if sessions == nil {
-		return nil
-	}
-	set := make(map[string]bool, len(sessions))
-	for _, s := range sessions {
-		set[strings.ToLower(s)] = true
-	}
-	return set
-}
-
-// validateAliveWithMux checks whether a session should be considered alive
-// by verifying it has a zellij_session that exists in the mux session list.
-// If no zellij_session is stored, tries to infer one from CWD.
-// Returns (alive bool, zellijSession string to set on the record).
-func validateAliveWithMux(db *sql.DB, s provider.SessionInfo, muxSet map[string]bool) (bool, string) {
-	if muxSet == nil {
-		// No mux available; cannot validate — treat as not alive
-		return false, ""
-	}
-
-	// Check if DB already has a zellij_session for this session
-	id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
-	existing, err := store.GetSession(db, id)
-	if err == nil && existing.ZellijSession != "" {
-		// Verify the zellij session actually exists
-		if muxSet[strings.ToLower(existing.ZellijSession)] {
-			return true, existing.ZellijSession
-		}
-		return false, existing.ZellijSession
-	}
-
-	// No zellij_session in DB — try to infer from CWD
-	if inferred := inferZellijSession(s.CWD, muxSet); inferred != "" {
-		return true, inferred
-	}
-
-	// No zellij_session known or inferable -> not alive
-	return false, ""
-}
-
 // listMuxSessions returns the list of active mux session names.
 // Extracted as a variable for testability.
 var listMuxSessions = func() []string {
@@ -548,11 +480,12 @@ var listMuxSessions = func() []string {
 	return sessions
 }
 
-// markOrphanedSessionsDead marks sessions as dead when they are alive in DB
-// but have no corresponding mux session. This handles cases where a zellij
-// session was killed externally without going through agentctl.
-// Sessions without a zellij_session are also marked dead (ghost sessions).
-func markOrphanedSessionsDead(db *sql.DB) {
+// syncAliveFromZellij syncs alive status using zellij as the runtime truth.
+//   - DB + zellij → alive=1
+//   - DB + no zellij → alive=0 (record preserved for respawn)
+//   - no DB + zellij → new record alive=1 (Director, manual sessions)
+//   - JSONL is NOT used for alive determination.
+func syncAliveFromZellij(db *sql.DB) {
 	muxSessions := listMuxSessions()
 	if muxSessions == nil {
 		return // no mux available, skip check
@@ -563,21 +496,64 @@ func markOrphanedSessionsDead(db *sql.DB) {
 		muxSet[strings.ToLower(s)] = true
 	}
 
+	// Step 1: DB sessions that are alive but zellij session is gone → alive=0
 	aliveSessions, err := store.ListSessionsByAlive(db, true)
-	if err != nil || len(aliveSessions) == 0 {
-		return
+	if err == nil {
+		for _, s := range aliveSessions {
+			if s.ZellijSession == "" {
+				// No zellij_session → try to infer from CWD
+				if inferred := inferZellijSession(s.CWD, muxSet); inferred != "" {
+					db.Exec("UPDATE sessions SET zellij_session = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", inferred, s.ID)
+					continue // still alive, zellij session found
+				}
+				db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+				continue
+			}
+			if !muxSet[strings.ToLower(s.ZellijSession)] {
+				db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+				fmt.Printf("Marked session as dead: %s (zellij session %q not found)\n", s.ID, s.ZellijSession)
+			}
+		}
 	}
 
-	for _, s := range aliveSessions {
-		if s.ZellijSession == "" {
-			// No zellij_session -> ghost session, mark dead
-			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
-			continue
+	// Step 2: DB sessions that are dead but zellij session came back → alive=1
+	deadSessions, err := store.ListSessionsByAlive(db, false)
+	if err == nil {
+		for _, s := range deadSessions {
+			if s.ZellijSession != "" && muxSet[strings.ToLower(s.ZellijSession)] {
+				db.Exec("UPDATE sessions SET alive = 1, status = 'idle', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+				fmt.Printf("Revived session: %s (zellij session %q found)\n", s.ID, s.ZellijSession)
+			}
 		}
-		if !muxSet[strings.ToLower(s.ZellijSession)] {
-			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
-			fmt.Printf("Marked orphaned session as dead: %s (zellij session %q not found)\n", s.ID, s.ZellijSession)
+	}
+
+	// Step 3: Zellij sessions not in DB → create new records
+	// Build set of known zellij session names (lowercased) from DB
+	allSessions, _ := store.ListSessionsByAlive(db, true)
+	deadAll, _ := store.ListSessionsByAlive(db, false)
+	dbZellijSet := make(map[string]bool)
+	for _, s := range append(allSessions, deadAll...) {
+		if s.ZellijSession != "" {
+			dbZellijSet[strings.ToLower(s.ZellijSession)] = true
 		}
+	}
+
+	for _, muxName := range muxSessions {
+		if dbZellijSet[strings.ToLower(muxName)] {
+			continue // already tracked in DB
+		}
+		// New zellij session not in DB — create a minimal record
+		id := fmt.Sprintf("claude::%s", muxName)
+		_ = store.UpsertSession(db, &store.Session{
+			ID:            id,
+			Agent:         "claude",
+			ZellijSession: muxName,
+			Status:        "idle",
+			Alive:         true,
+			LastActive:    time.Now(),
+			Role:          "worker",
+		})
+		fmt.Printf("Discovered new zellij session: %s\n", muxName)
 	}
 }
 

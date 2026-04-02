@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.22] - 2026-04-02
+
+### Fixed
+
+- **Zellij as single source of truth for alive**: Sync Stage 1 now fully derives alive status from `zellij list-sessions`
+  - DB + zellij → alive=1
+  - DB + no zellij → alive=0 (record preserved for respawn)
+  - no DB + zellij → new record alive=1 (Director, manual, respawn sessions)
+- **Revive dead sessions**: Sessions marked dead that reappear in zellij (e.g. after respawn) are automatically revived
+- **Removed process-based alive detection**: No longer uses `ps`/`lsof` CWD matching — zellij is the only runtime truth
+- **Removed `validateAliveWithMux` and `buildMuxSessionSet`**: Replaced by unified `syncAliveFromZellij`
+
 ## [0.2.21] - 2026-04-02
 
 ### Changed

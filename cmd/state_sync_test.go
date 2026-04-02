@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/store"
 )
 
@@ -103,7 +102,7 @@ func TestNormalizeExistingRepoNames(t *testing.T) {
 	}
 }
 
-func TestMarkOrphanedSessionsDead(t *testing.T) {
+func TestSyncAliveFromZellij_MarksDead(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -129,14 +128,13 @@ func TestMarkOrphanedSessionsDead(t *testing.T) {
 		LastActive: time.Now(),
 	})
 
-	// Mock listMuxSessions to return only "a-b"
 	orig := listMuxSessions
 	listMuxSessions = func() []string {
 		return []string{"a-b"}
 	}
 	defer func() { listMuxSessions = orig }()
 
-	markOrphanedSessionsDead(db)
+	syncAliveFromZellij(db)
 
 	// s1 should still be alive (zellij session exists)
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
@@ -163,7 +161,7 @@ func TestMarkOrphanedSessionsDead(t *testing.T) {
 	}
 }
 
-func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
+func TestSyncAliveFromZellij_NoMux(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -176,14 +174,13 @@ func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
 		LastActive: time.Now(),
 	})
 
-	// Mock listMuxSessions to return nil (no mux available)
 	orig := listMuxSessions
 	listMuxSessions = func() []string {
 		return nil
 	}
 	defer func() { listMuxSessions = orig }()
 
-	markOrphanedSessionsDead(db)
+	syncAliveFromZellij(db)
 
 	// Should not change anything when mux is unavailable
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
@@ -192,56 +189,110 @@ func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
 	}
 }
 
-func TestValidateAliveWithMux(t *testing.T) {
+func TestSyncAliveFromZellij_RevivesDead(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	// Session with zellij_session set
+	// Dead session whose zellij session came back (e.g. after respawn)
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "dead", Alive: false, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+
+	orig := listMuxSessions
+	listMuxSessions = func() []string {
+		return []string{"a-b"}
+	}
+	defer func() { listMuxSessions = orig }()
+
+	syncAliveFromZellij(db)
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if !s1.Alive {
+		t.Error("s1 should be revived (zellij session found)")
+	}
+	if s1.Status != "idle" {
+		t.Errorf("s1 status = %q, want %q", s1.Status, "idle")
+	}
+}
+
+func TestSyncAliveFromZellij_CreatesNewFromZellij(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No sessions in DB, but zellij has sessions
+	orig := listMuxSessions
+	listMuxSessions = func() []string {
+		return []string{"my-new-session", "director"}
+	}
+	defer func() { listMuxSessions = orig }()
+
+	syncAliveFromZellij(db)
+
+	// New sessions should be created
+	s1, err := store.GetSession(db, "claude::my-new-session")
+	if err != nil {
+		t.Fatalf("expected new session for my-new-session: %v", err)
+	}
+	if !s1.Alive {
+		t.Error("new session should be alive")
+	}
+	if s1.ZellijSession != "my-new-session" {
+		t.Errorf("zellij_session = %q, want %q", s1.ZellijSession, "my-new-session")
+	}
+
+	s2, err := store.GetSession(db, "claude::director")
+	if err != nil {
+		t.Fatalf("expected new session for director: %v", err)
+	}
+	if !s2.Alive {
+		t.Error("director session should be alive")
+	}
+}
+
+func TestSyncAliveFromZellij_DoesNotDuplicateExisting(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Existing session with zellij_session
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
 		Status: "active", Alive: true, ZellijSession: "a-b",
-		LastActive: time.Now(),
-	})
-	// Session without zellij_session
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude:c/d:s2", Agent: "claude", Repository: "c/d", SessionID: "s2",
-		Status: "active", Alive: true,
+		CWD: "/path/to/a/b",
 		LastActive: time.Now(),
 	})
 
-	muxSet := map[string]bool{"a-b": true}
-
-	// Session with zellij_session that exists in mux -> alive
-	s1 := provider.SessionInfo{Agent: "claude", Repository: "a/b", SessionID: "s1"}
-	alive, zs := validateAliveWithMux(db, s1, muxSet)
-	if !alive {
-		t.Error("s1 should be alive (zellij session exists in mux)")
+	orig := listMuxSessions
+	listMuxSessions = func() []string {
+		return []string{"a-b"}
 	}
-	if zs != "a-b" {
-		t.Errorf("s1 zellij_session = %q, want %q", zs, "a-b")
-	}
+	defer func() { listMuxSessions = orig }()
 
-	// Session without zellij_session -> not alive
-	s2 := provider.SessionInfo{Agent: "claude", Repository: "c/d", SessionID: "s2"}
-	alive, _ = validateAliveWithMux(db, s2, muxSet)
-	if alive {
-		t.Error("s2 should not be alive (no zellij_session)")
+	syncAliveFromZellij(db)
+
+	// Should NOT create a duplicate "claude::a-b" session
+	_, err = store.GetSession(db, "claude::a-b")
+	if err == nil {
+		t.Error("should not create duplicate session for already-tracked zellij session")
 	}
 
-	// Session not in DB -> not alive
-	s3 := provider.SessionInfo{Agent: "claude", Repository: "x/y", SessionID: "s99"}
-	alive, _ = validateAliveWithMux(db, s3, muxSet)
-	if alive {
-		t.Error("s3 should not be alive (not in DB)")
+	// Original session should still be alive with metadata preserved
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if !s1.Alive {
+		t.Error("existing session should still be alive")
 	}
-
-	// nil muxSet (no mux available) -> treat as not alive
-	alive, _ = validateAliveWithMux(db, s1, nil)
-	if alive {
-		t.Error("should return false when muxSet is nil")
+	if s1.Repository != "a/b" {
+		t.Errorf("repository should be preserved, got %q", s1.Repository)
 	}
 }
 
@@ -274,31 +325,6 @@ func TestInferZellijSession(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("inferZellijSession(%q) = %q, want %q", tt.cwd, got, tt.want)
 		}
-	}
-}
-
-func TestValidateAliveWithMux_InferFromCWD(t *testing.T) {
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	// Session NOT in DB yet, but CWD matches a mux session
-	muxSet := map[string]bool{"myrepo-fix-bug": true}
-
-	s := provider.SessionInfo{
-		Agent:      "claude",
-		Repository: "owner/myrepo",
-		SessionID:  "new-session-id",
-		CWD:        "/Users/chaspy/go/src/github.com/owner/myrepo/worktree-fix-bug",
-	}
-	alive, zs := validateAliveWithMux(db, s, muxSet)
-	if !alive {
-		t.Error("should be alive (inferred from CWD)")
-	}
-	if zs != "myrepo-fix-bug" {
-		t.Errorf("zellij_session = %q, want %q", zs, "myrepo-fix-bug")
 	}
 }
 
