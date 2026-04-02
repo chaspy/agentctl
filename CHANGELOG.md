@@ -1,11 +1,21 @@
 # Changelog
 
+## [0.2.24] - 2026-04-02
+
+### Changed
+
+- **lsof-based session enrichment**: Replaced filesystem-scanning heuristic (`inferCWDFromSessionName`) with deterministic lsof-based CWD detection
+  - Gets all running claude processes + CWDs via `lsof` (`process.FindClaudeProcesses`)
+  - Filters out CWDs already tracked in DB
+  - Matches untracked CWDs to sessions via `inferZellijSession` (CWD path → session name)
+  - No guessing — CWD comes from actual running processes
+
 ## [0.2.23] - 2026-04-02
 
 ### Added
 
-- **Enrich discovered sessions with metadata**: When sync discovers a new zellij session (or finds alive sessions with empty repository), `enrichSessionMetadata` populates CWD, repository, and git_branch automatically
-  - Infers CWD from zellij session name using spawn's naming convention (`repo` or `repo-branch` → worktree path)
+- **Enrich discovered sessions with metadata**: When sync discovers a new zellij session (or finds alive sessions with empty repository), `enrichAllEmptySessions` populates CWD, repository, and git_branch automatically
+  - Detects CWD from running claude processes via lsof
   - Runs `git remote get-url origin` for repository and `git branch --show-current` for branch
   - Supports both SSH and HTTPS remote URL formats
 
