@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.21] - 2026-04-02
+
+### Changed
+
+- **Two-stage sync architecture**: All 3 sync paths (`state sync`, `list --sync`, web `/api/sync`) now use a two-stage approach:
+  - Stage 1 (Zellij Truth): Mark DB sessions dead if their zellij session no longer exists
+  - Stage 2 (JSONL Enrichment): Only update metadata (LastMessage, GitBranch, status) for sessions already in DB
+- **No new sessions from JSONL**: JSONL full scan no longer creates new alive sessions — sessions must be registered via `spawn`
+- **Unified list --sync**: `list --sync` now delegates to `syncSessionsToDB` instead of duplicating the sync logic
+- Added `FindSessionByCWD` store helper for CWD-based session lookup
+
 ## [0.2.20] - 2026-04-02
 
 ### Added

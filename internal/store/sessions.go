@@ -209,6 +209,22 @@ func MarkStaleSessionsDead(db *sql.DB, scannedIDs []string) error {
 	return err
 }
 
+// FindSessionByCWD finds a session by exact CWD match.
+// Returns the first matching alive session, or any session if no alive one exists.
+func FindSessionByCWD(db *sql.DB, cwd string) (*Session, error) {
+	sessions, err := querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
+		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, created_at, updated_at
+		FROM sessions WHERE cwd = ? ORDER BY alive DESC, last_active DESC LIMIT 1`, cwd)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &sessions[0], nil
+}
+
 // FindSessionByRepository finds sessions whose repository contains the query (case-insensitive).
 func FindSessionByRepository(db *sql.DB, query string) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
