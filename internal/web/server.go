@@ -275,6 +275,24 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── Stage 1: Zellij Truth ──
+	// Mark DB sessions dead if their zellij session no longer exists.
+	muxSet := buildWebMuxSessionSet()
+	if muxSet != nil {
+		aliveSessions, _ := store.ListSessionsByAlive(s.db, true)
+		for _, sess := range aliveSessions {
+			if sess.ZellijSession == "" {
+				s.db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", sess.ID)
+				continue
+			}
+			if !muxSet[strings.ToLower(sess.ZellijSession)] {
+				s.db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", sess.ID)
+			}
+		}
+	}
+
+	// ── Stage 2: JSONL Enrichment ──
+	// Only enrich existing DB sessions — do NOT create new sessions from JSONL.
 	maxAge := 24 * time.Hour
 	sessions, _ := provider.ScanClaudeSessions(maxAge)
 	codexSessions, _ := provider.ScanCodexSessions(maxAge)
@@ -283,76 +301,72 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	claudeProcs, _ := process.FindClaudeProcesses()
 	codexProcs, _ := process.FindCodexProcesses()
 
-	// Build mux session set for alive validation
-	muxSet := buildWebMuxSessionSet()
-
-	var scannedIDs []string
-	var count int
+	// Build CWD -> JSONL index
+	jsonlByCWD := make(map[string]provider.SessionInfo)
 	for _, sess := range sessions {
-		alive := false
-		switch sess.Agent {
-		case provider.AgentClaude:
-			alive = process.IsAliveForCWD(claudeProcs, sess.CWD)
-		case provider.AgentCodex:
-			alive = process.IsAliveForCWD(codexProcs, sess.CWD)
-		}
-
-		// Validate alive against actual mux sessions and infer zellij_session
-		zellijSession := ""
-		if alive && muxSet != nil {
-			id := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Repository, sess.SessionID)
-			existing, err := store.GetSession(s.db, id)
-			if err == nil && existing.ZellijSession != "" {
-				if muxSet[strings.ToLower(existing.ZellijSession)] {
-					zellijSession = existing.ZellijSession
-				} else {
-					alive = false
-					zellijSession = existing.ZellijSession
-				}
-			} else {
-				// Try to infer zellij session from CWD
-				if inferred := inferWebZellijSession(sess.CWD, muxSet); inferred != "" {
-					zellijSession = inferred
-				} else {
-					alive = false
-				}
+		if sess.CWD != "" {
+			// Keep most recent per CWD
+			if existing, ok := jsonlByCWD[sess.CWD]; !ok || sess.ModTime.After(existing.ModTime) {
+				jsonlByCWD[sess.CWD] = sess
 			}
 		}
+	}
 
-		statusMsg := sess.LastFullMessage
-		if statusMsg == "" {
-			statusMsg = sess.LastMessage
+	// Enrich alive DB sessions with JSONL metadata
+	aliveSessions, _ := store.ListSessionsByAlive(s.db, true)
+	var count int
+	for _, dbSess := range aliveSessions {
+		jsonl, found := jsonlByCWD[dbSess.CWD]
+		if !found {
+			continue
 		}
-		status := session.DetectStatus(statusMsg, sess.LastRole, alive, sess.ErrorType, sess.IsAPIError)
 
-		// Role is "worker" by default; manager role is preserved in DB via UpsertSession's
-		// CASE expression when role='worker' is passed.
-		role := "worker"
+		alive := false
+		switch provider.Agent(dbSess.Agent) {
+		case provider.AgentClaude:
+			alive = process.IsAliveForCWD(claudeProcs, dbSess.CWD)
+		case provider.AgentCodex:
+			alive = process.IsAliveForCWD(codexProcs, dbSess.CWD)
+		}
 
-		id := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Repository, sess.SessionID)
-		scannedIDs = append(scannedIDs, id)
+		// Validate alive against mux
+		zellijSession := dbSess.ZellijSession
+		if alive && muxSet != nil {
+			if zellijSession == "" || !muxSet[strings.ToLower(zellijSession)] {
+				alive = false
+			}
+		} else if alive && muxSet == nil {
+			alive = false
+		}
+
+		statusMsg := jsonl.LastFullMessage
+		if statusMsg == "" {
+			statusMsg = jsonl.LastMessage
+		}
+		status := session.DetectStatus(statusMsg, jsonl.LastRole, alive, jsonl.ErrorType, jsonl.IsAPIError)
+
+		role := dbSess.Role
+		if role == "" {
+			role = "worker"
+		}
 
 		_ = store.UpsertSession(s.db, &store.Session{
-			ID:            id,
-			Agent:         string(sess.Agent),
-			Repository:    sess.Repository,
-			SessionID:     sess.SessionID,
-			CWD:           sess.CWD,
-			GitBranch:     sess.GitBranch,
+			ID:            dbSess.ID,
+			Agent:         dbSess.Agent,
+			Repository:    dbSess.Repository,
+			SessionID:     dbSess.SessionID,
+			CWD:           dbSess.CWD,
+			GitBranch:     jsonl.GitBranch,
 			ZellijSession: zellijSession,
 			Status:        status,
 			Alive:         alive,
-			LastMessage:   sess.LastMessage,
-			LastRole:      sess.LastRole,
-			LastActive:    sess.ModTime,
+			LastMessage:   jsonl.LastMessage,
+			LastRole:      jsonl.LastRole,
+			LastActive:    jsonl.ModTime,
 			Role:          role,
-			TaskSummary:   "",
 		})
 		count++
 	}
-
-	// Mark sessions in DB but not found in scan as dead
-	_ = store.MarkStaleSessionsDead(s.db, scannedIDs)
 
 	writeJSON(w, map[string]int{"synced": count})
 }
