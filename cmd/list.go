@@ -148,7 +148,9 @@ func runListFromDB() error {
 	return w.Flush()
 }
 
-// runSyncToDB scans JSONL sessions and syncs them to SQLite.
+// runSyncToDB performs two-stage sync (same as syncSessionsToDB) via list --sync.
+// Stage 1: Zellij truth — mark dead sessions not in zellij.
+// Stage 2: JSONL enrichment — update metadata for existing DB sessions only.
 func runSyncToDB() error {
 	db, err := store.Open("")
 	if err != nil {
@@ -156,120 +158,12 @@ func runSyncToDB() error {
 	}
 	defer db.Close()
 
-	agents, err := selectedAgents(listAgent)
+	count, err := syncSessionsToDB(db, listAgent, listHours, false)
 	if err != nil {
 		return err
 	}
 
-	maxAge := time.Duration(listHours) * time.Hour
-	var sessions []provider.SessionInfo
-	for _, agent := range agents {
-		switch agent {
-		case provider.AgentClaude:
-			items, err := provider.ScanClaudeSessions(maxAge)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not scan claude sessions: %v\n", err)
-				continue
-			}
-			sessions = append(sessions, items...)
-		case provider.AgentCodex:
-			items, err := provider.ScanCodexSessions(maxAge)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not scan codex sessions: %v\n", err)
-				continue
-			}
-			sessions = append(sessions, items...)
-		}
-	}
-
-	claudeProcs, _ := process.FindClaudeProcesses()
-	codexProcs, _ := process.FindCodexProcesses()
-
-	// Build set of CWDs marked as loop sessions
-	allState, _ := store.AllState(db)
-	loopCWDs := make(map[string]bool)
-	for k, v := range allState {
-		if len(k) > 9 && k[:9] == "loop:cwd:" && v == "1" {
-			loopCWDs[k[9:]] = true
-		}
-	}
-
-	// Build mux session set for alive validation and zellij_session inference
-	muxSessionSet := buildMuxSessionSet()
-
-	var scannedIDs []string
-	for _, s := range sessions {
-		alive := false
-		switch s.Agent {
-		case provider.AgentClaude:
-			alive = process.IsAliveForCWD(claudeProcs, s.CWD)
-		case provider.AgentCodex:
-			alive = process.IsAliveForCWD(codexProcs, s.CWD)
-		}
-
-		// Validate alive against actual mux sessions and infer zellij_session
-		zellijSession := ""
-		if alive {
-			alive, zellijSession = validateAliveWithMux(db, s, muxSessionSet)
-		}
-
-		statusMsg := s.LastFullMessage
-		if statusMsg == "" {
-			statusMsg = s.LastMessage
-		}
-		status := session.DetectStatus(statusMsg, s.LastRole, alive, s.ErrorType, s.IsAPIError)
-		blockedReason := ""
-		if status == session.StatusBlocked {
-			blockedReason = session.DetectBlockedReason(statusMsg)
-		}
-
-		// Role is "worker" by default; manager role is preserved in DB via UpsertSession.
-		role := "worker"
-
-		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
-		scannedIDs = append(scannedIDs, id)
-
-		_ = store.UpsertSession(db, &store.Session{
-			ID:            id,
-			Agent:         string(s.Agent),
-			Repository:    s.Repository,
-			SessionID:     s.SessionID,
-			CWD:           s.CWD,
-			GitBranch:     s.GitBranch,
-			ZellijSession: zellijSession,
-			Status:        status,
-			BlockedReason: blockedReason,
-			Alive:         alive,
-			LastMessage:   s.LastMessage,
-			LastRole:      s.LastRole,
-			LastActive:    s.ModTime,
-			Role:          role,
-			IsLoop:        loopCWDs[s.CWD],
-		})
-	}
-
-	// Mark sessions in DB but not found in scan as dead
-	_ = store.MarkStaleSessionsDead(db, scannedIDs)
-
-	// Fetch PR URLs for sessions that don't have one yet
-	for _, s := range sessions {
-		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
-		if s.GitBranch == "" || s.GitBranch == "main" || s.GitBranch == "master" {
-			continue
-		}
-		if existing := store.GetSessionPRURL(db, id); existing != "" {
-			continue
-		}
-		repo := repoFromRepository(s.Repository)
-		if repo == "" {
-			continue
-		}
-		if prURL := lookupPRURL(repo, s.GitBranch); prURL != "" {
-			db.Exec("UPDATE sessions SET pr_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", prURL, id)
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "Synced %d sessions to database\n", len(sessions))
+	fmt.Fprintf(os.Stderr, "Synced %d sessions to database\n", count)
 	return nil
 }
 

@@ -53,10 +53,20 @@ func runStateSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// syncSessionsToDB scans live JSONL sessions and upserts them into the database.
-// It deduplicates by CWD (keeping most recent) and marks stale sessions as dead.
-// Returns the number of synced sessions.
+// syncSessionsToDB performs a two-stage sync:
+//   Stage 1 (Zellij Truth): Use zellij sessions as the source of truth for alive status.
+//   Stage 2 (JSONL Enrichment): Read JSONL only for sessions already in DB, updating metadata only.
+// New sessions are NOT created from JSONL — they must be registered via spawn.
 func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSummaries bool) (int, error) {
+	// ── Stage 1: Zellij Truth ──
+	// Mark DB sessions dead if their zellij session no longer exists.
+	markOrphanedSessionsDead(db)
+
+	// Build mux session set
+	muxSessionSet := buildMuxSessionSet()
+
+	// ── Stage 2: JSONL Enrichment ──
+	// Scan JSONL files, but only use them to enrich existing DB sessions.
 	agents, err := selectedAgents(agentFilter)
 	if err != nil {
 		return 0, err
@@ -100,7 +110,7 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		}
 	}
 
-	// Deduplicate by CWD: keep only the most recent session per CWD
+	// Deduplicate JSONL by CWD: keep only the most recent session per CWD
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].ModTime.After(sessions[j].ModTime)
 	})
@@ -110,7 +120,6 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		if s.CWD != "" && seen[s.CWD] {
 			continue
 		}
-		// Skip preview worktree sessions (defense in depth; scanner also filters)
 		if strings.Contains(s.CWD, "worktree-preview-") {
 			continue
 		}
@@ -120,95 +129,95 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		deduped = append(deduped, s)
 	}
 
-	// Build mux session set for alive validation
-	muxSessionSet := buildMuxSessionSet()
-
-	var scannedIDs []string
-	var upserted int
+	// Build CWD -> JSONL index for quick lookup
+	jsonlByCWD := make(map[string]provider.SessionInfo)
 	for _, s := range deduped {
-		alive := false
-		switch s.Agent {
-		case provider.AgentClaude:
-			alive = process.IsAliveForCWD(claudeProcs, s.CWD)
-		case provider.AgentCodex:
-			alive = process.IsAliveForCWD(codexProcs, s.CWD)
+		if s.CWD != "" {
+			jsonlByCWD[s.CWD] = s
 		}
+	}
 
-		// Validate alive against actual mux sessions and infer zellij_session.
-		// This prevents ghost sessions from JSONL files that have no corresponding mux session.
-		zellijSession := ""
-		if alive {
-			alive, zellijSession = validateAliveWithMux(db, s, muxSessionSet)
-		}
-
-		statusMsg := s.LastFullMessage
-		if statusMsg == "" {
-			statusMsg = s.LastMessage
-		}
-		status := session.DetectStatus(statusMsg, s.LastRole, alive, s.ErrorType, s.IsAPIError)
-
-		role := "worker"
-		if managerName != "" && s.Repository == "agentctl" {
-			role = "manager"
-		}
-
-		// Normalize repository name before building session ID
-		repoName := s.Repository
-		if corrected, ok := knownRepoCorrections[repoName]; ok {
-			repoName = corrected
-		}
-
-		id := fmt.Sprintf("%s:%s:%s", s.Agent, repoName, s.SessionID)
-		scannedIDs = append(scannedIDs, id)
-
-		if err := store.UpsertSession(db, &store.Session{
-			ID:            id,
-			Agent:         string(s.Agent),
-			Repository:    repoName,
-			SessionID:     s.SessionID,
-			CWD:           s.CWD,
-			GitBranch:     s.GitBranch,
-			ZellijSession: zellijSession,
-			Status:        status,
-			Alive:         alive,
-			LastMessage:   s.LastMessage,
-			LastRole:      s.LastRole,
-			LastActive:    s.ModTime,
-			Role:          role,
-			IsLoop:        loopCWDs[s.CWD],
-		}); err != nil {
-			fmt.Printf("warning: could not upsert session %s: %v\n", id, err)
+	// Enrich existing DB sessions with JSONL metadata
+	aliveSessions, _ := store.ListSessionsByAlive(db, true)
+	var enriched int
+	for _, dbSess := range aliveSessions {
+		jsonl, found := jsonlByCWD[dbSess.CWD]
+		if !found {
 			continue
 		}
 
-		// Apply task_summary:
-		// 1. spawn --summary: use the pre-set value (one-shot, consumed after use)
-		// 2. --regenerate-summaries: always regenerate via claude -p
-		// 3. normal sync: generate only if DB has empty task_summary
-		if summary, ok := spawnSummaries[s.CWD]; ok {
-			_ = store.UpdateTaskSummary(db, id, summary)
-			_ = store.DeleteState(db, "spawn_summary:cwd:"+s.CWD)
-		} else if regenerateSummaries && s.FilePath != "" {
-			if title := session.GenerateTaskTitle(s.FilePath); title != "" {
-				_ = store.UpdateTaskSummary(db, id, title)
+		// Determine alive status from process list
+		alive := false
+		switch provider.Agent(dbSess.Agent) {
+		case provider.AgentClaude:
+			alive = process.IsAliveForCWD(claudeProcs, dbSess.CWD)
+		case provider.AgentCodex:
+			alive = process.IsAliveForCWD(codexProcs, dbSess.CWD)
+		}
+
+		// Validate alive against mux
+		zellijSession := dbSess.ZellijSession
+		if alive && muxSessionSet != nil {
+			if zellijSession != "" {
+				if !muxSessionSet[strings.ToLower(zellijSession)] {
+					alive = false
+				}
+			} else {
+				alive = false
 			}
-		} else if s.FilePath != "" {
-			existing, err := store.GetSession(db, id)
-			if err == nil && existing.TaskSummary == "" {
-				if title := session.GenerateTaskTitle(s.FilePath); title != "" {
-					_ = store.UpdateTaskSummary(db, id, title)
+		} else if alive && muxSessionSet == nil {
+			alive = false
+		}
+
+		statusMsg := jsonl.LastFullMessage
+		if statusMsg == "" {
+			statusMsg = jsonl.LastMessage
+		}
+		status := session.DetectStatus(statusMsg, jsonl.LastRole, alive, jsonl.ErrorType, jsonl.IsAPIError)
+
+		role := dbSess.Role
+		if role == "" {
+			role = "worker"
+		}
+		if managerName != "" && dbSess.Repository == "agentctl" {
+			role = "manager"
+		}
+
+		_ = store.UpsertSession(db, &store.Session{
+			ID:            dbSess.ID,
+			Agent:         dbSess.Agent,
+			Repository:    dbSess.Repository,
+			SessionID:     dbSess.SessionID,
+			CWD:           dbSess.CWD,
+			GitBranch:     jsonl.GitBranch,
+			ZellijSession: zellijSession,
+			Status:        status,
+			Alive:         alive,
+			LastMessage:   jsonl.LastMessage,
+			LastRole:      jsonl.LastRole,
+			LastActive:    jsonl.ModTime,
+			Role:          role,
+			IsLoop:        loopCWDs[dbSess.CWD],
+		})
+
+		// Apply task_summary
+		if summary, ok := spawnSummaries[dbSess.CWD]; ok {
+			_ = store.UpdateTaskSummary(db, dbSess.ID, summary)
+			_ = store.DeleteState(db, "spawn_summary:cwd:"+dbSess.CWD)
+		} else if regenerateSummaries && jsonl.FilePath != "" {
+			if title := session.GenerateTaskTitle(jsonl.FilePath); title != "" {
+				_ = store.UpdateTaskSummary(db, dbSess.ID, title)
+			}
+		} else if jsonl.FilePath != "" {
+			if dbSess.TaskSummary == "" {
+				if title := session.GenerateTaskTitle(jsonl.FilePath); title != "" {
+					_ = store.UpdateTaskSummary(db, dbSess.ID, title)
 				}
 			}
 		}
 
-		upserted++
+		enriched++
 	}
-
-	// Mark sessions in DB but not found in scan as dead
-	_ = store.MarkStaleSessionsDead(db, scannedIDs)
-
-	// Cross-check alive sessions against actual mux sessions
-	markOrphanedSessionsDead(db)
 
 	// Normalize known incorrect repository names in existing records
 	normalizeExistingRepoNames(db)
@@ -218,22 +227,19 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		fmt.Printf("Auto-archived %d dead/error session(s)\n", archived)
 	}
 
-	// Fetch PR URLs for sessions that don't have one yet
-	for _, s := range deduped {
-		id := fmt.Sprintf("%s:%s:%s", s.Agent, s.Repository, s.SessionID)
+	// Fetch PR URLs for alive sessions that don't have one yet
+	aliveAfterSync, _ := store.ListSessionsByAlive(db, true)
+	for _, s := range aliveAfterSync {
 		if s.GitBranch == "" || s.GitBranch == "main" || s.GitBranch == "master" {
 			continue
 		}
-		// Skip if already cached in DB
-		if existing := store.GetSessionPRURL(db, id); existing != "" {
+		if s.PRURL != "" {
 			continue
 		}
 		repo := repoFromRepository(s.Repository)
 		if repo == "" {
 			continue
 		}
-		// Skip if we recently checked and found no PR (avoid repeated API calls)
-		// But always allow the first check (when no cache key exists yet)
 		noPRKey := "no_pr_checked:" + repo + ":" + s.GitBranch
 		if lastChecked, _ := store.GetState(db, noPRKey); lastChecked != "" {
 			if t, err := time.Parse(time.RFC3339, lastChecked); err == nil && time.Since(t) < 5*time.Minute {
@@ -241,9 +247,8 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			}
 		}
 		if prURL := lookupPRURL(repo, s.GitBranch); prURL != "" {
-			db.Exec("UPDATE sessions SET pr_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", prURL, id)
+			db.Exec("UPDATE sessions SET pr_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", prURL, s.ID)
 		} else {
-			// Cache the negative result to avoid re-querying every 30 seconds
 			_ = store.SetState(db, noPRKey, time.Now().Format(time.RFC3339))
 		}
 	}
@@ -252,13 +257,13 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 	conflictCheckKey := "last_conflict_check"
 	if lastCheck, _ := store.GetState(db, conflictCheckKey); lastCheck != "" {
 		if t, err := time.Parse(time.RFC3339, lastCheck); err == nil && time.Since(t) < 5*time.Minute {
-			return upserted, nil
+			return enriched, nil
 		}
 	}
 	checkPRConflicts(db)
 	_ = store.SetState(db, conflictCheckKey, time.Now().Format(time.RFC3339))
 
-	return upserted, nil
+	return enriched, nil
 }
 
 // checkPRConflicts checks mergeable state for alive sessions with PRs
