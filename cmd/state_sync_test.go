@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chaspy/agentctl/internal/provider"
+	"github.com/chaspy/agentctl/internal/mux"
 	"github.com/chaspy/agentctl/internal/store"
 )
 
@@ -37,10 +37,8 @@ func TestRepoFromRepository(t *testing.T) {
 		{"owner/repo-name/worktree-fix-bug", "owner/repo-name"},
 		{"single", ""},
 		{"", ""},
-		// Known corrections
 		{"chaspy/myassistant-server", "chaspy/myassistant"},
 		{"studiuos/jp-Studious-JP", "studiuos-jp/Studious_JP"},
-		// Worktree + correction
 		{"chaspy/myassistant-server/worktree-fix-foo", "chaspy/myassistant"},
 	}
 	for _, tt := range tests {
@@ -58,7 +56,6 @@ func TestNormalizeExistingRepoNames(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Insert sessions with incorrect repo names
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:chaspy/myassistant-server:s1", Agent: "claude",
 		Repository: "chaspy/myassistant-server", SessionID: "s1",
@@ -69,7 +66,6 @@ func TestNormalizeExistingRepoNames(t *testing.T) {
 		Repository: "studiuos/jp-Studious-JP", SessionID: "s2",
 		Status: "active", Alive: true, LastActive: time.Now(),
 	})
-	// Correct repo name should not be changed
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:chaspy/agentctl:s3", Agent: "claude",
 		Repository: "chaspy/agentctl", SessionID: "s3",
@@ -78,92 +74,60 @@ func TestNormalizeExistingRepoNames(t *testing.T) {
 
 	normalizeExistingRepoNames(db)
 
-	s1, err := store.GetSession(db, "claude:chaspy/myassistant-server:s1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s1, _ := store.GetSession(db, "claude:chaspy/myassistant-server:s1")
 	if s1.Repository != "chaspy/myassistant" {
 		t.Errorf("s1 repository = %q, want %q", s1.Repository, "chaspy/myassistant")
 	}
-
-	s2, err := store.GetSession(db, "claude:studiuos/jp-Studious-JP:s2")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s2, _ := store.GetSession(db, "claude:studiuos/jp-Studious-JP:s2")
 	if s2.Repository != "studiuos-jp/Studious_JP" {
 		t.Errorf("s2 repository = %q, want %q", s2.Repository, "studiuos-jp/Studious_JP")
 	}
-
-	s3, err := store.GetSession(db, "claude:chaspy/agentctl:s3")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s3, _ := store.GetSession(db, "claude:chaspy/agentctl:s3")
 	if s3.Repository != "chaspy/agentctl" {
 		t.Errorf("s3 repository = %q, want %q", s3.Repository, "chaspy/agentctl")
 	}
 }
 
-func TestMarkOrphanedSessionsDead(t *testing.T) {
+// --- syncRuntimeStatus tests ---
+
+func mockZellijDetailed(sessions []mux.ZellijSessionState) func() {
+	orig := listZellijDetailed
+	listZellijDetailed = func() ([]mux.ZellijSessionState, error) {
+		return sessions, nil
+	}
+	return func() { listZellijDetailed = orig }
+}
+
+func TestSyncRuntimeStatus_Running(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	// Alive session with zellij session that exists
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
 		Status: "active", Alive: true, ZellijSession: "a-b",
 		LastActive: time.Now(),
 	})
-	// Alive session with zellij session that does NOT exist
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude:c/d:s2", Agent: "claude", Repository: "c/d", SessionID: "s2",
-		Status: "active", Alive: true, ZellijSession: "c-d",
-		LastActive: time.Now(),
+
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "a-b", Exited: false},
 	})
-	// Alive session without zellij session (ghost — should be marked dead)
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude:e/f:s3", Agent: "claude", Repository: "e/f", SessionID: "s3",
-		Status: "active", Alive: true,
-		LastActive: time.Now(),
-	})
+	defer restore()
 
-	// Mock listMuxSessions to return only "a-b"
-	orig := listMuxSessions
-	listMuxSessions = func() []string {
-		return []string{"a-b"}
-	}
-	defer func() { listMuxSessions = orig }()
+	syncRuntimeStatus(db)
 
-	markOrphanedSessionsDead(db)
-
-	// s1 should still be alive (zellij session exists)
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if s1.RuntimeStatus != "running" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "running")
+	}
 	if !s1.Alive {
-		t.Error("s1 should still be alive")
-	}
-
-	// s2 should be dead (zellij session not found)
-	s2, _ := store.GetSession(db, "claude:c/d:s2")
-	if s2.Alive {
-		t.Error("s2 should be dead (orphaned)")
-	}
-	if s2.Status != "dead" {
-		t.Errorf("s2 status = %q, want %q", s2.Status, "dead")
-	}
-
-	// s3 should be dead (ghost: no zellij session at all)
-	s3, _ := store.GetSession(db, "claude:e/f:s3")
-	if s3.Alive {
-		t.Error("s3 should be dead (ghost: no zellij session)")
-	}
-	if s3.Status != "dead" {
-		t.Errorf("s3 status = %q, want %q", s3.Status, "dead")
+		t.Error("alive should not be changed by sync")
 	}
 }
 
-func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
+func TestSyncRuntimeStatus_Exited(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -176,97 +140,199 @@ func TestMarkOrphanedSessionsDead_NoMux(t *testing.T) {
 		LastActive: time.Now(),
 	})
 
-	// Mock listMuxSessions to return nil (no mux available)
-	orig := listMuxSessions
-	listMuxSessions = func() []string {
-		return nil
-	}
-	defer func() { listMuxSessions = orig }()
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "a-b", Exited: true},
+	})
+	defer restore()
 
-	markOrphanedSessionsDead(db)
+	syncRuntimeStatus(db)
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if s1.RuntimeStatus != "exited" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "exited")
+	}
+	if !s1.Alive {
+		t.Error("alive should not be changed by sync")
+	}
+}
+
+func TestSyncRuntimeStatus_Gone(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		RuntimeStatus: "running",
+		LastActive:     time.Now(),
+	})
+
+	// Zellij has no sessions
+	restore := mockZellijDetailed([]mux.ZellijSessionState{})
+	defer restore()
+
+	syncRuntimeStatus(db)
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if s1.RuntimeStatus != "gone" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
+	}
+	// alive must NOT change — it's intent, not runtime
+	if !s1.Alive {
+		t.Error("alive should not be changed by sync (alive=intent)")
+	}
+}
+
+func TestSyncRuntimeStatus_NeverChangesAlive(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// alive=false (killed), zellij still has it
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "dead", Alive: false, ZellijSession: "a-b",
+		LastActive: time.Now(),
+	})
+
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "a-b", Exited: false},
+	})
+	defer restore()
+
+	syncRuntimeStatus(db)
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	// alive must remain false — kill intent preserved
+	if s1.Alive {
+		t.Error("alive should not be changed by sync (was killed)")
+	}
+}
+
+func TestSyncRuntimeStatus_CreatesNewFromZellij(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "new-session", Exited: false},
+		{Name: "exited-session", Exited: true},
+	})
+	defer restore()
+
+	syncRuntimeStatus(db)
+
+	s1, err := store.GetSession(db, "claude::new-session")
+	if err != nil {
+		t.Fatalf("expected new session: %v", err)
+	}
+	if !s1.Alive {
+		t.Error("new session should be alive=true")
+	}
+	if s1.RuntimeStatus != "running" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "running")
+	}
+
+	s2, err := store.GetSession(db, "claude::exited-session")
+	if err != nil {
+		t.Fatalf("expected exited session: %v", err)
+	}
+	if !s2.Alive {
+		t.Error("new exited session should be alive=true")
+	}
+	if s2.RuntimeStatus != "exited" {
+		t.Errorf("runtime_status = %q, want %q", s2.RuntimeStatus, "exited")
+	}
+}
+
+func TestSyncRuntimeStatus_DoesNotDuplicateExisting(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		CWD: "/path/to/a/b", LastActive: time.Now(),
+	})
+
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "a-b", Exited: false},
+	})
+	defer restore()
+
+	syncRuntimeStatus(db)
+
+	// Should NOT create a duplicate "claude::a-b" session
+	_, err = store.GetSession(db, "claude::a-b")
+	if err == nil {
+		t.Error("should not create duplicate session for already-tracked zellij session")
+	}
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if s1.RuntimeStatus != "running" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "running")
+	}
+	if s1.Repository != "a/b" {
+		t.Errorf("repository should be preserved, got %q", s1.Repository)
+	}
+}
+
+func TestSyncRuntimeStatus_NoMux(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		RuntimeStatus: "running", LastActive: time.Now(),
+	})
+
+	orig := listZellijDetailed
+	listZellijDetailed = func() ([]mux.ZellijSessionState, error) {
+		return nil, nil
+	}
+	defer func() { listZellijDetailed = orig }()
+
+	syncRuntimeStatus(db)
 
 	// Should not change anything when mux is unavailable
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
-	if !s1.Alive {
-		t.Error("s1 should still be alive when mux is unavailable")
-	}
-}
-
-func TestValidateAliveWithMux(t *testing.T) {
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	// Session with zellij_session set
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
-		Status: "active", Alive: true, ZellijSession: "a-b",
-		LastActive: time.Now(),
-	})
-	// Session without zellij_session
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude:c/d:s2", Agent: "claude", Repository: "c/d", SessionID: "s2",
-		Status: "active", Alive: true,
-		LastActive: time.Now(),
-	})
-
-	muxSet := map[string]bool{"a-b": true}
-
-	// Session with zellij_session that exists in mux -> alive
-	s1 := provider.SessionInfo{Agent: "claude", Repository: "a/b", SessionID: "s1"}
-	alive, zs := validateAliveWithMux(db, s1, muxSet)
-	if !alive {
-		t.Error("s1 should be alive (zellij session exists in mux)")
-	}
-	if zs != "a-b" {
-		t.Errorf("s1 zellij_session = %q, want %q", zs, "a-b")
-	}
-
-	// Session without zellij_session -> not alive
-	s2 := provider.SessionInfo{Agent: "claude", Repository: "c/d", SessionID: "s2"}
-	alive, _ = validateAliveWithMux(db, s2, muxSet)
-	if alive {
-		t.Error("s2 should not be alive (no zellij_session)")
-	}
-
-	// Session not in DB -> not alive
-	s3 := provider.SessionInfo{Agent: "claude", Repository: "x/y", SessionID: "s99"}
-	alive, _ = validateAliveWithMux(db, s3, muxSet)
-	if alive {
-		t.Error("s3 should not be alive (not in DB)")
-	}
-
-	// nil muxSet (no mux available) -> treat as not alive
-	alive, _ = validateAliveWithMux(db, s1, nil)
-	if alive {
-		t.Error("should return false when muxSet is nil")
+	if s1.RuntimeStatus != "running" {
+		t.Errorf("runtime_status should not change when mux unavailable, got %q", s1.RuntimeStatus)
 	}
 }
 
 func TestInferZellijSession(t *testing.T) {
 	muxSet := map[string]bool{
-		"agentctl":                    true,
-		"agentctl-fix-sync":          true,
-		"myassistant":                true,
-		"myassistant-fix-tts-bug":    true,
+		"agentctl":                 true,
+		"agentctl-fix-sync":       true,
+		"myassistant":             true,
+		"myassistant-fix-tts-bug": true,
 	}
 
 	tests := []struct {
 		cwd  string
 		want string
 	}{
-		// Non-worktree
 		{"/Users/chaspy/go/src/github.com/chaspy/agentctl", "agentctl"},
 		{"/Users/chaspy/go/src/github.com/chaspy/myassistant", "myassistant"},
-		// Worktree
 		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-fix-sync", "agentctl-fix-sync"},
 		{"/Users/chaspy/go/src/github.com/chaspy/myassistant/worktree-fix-tts-bug", "myassistant-fix-tts-bug"},
-		// Not in mux -> empty
 		{"/Users/chaspy/go/src/github.com/chaspy/unknown-repo", ""},
 		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-unknown-branch", ""},
-		// Empty CWD
 		{"", ""},
 	}
 	for _, tt := range tests {
@@ -277,30 +343,7 @@ func TestInferZellijSession(t *testing.T) {
 	}
 }
 
-func TestValidateAliveWithMux_InferFromCWD(t *testing.T) {
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	// Session NOT in DB yet, but CWD matches a mux session
-	muxSet := map[string]bool{"myrepo-fix-bug": true}
-
-	s := provider.SessionInfo{
-		Agent:      "claude",
-		Repository: "owner/myrepo",
-		SessionID:  "new-session-id",
-		CWD:        "/Users/chaspy/go/src/github.com/owner/myrepo/worktree-fix-bug",
-	}
-	alive, zs := validateAliveWithMux(db, s, muxSet)
-	if !alive {
-		t.Error("should be alive (inferred from CWD)")
-	}
-	if zs != "myrepo-fix-bug" {
-		t.Errorf("zellij_session = %q, want %q", zs, "myrepo-fix-bug")
-	}
-}
+// --- PR conflict tests ---
 
 func TestCheckPRConflicts_SkipsDeadSessions(t *testing.T) {
 	db, err := store.Open(":memory:")
@@ -309,20 +352,12 @@ func TestCheckPRConflicts_SkipsDeadSessions(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create a dead session with PR URL
 	_ = store.UpsertSession(db, &store.Session{
-		ID:         "claude:owner/repo:s1",
-		Agent:      "claude",
-		Repository: "owner/repo",
-		SessionID:  "s1",
-		GitBranch:  "feat/test",
-		Status:     "dead",
-		Alive:      false,
-		PRURL:      "https://github.com/owner/repo/pull/1",
-		LastActive: time.Now(),
+		ID: "claude:owner/repo:s1", Agent: "claude", Repository: "owner/repo", SessionID: "s1",
+		GitBranch: "feat/test", Status: "dead", Alive: false,
+		PRURL: "https://github.com/owner/repo/pull/1", LastActive: time.Now(),
 	})
 
-	// ListAliveSessionsWithPR should return nothing for dead sessions
 	sessions, err := store.ListAliveSessionsWithPR(db)
 	if err != nil {
 		t.Fatal(err)
@@ -339,24 +374,14 @@ func TestCheckPRConflicts_SkipsRecentlySent(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create an alive session with PR URL
 	_ = store.UpsertSession(db, &store.Session{
-		ID:         "claude:owner/repo:s1",
-		Agent:      "claude",
-		Repository: "owner/repo",
-		SessionID:  "s1",
-		GitBranch:  "feat/test",
-		Status:     "active",
-		Alive:      true,
-		PRURL:      "https://github.com/owner/repo/pull/1",
-		LastActive: time.Now(),
+		ID: "claude:owner/repo:s1", Agent: "claude", Repository: "owner/repo", SessionID: "s1",
+		GitBranch: "feat/test", Status: "active", Alive: true,
+		PRURL: "https://github.com/owner/repo/pull/1", LastActive: time.Now(),
 	})
 
-	// Mark as recently sent
-	prURL := "https://github.com/owner/repo/pull/1"
-	_ = store.SetState(db, "rebase_sent:"+prURL, time.Now().Format(time.RFC3339))
+	_ = store.SetState(db, "rebase_sent:https://github.com/owner/repo/pull/1", time.Now().Format(time.RFC3339))
 
-	// Override checkPRMergeable to track if it's called
 	called := false
 	origCheck := checkPRMergeable
 	checkPRMergeable = func(repo, prNumber string) string {
@@ -380,26 +405,17 @@ func TestCheckPRConflicts_SkipsNonConflicting(t *testing.T) {
 	defer db.Close()
 
 	_ = store.UpsertSession(db, &store.Session{
-		ID:         "claude:owner/repo:s1",
-		Agent:      "claude",
-		Repository: "owner/repo",
-		SessionID:  "s1",
-		GitBranch:  "feat/test",
-		Status:     "active",
-		Alive:      true,
-		PRURL:      "https://github.com/owner/repo/pull/1",
-		LastActive: time.Now(),
+		ID: "claude:owner/repo:s1", Agent: "claude", Repository: "owner/repo", SessionID: "s1",
+		GitBranch: "feat/test", Status: "active", Alive: true,
+		PRURL: "https://github.com/owner/repo/pull/1", LastActive: time.Now(),
 	})
 
 	origCheck := checkPRMergeable
-	checkPRMergeable = func(repo, prNumber string) string {
-		return "MERGEABLE"
-	}
+	checkPRMergeable = func(repo, prNumber string) string { return "MERGEABLE" }
 	defer func() { checkPRMergeable = origCheck }()
 
 	checkPRConflicts(db)
 
-	// Should not record any rebase_sent state
 	val, _ := store.GetState(db, "rebase_sent:https://github.com/owner/repo/pull/1")
 	if val != "" {
 		t.Error("should not record rebase_sent for non-conflicting PR")
@@ -414,16 +430,9 @@ func TestCheckPRConflicts_SendsRebaseForConflicting(t *testing.T) {
 	defer db.Close()
 
 	_ = store.UpsertSession(db, &store.Session{
-		ID:             "claude:owner/repo:s1",
-		Agent:          "claude",
-		Repository:     "owner/repo",
-		SessionID:      "s1",
-		GitBranch:      "feat/test",
-		Status:         "active",
-		Alive:          true,
-		ZellijSession:  "owner-repo",
-		PRURL:          "https://github.com/owner/repo/pull/42",
-		LastActive:     time.Now(),
+		ID: "claude:owner/repo:s1", Agent: "claude", Repository: "owner/repo", SessionID: "s1",
+		GitBranch: "feat/test", Status: "active", Alive: true, ZellijSession: "owner-repo",
+		PRURL: "https://github.com/owner/repo/pull/42", LastActive: time.Now(),
 	})
 
 	origCheck := checkPRMergeable
@@ -435,11 +444,8 @@ func TestCheckPRConflicts_SendsRebaseForConflicting(t *testing.T) {
 	}
 	defer func() { checkPRMergeable = origCheck }()
 
-	// checkPRConflicts will fail to resolve mux adapter in test environment,
-	// but we can verify the state is not set (since send fails)
 	checkPRConflicts(db)
 
-	// Verify that rebase_sent was NOT set (because mux resolution fails in test)
 	val, _ := store.GetState(db, "rebase_sent:https://github.com/owner/repo/pull/42")
 	if val != "" {
 		t.Error("should not record rebase_sent when mux is unavailable")
@@ -454,20 +460,12 @@ func TestCheckPRConflicts_ResendAfterCooldown(t *testing.T) {
 	defer db.Close()
 
 	_ = store.UpsertSession(db, &store.Session{
-		ID:         "claude:owner/repo:s1",
-		Agent:      "claude",
-		Repository: "owner/repo",
-		SessionID:  "s1",
-		GitBranch:  "feat/test",
-		Status:     "active",
-		Alive:      true,
-		PRURL:      "https://github.com/owner/repo/pull/1",
-		LastActive: time.Now(),
+		ID: "claude:owner/repo:s1", Agent: "claude", Repository: "owner/repo", SessionID: "s1",
+		GitBranch: "feat/test", Status: "active", Alive: true,
+		PRURL: "https://github.com/owner/repo/pull/1", LastActive: time.Now(),
 	})
 
-	// Set rebase_sent to 2 hours ago (past the 1-hour cooldown)
-	prURL := "https://github.com/owner/repo/pull/1"
-	_ = store.SetState(db, "rebase_sent:"+prURL, time.Now().Add(-2*time.Hour).Format(time.RFC3339))
+	_ = store.SetState(db, "rebase_sent:https://github.com/owner/repo/pull/1", time.Now().Add(-2*time.Hour).Format(time.RFC3339))
 
 	called := false
 	origCheck := checkPRMergeable
@@ -491,19 +489,15 @@ func TestListAliveSessionsWithPR(t *testing.T) {
 	}
 	defer db.Close()
 
-	// alive + PR
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:a:s1", Agent: "claude", Repository: "a", SessionID: "s1",
 		Status: "active", Alive: true, PRURL: "https://github.com/a/pull/1",
 		LastActive: time.Now(),
 	})
-	// alive + no PR
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:b:s2", Agent: "claude", Repository: "b", SessionID: "s2",
-		Status: "active", Alive: true,
-		LastActive: time.Now(),
+		Status: "active", Alive: true, LastActive: time.Now(),
 	})
-	// dead + PR
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:c:s3", Agent: "claude", Repository: "c", SessionID: "s3",
 		Status: "dead", Alive: false, PRURL: "https://github.com/c/pull/3",

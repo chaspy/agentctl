@@ -6,6 +6,39 @@ import (
 	"time"
 )
 
+func TestParseZellijSessionsDetailed(t *testing.T) {
+	// Simulate raw output with ANSI codes
+	raw := "\x1b[32;1magent-manager\x1b[m [Created \x1b[35;1m17days\x1b[m ago] (\x1b[31;1mEXITED\x1b[m - attach to resurrect)\n" +
+		"\x1b[32;1mmyassistant\x1b[m [Created \x1b[35;1m22h\x1b[m ago] \n" +
+		"\x1b[32;1magentctl-fix\x1b[m [Created \x1b[35;1m1h\x1b[m ago] (\x1b[31;1mEXITED\x1b[m - attach to resurrect)\n"
+
+	sessions := parseZellijSessionsDetailed(raw)
+	if len(sessions) != 3 {
+		t.Fatalf("expected 3 sessions, got %d", len(sessions))
+	}
+
+	// agent-manager: EXITED
+	if sessions[0].Name != "agent-manager" || !sessions[0].Exited {
+		t.Errorf("session 0: name=%q exited=%v, want agent-manager/true", sessions[0].Name, sessions[0].Exited)
+	}
+	// myassistant: active
+	if sessions[1].Name != "myassistant" || sessions[1].Exited {
+		t.Errorf("session 1: name=%q exited=%v, want myassistant/false", sessions[1].Name, sessions[1].Exited)
+	}
+	// agentctl-fix: EXITED
+	if sessions[2].Name != "agentctl-fix" || !sessions[2].Exited {
+		t.Errorf("session 2: name=%q exited=%v, want agentctl-fix/true", sessions[2].Name, sessions[2].Exited)
+	}
+}
+
+func TestStripAnsi(t *testing.T) {
+	input := "\x1b[32;1mhello\x1b[m world"
+	got := stripAnsi(input)
+	if got != "hello world" {
+		t.Errorf("stripAnsi(%q) = %q, want %q", input, got, "hello world")
+	}
+}
+
 func TestHasPendingInput(t *testing.T) {
 	tests := []struct {
 		name       string

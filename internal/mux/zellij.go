@@ -120,3 +120,73 @@ func splitSessions(output string) []string {
 	}
 	return sessions
 }
+
+// ZellijSessionState represents a zellij session with its runtime state.
+type ZellijSessionState struct {
+	Name   string
+	Exited bool // true if the session is in EXITED state
+}
+
+// ListZellijSessionsDetailed returns zellij sessions with EXITED state info.
+// Uses the full (non-short) output of `zellij list-sessions`.
+var ListZellijSessionsDetailed = func() ([]ZellijSessionState, error) {
+	cmd := exec.Command("zellij", "list-sessions")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(output))
+		if strings.Contains(text, "No active zellij sessions found.") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("zellij list-sessions failed: %w: %s", err, text)
+	}
+	return parseZellijSessionsDetailed(string(output)), nil
+}
+
+// parseZellijSessionsDetailed parses the full `zellij list-sessions` output.
+// Each line looks like:
+//   session-name [Created ...] (EXITED - attach to resurrect)   <- exited
+//   session-name [Created ...]                                    <- active
+// ANSI color codes are stripped.
+func parseZellijSessionsDetailed(output string) []ZellijSessionState {
+	// Strip ANSI escape codes
+	cleaned := stripAnsi(output)
+	lines := strings.Split(strings.TrimSpace(cleaned), "\n")
+	var sessions []ZellijSessionState
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Session name is the first word (before " [")
+		name := line
+		if idx := strings.Index(line, " "); idx > 0 {
+			name = line[:idx]
+		}
+		exited := strings.Contains(line, "EXITED")
+		sessions = append(sessions, ZellijSessionState{Name: name, Exited: exited})
+	}
+	return sessions
+}
+
+// stripAnsi removes ANSI escape sequences from a string.
+func stripAnsi(s string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until we hit a letter (the terminator)
+			j := i + 2
+			for j < len(s) && !((s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= 'a' && s[j] <= 'z')) {
+				j++
+			}
+			if j < len(s) {
+				j++ // skip the terminator letter
+			}
+			i = j
+		} else {
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
+}
