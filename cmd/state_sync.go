@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -553,7 +555,141 @@ func syncRuntimeStatus(db *sql.DB) {
 			Role:          "worker",
 		})
 		fmt.Printf("Discovered new zellij session: %s (runtime_status=%s)\n", zs.Name, rs)
+		enrichSessionMetadata(db, id, zs.Name)
 	}
+
+	// Also enrich existing alive sessions that have empty metadata
+	refreshed, _ := store.ListSessionsByAlive(db, true)
+	for _, s := range refreshed {
+		if s.Repository == "" && s.ZellijSession != "" {
+			enrichSessionMetadata(db, s.ID, s.ZellijSession)
+		}
+	}
+}
+
+// enrichSessionMetadata populates CWD, repository, and git_branch for a session
+// by inferring the working directory from the zellij session name.
+//
+// Zellij session naming convention (from spawn):
+//   - "repobase"                  → ~/go/src/github.com/<org>/repobase
+//   - "repobase-branchname"       → ~/go/src/github.com/<org>/repobase/worktree-branchname
+func enrichSessionMetadata(db *sql.DB, sessionID, zellijName string) {
+	cwd := inferCWDFromSessionName(zellijName)
+	if cwd == "" {
+		return
+	}
+
+	repo := gitRepoName(cwd)
+	branch := gitBranchName(cwd)
+
+	updates := []string{}
+	args := []any{}
+	if cwd != "" {
+		updates = append(updates, "cwd = ?")
+		args = append(args, cwd)
+	}
+	if repo != "" {
+		updates = append(updates, "repository = ?")
+		args = append(args, repo)
+	}
+	if branch != "" {
+		updates = append(updates, "git_branch = ?")
+		args = append(args, branch)
+	}
+	if len(updates) == 0 {
+		return
+	}
+	updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
+	args = append(args, sessionID)
+	db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
+}
+
+// inferCWDFromSessionName tries to find the filesystem path for a zellij session.
+// It scans ~/go/src/github.com/<org>/<repo> directories.
+//
+// Strategy:
+//  1. If name matches "<repo>-<branch>", look for <repo>/worktree-<branch>
+//  2. If name matches "<repo>", look for the repo directory itself
+func inferCWDFromSessionName(zellijName string) string {
+	repos, err := listRepos()
+	if err != nil {
+		return ""
+	}
+
+	// Try exact repo match first (session name = repo base name)
+	for _, r := range repos {
+		base := filepath.Base(r.FullPath)
+		if strings.EqualFold(base, zellijName) {
+			if isDir(r.FullPath) {
+				return r.FullPath
+			}
+		}
+	}
+
+	// Try "<repo>-<branch>" pattern: split at first '-' and try progressively
+	// e.g. "agentctl-fix-sync" → repo="agentctl", branch="fix-sync"
+	for _, r := range repos {
+		base := filepath.Base(r.FullPath)
+		prefix := strings.ToLower(base) + "-"
+		if !strings.HasPrefix(strings.ToLower(zellijName), prefix) {
+			continue
+		}
+		branchPart := zellijName[len(base)+1:]
+		if branchPart == "" {
+			continue
+		}
+		// Check for worktree-<branch> directory
+		wtPath := filepath.Join(r.FullPath, "worktree-"+branchPart)
+		if isDir(wtPath) {
+			return wtPath
+		}
+	}
+
+	return ""
+}
+
+// gitRepoName extracts the GitHub "owner/repo" from a CWD by running git remote.
+var gitRepoName = func(cwd string) string {
+	cmd := exec.Command("git", "-C", cwd, "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return parseGitHubRepo(strings.TrimSpace(string(out)))
+}
+
+// gitBranchName returns the current branch for a CWD.
+var gitBranchName = func(cwd string) string {
+	cmd := exec.Command("git", "-C", cwd, "branch", "--show-current")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// parseGitHubRepo extracts "owner/repo" from a git remote URL.
+// Handles both SSH and HTTPS formats.
+func parseGitHubRepo(remoteURL string) string {
+	// SSH: git@github.com:owner/repo.git
+	if strings.Contains(remoteURL, "git@github.com:") {
+		part := strings.TrimPrefix(remoteURL, "git@github.com:")
+		part = strings.TrimSuffix(part, ".git")
+		return part
+	}
+	// HTTPS: https://github.com/owner/repo.git
+	if strings.Contains(remoteURL, "github.com/") {
+		idx := strings.Index(remoteURL, "github.com/")
+		part := remoteURL[idx+len("github.com/"):]
+		part = strings.TrimSuffix(part, ".git")
+		return part
+	}
+	return ""
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // listZellijDetailed returns detailed zellij session info.

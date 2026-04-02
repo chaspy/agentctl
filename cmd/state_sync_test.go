@@ -343,6 +343,47 @@ func TestInferZellijSession(t *testing.T) {
 	}
 }
 
+// --- parseGitHubRepo tests ---
+
+func TestParseGitHubRepo(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"git@github.com:chaspy/agentctl.git", "chaspy/agentctl"},
+		{"https://github.com/chaspy/agentctl.git", "chaspy/agentctl"},
+		{"https://github.com/chaspy/agentctl", "chaspy/agentctl"},
+		{"git@github.com:owner/repo.git", "owner/repo"},
+		{"", ""},
+		{"https://gitlab.com/owner/repo.git", ""},
+	}
+	for _, tt := range tests {
+		got := parseGitHubRepo(tt.input)
+		if got != tt.want {
+			t.Errorf("parseGitHubRepo(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestInferCWDFromSessionName(t *testing.T) {
+	// This test uses the real filesystem.
+	// We can only test that it returns "" for session names
+	// that don't match any real repo on disk.
+	got := inferCWDFromSessionName("nonexistent-repo-12345")
+	if got != "" {
+		t.Errorf("inferCWDFromSessionName for non-existent repo = %q, want empty", got)
+	}
+
+	// Test with a real repo if it exists (agentctl should be available in test env)
+	cwd := inferCWDFromSessionName("agentctl")
+	if cwd != "" {
+		// Verify it's a real directory
+		if !isDir(cwd) {
+			t.Errorf("inferred CWD %q is not a directory", cwd)
+		}
+	}
+}
+
 // --- PR conflict tests ---
 
 func TestCheckPRConflicts_SkipsDeadSessions(t *testing.T) {

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.23] - 2026-04-02
+
+### Added
+
+- **Enrich discovered sessions with metadata**: When sync discovers a new zellij session (or finds alive sessions with empty repository), `enrichSessionMetadata` populates CWD, repository, and git_branch automatically
+  - Infers CWD from zellij session name using spawn's naming convention (`repo` or `repo-branch` → worktree path)
+  - Runs `git remote get-url origin` for repository and `git branch --show-current` for branch
+  - Supports both SSH and HTTPS remote URL formats
+
 ## [0.2.22] - 2026-04-02
 
 ### Added
@@ -21,6 +30,7 @@
 - **Removed process-based alive detection**: No longer uses `ps`/`lsof` CWD matching
 - **Removed `validateAliveWithMux`, `buildMuxSessionSet`, `listMuxSessions`**: Replaced by `syncRuntimeStatus` + `listZellijDetailed`
 - **DB migration V11**: Adds `runtime_status` column to `sessions` and `sessions_archive` tables
+- **`enrichSessionMetadata`**: Discovered zellij sessions are enriched with CWD, repository, and git_branch by inferring the working directory from the session name and running `git remote get-url origin` / `git branch --show-current`
 
 ## [0.2.21] - 2026-04-02
 
