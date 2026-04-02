@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/chaspy/agentctl/internal/mux"
+	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/store"
 )
 
@@ -365,22 +366,94 @@ func TestParseGitHubRepo(t *testing.T) {
 	}
 }
 
-func TestInferCWDFromSessionName(t *testing.T) {
-	// This test uses the real filesystem.
-	// We can only test that it returns "" for session names
-	// that don't match any real repo on disk.
-	got := inferCWDFromSessionName("nonexistent-repo-12345")
-	if got != "" {
-		t.Errorf("inferCWDFromSessionName for non-existent repo = %q, want empty", got)
+func TestEnrichAllEmptySessions(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Session with empty metadata
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude::agentctl-fix-bug", Agent: "claude", ZellijSession: "agentctl-fix-bug",
+		Status: "idle", Alive: true, LastActive: time.Now(),
+	})
+	// Session with existing metadata (should not be touched)
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:owner/existing:s1", Agent: "claude", Repository: "owner/existing",
+		SessionID: "s1", CWD: "/existing/path", ZellijSession: "existing",
+		Status: "active", Alive: true, LastActive: time.Now(),
+	})
+
+	// Mock: claude process running in a worktree that matches the session name
+	origProcs := findClaudeProcs
+	findClaudeProcs = func() ([]process.ProcessInfo, error) {
+		return []process.ProcessInfo{
+			{PID: 1234, CWD: "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug"},
+			{PID: 5678, CWD: "/existing/path"}, // already tracked
+		}, nil
+	}
+	defer func() { findClaudeProcs = origProcs }()
+
+	origRepo := gitRepoName
+	origBranch := gitBranchName
+	gitRepoName = func(cwd string) string {
+		if cwd == "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
+			return "owner/agentctl"
+		}
+		return ""
+	}
+	gitBranchName = func(cwd string) string {
+		if cwd == "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
+			return "fix/bug"
+		}
+		return ""
+	}
+	defer func() { gitRepoName = origRepo; gitBranchName = origBranch }()
+
+	enrichAllEmptySessions(db)
+
+	s, _ := store.GetSession(db, "claude::agentctl-fix-bug")
+	if s.CWD != "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
+		t.Errorf("cwd = %q, want worktree path", s.CWD)
+	}
+	if s.Repository != "owner/agentctl" {
+		t.Errorf("repository = %q, want %q", s.Repository, "owner/agentctl")
+	}
+	if s.GitBranch != "fix/bug" {
+		t.Errorf("git_branch = %q, want %q", s.GitBranch, "fix/bug")
 	}
 
-	// Test with a real repo if it exists (agentctl should be available in test env)
-	cwd := inferCWDFromSessionName("agentctl")
-	if cwd != "" {
-		// Verify it's a real directory
-		if !isDir(cwd) {
-			t.Errorf("inferred CWD %q is not a directory", cwd)
-		}
+	// Existing session should not be modified
+	s2, _ := store.GetSession(db, "claude:owner/existing:s1")
+	if s2.Repository != "owner/existing" {
+		t.Errorf("existing session repository changed to %q", s2.Repository)
+	}
+}
+
+func TestEnrichAllEmptySessions_NoProcs(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude::my-session", Agent: "claude", ZellijSession: "my-session",
+		Status: "idle", Alive: true, LastActive: time.Now(),
+	})
+
+	origProcs := findClaudeProcs
+	findClaudeProcs = func() ([]process.ProcessInfo, error) {
+		return nil, nil
+	}
+	defer func() { findClaudeProcs = origProcs }()
+
+	enrichAllEmptySessions(db)
+
+	s, _ := store.GetSession(db, "claude::my-session")
+	if s.CWD != "" {
+		t.Errorf("cwd should remain empty when no procs, got %q", s.CWD)
 	}
 }
 

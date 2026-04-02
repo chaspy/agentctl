@@ -4,15 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/chaspy/agentctl/internal/mux"
+	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
 	"github.com/chaspy/agentctl/internal/store"
@@ -555,97 +554,93 @@ func syncRuntimeStatus(db *sql.DB) {
 			Role:          "worker",
 		})
 		fmt.Printf("Discovered new zellij session: %s (runtime_status=%s)\n", zs.Name, rs)
-		enrichSessionMetadata(db, id, zs.Name)
 	}
 
-	// Also enrich existing alive sessions that have empty metadata
-	refreshed, _ := store.ListSessionsByAlive(db, true)
-	for _, s := range refreshed {
-		if s.Repository == "" && s.ZellijSession != "" {
-			enrichSessionMetadata(db, s.ID, s.ZellijSession)
+	// Enrich sessions missing metadata using lsof-based claude process CWD detection
+	enrichAllEmptySessions(db)
+}
+
+// enrichAllEmptySessions finds claude processes via lsof and matches them
+// to alive sessions that are missing CWD/repository metadata.
+func enrichAllEmptySessions(db *sql.DB) {
+	claudeProcs, err := findClaudeProcs()
+	if err != nil || len(claudeProcs) == 0 {
+		return
+	}
+
+	// Build set of CWDs already tracked in DB
+	allSessions, _ := store.ListSessionsByAlive(db, true)
+	knownCWDs := make(map[string]bool)
+	for _, s := range allSessions {
+		if s.CWD != "" {
+			knownCWDs[s.CWD] = true
 		}
 	}
-}
 
-// enrichSessionMetadata populates CWD, repository, and git_branch for a session
-// by inferring the working directory from the zellij session name.
-//
-// Zellij session naming convention (from spawn):
-//   - "repobase"                  → ~/go/src/github.com/<org>/repobase
-//   - "repobase-branchname"       → ~/go/src/github.com/<org>/repobase/worktree-branchname
-func enrichSessionMetadata(db *sql.DB, sessionID, zellijName string) {
-	cwd := inferCWDFromSessionName(zellijName)
-	if cwd == "" {
-		return
+	// Collect untracked claude CWDs
+	var untrackedCWDs []string
+	for _, p := range claudeProcs {
+		if p.CWD != "" && !knownCWDs[p.CWD] {
+			untrackedCWDs = append(untrackedCWDs, p.CWD)
+		}
 	}
 
-	repo := gitRepoName(cwd)
-	branch := gitBranchName(cwd)
-
-	updates := []string{}
-	args := []any{}
-	if cwd != "" {
-		updates = append(updates, "cwd = ?")
-		args = append(args, cwd)
-	}
-	if repo != "" {
-		updates = append(updates, "repository = ?")
-		args = append(args, repo)
-	}
-	if branch != "" {
-		updates = append(updates, "git_branch = ?")
-		args = append(args, branch)
-	}
-	if len(updates) == 0 {
-		return
-	}
-	updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-	args = append(args, sessionID)
-	db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
-}
-
-// inferCWDFromSessionName tries to find the filesystem path for a zellij session.
-// It scans ~/go/src/github.com/<org>/<repo> directories.
-//
-// Strategy:
-//  1. If name matches "<repo>-<branch>", look for <repo>/worktree-<branch>
-//  2. If name matches "<repo>", look for the repo directory itself
-func inferCWDFromSessionName(zellijName string) string {
-	repos, err := listRepos()
-	if err != nil {
-		return ""
+	// Collect sessions needing enrichment
+	var needEnrich []store.Session
+	for _, s := range allSessions {
+		if s.CWD == "" && s.Repository == "" {
+			needEnrich = append(needEnrich, s)
+		}
 	}
 
-	// Try exact repo match first (session name = repo base name)
-	for _, r := range repos {
-		base := filepath.Base(r.FullPath)
-		if strings.EqualFold(base, zellijName) {
-			if isDir(r.FullPath) {
-				return r.FullPath
+	// Match untracked CWDs to sessions needing enrichment.
+	// Use inferZellijSession to deterministically match CWD → session name.
+	muxSet := make(map[string]bool)
+	for _, s := range needEnrich {
+		if s.ZellijSession != "" {
+			muxSet[strings.ToLower(s.ZellijSession)] = true
+		}
+	}
+
+	for _, cwd := range untrackedCWDs {
+		matched := inferZellijSession(cwd, muxSet)
+		if matched == "" {
+			continue
+		}
+		// Find the session with this zellij name
+		for _, s := range needEnrich {
+			if !strings.EqualFold(s.ZellijSession, matched) {
+				continue
 			}
+			repo := gitRepoName(cwd)
+			branch := gitBranchName(cwd)
+
+			updates := []string{"cwd = ?"}
+			args := []any{cwd}
+			if repo != "" {
+				updates = append(updates, "repository = ?")
+				args = append(args, repo)
+			}
+			if branch != "" {
+				updates = append(updates, "git_branch = ?")
+				args = append(args, branch)
+			}
+			updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
+			args = append(args, s.ID)
+			db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
+
+			// Remove from muxSet so it doesn't match again
+			delete(muxSet, strings.ToLower(matched))
+			fmt.Printf("Enriched session %s: cwd=%s repo=%s branch=%s\n", s.ZellijSession, cwd, repo, branch)
+			break
 		}
 	}
+}
 
-	// Try "<repo>-<branch>" pattern: split at first '-' and try progressively
-	// e.g. "agentctl-fix-sync" → repo="agentctl", branch="fix-sync"
-	for _, r := range repos {
-		base := filepath.Base(r.FullPath)
-		prefix := strings.ToLower(base) + "-"
-		if !strings.HasPrefix(strings.ToLower(zellijName), prefix) {
-			continue
-		}
-		branchPart := zellijName[len(base)+1:]
-		if branchPart == "" {
-			continue
-		}
-		// Check for worktree-<branch> directory
-		wtPath := filepath.Join(r.FullPath, "worktree-"+branchPart)
-		if isDir(wtPath) {
-			return wtPath
-		}
-	}
-
-	return ""
+// findClaudeProcs returns all running claude processes with CWDs.
+// Extracted as a variable for testability.
+var findClaudeProcs = func() ([]process.ProcessInfo, error) {
+	return process.FindClaudeProcesses()
 }
 
 // gitRepoName extracts the GitHub "owner/repo" from a CWD by running git remote.
@@ -685,11 +680,6 @@ func parseGitHubRepo(remoteURL string) string {
 		return part
 	}
 	return ""
-}
-
-func isDir(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 // listZellijDetailed returns detailed zellij session info.
