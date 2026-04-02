@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/chaspy/agentctl/internal/mux"
-	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/store"
 )
 
@@ -366,72 +365,47 @@ func TestParseGitHubRepo(t *testing.T) {
 	}
 }
 
-func TestEnrichAllEmptySessions(t *testing.T) {
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
+func TestExtractZellijSessionFromCommand(t *testing.T) {
+	tests := []struct {
+		command string
+		want    string
+	}{
+		{"/Users/chaspy/.cargo/bin/zellij --server /var/folders/xx/zellij-501/0.43.1/my-session", "my-session"},
+		{"/usr/bin/zellij --server /tmp/zellij/agentctl-fix-bug", "agentctl-fix-bug"},
+		{"zellij --server /path/to/claude-code-research", "claude-code-research"},
+		{"/bin/zsh", ""},
+		{"claude --dangerously-skip-permissions", ""},
+		{"", ""},
 	}
-	defer db.Close()
-
-	// Session with empty metadata
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude::agentctl-fix-bug", Agent: "claude", ZellijSession: "agentctl-fix-bug",
-		Status: "idle", Alive: true, LastActive: time.Now(),
-	})
-	// Session with existing metadata (should not be touched)
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude:owner/existing:s1", Agent: "claude", Repository: "owner/existing",
-		SessionID: "s1", CWD: "/existing/path", ZellijSession: "existing",
-		Status: "active", Alive: true, LastActive: time.Now(),
-	})
-
-	// Mock: claude process running in a worktree that matches the session name
-	origProcs := findClaudeProcs
-	findClaudeProcs = func() ([]process.ProcessInfo, error) {
-		return []process.ProcessInfo{
-			{PID: 1234, CWD: "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug"},
-			{PID: 5678, CWD: "/existing/path"}, // already tracked
-		}, nil
-	}
-	defer func() { findClaudeProcs = origProcs }()
-
-	origRepo := gitRepoName
-	origBranch := gitBranchName
-	gitRepoName = func(cwd string) string {
-		if cwd == "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
-			return "owner/agentctl"
+	for _, tt := range tests {
+		got := extractZellijSessionFromCommand(tt.command)
+		if got != tt.want {
+			t.Errorf("extractZellijSessionFromCommand(%q) = %q, want %q", tt.command, got, tt.want)
 		}
-		return ""
-	}
-	gitBranchName = func(cwd string) string {
-		if cwd == "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
-			return "fix/bug"
-		}
-		return ""
-	}
-	defer func() { gitRepoName = origRepo; gitBranchName = origBranch }()
-
-	enrichAllEmptySessions(db)
-
-	s, _ := store.GetSession(db, "claude::agentctl-fix-bug")
-	if s.CWD != "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
-		t.Errorf("cwd = %q, want worktree path", s.CWD)
-	}
-	if s.Repository != "owner/agentctl" {
-		t.Errorf("repository = %q, want %q", s.Repository, "owner/agentctl")
-	}
-	if s.GitBranch != "fix/bug" {
-		t.Errorf("git_branch = %q, want %q", s.GitBranch, "fix/bug")
-	}
-
-	// Existing session should not be modified
-	s2, _ := store.GetSession(db, "claude:owner/existing:s1")
-	if s2.Repository != "owner/existing" {
-		t.Errorf("existing session repository changed to %q", s2.Repository)
 	}
 }
 
-func TestEnrichAllEmptySessions_NoProcs(t *testing.T) {
+func TestIsClaudeCommand(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{"claude --dangerously-skip-permissions", true},
+		{"claude --resume", true},
+		{"/usr/local/bin/claude --resume", true},
+		{"/bin/zsh", false},
+		{"zellij --server /path", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		got := isClaudeCommand(tt.command)
+		if got != tt.want {
+			t.Errorf("isClaudeCommand(%q) = %v, want %v", tt.command, got, tt.want)
+		}
+	}
+}
+
+func TestEnrichAllEmptySessions_NoPIDMap(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -443,17 +417,15 @@ func TestEnrichAllEmptySessions_NoProcs(t *testing.T) {
 		Status: "idle", Alive: true, LastActive: time.Now(),
 	})
 
-	origProcs := findClaudeProcs
-	findClaudeProcs = func() ([]process.ProcessInfo, error) {
-		return nil, nil
-	}
-	defer func() { findClaudeProcs = origProcs }()
+	origMap := buildPIDToSessionMap
+	buildPIDToSessionMap = func() map[int]string { return nil }
+	defer func() { buildPIDToSessionMap = origMap }()
 
 	enrichAllEmptySessions(db)
 
 	s, _ := store.GetSession(db, "claude::my-session")
 	if s.CWD != "" {
-		t.Errorf("cwd should remain empty when no procs, got %q", s.CWD)
+		t.Errorf("cwd should remain empty when no PID map, got %q", s.CWD)
 	}
 }
 

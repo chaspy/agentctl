@@ -135,6 +135,11 @@ func FindRemoteControlProcesses() ([]ProcessInfo, error) {
 	return procs, nil
 }
 
+// GetCWDByPID returns the working directory for a given PID using lsof.
+func GetCWDByPID(pid int) string {
+	return getCWD(pid)
+}
+
 // IsAliveForCWD checks if any matching process is running with the given working directory.
 func IsAliveForCWD(procs []ProcessInfo, cwd string) bool {
 	for _, p := range procs {

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -560,87 +562,160 @@ func syncRuntimeStatus(db *sql.DB) {
 	enrichAllEmptySessions(db)
 }
 
-// enrichAllEmptySessions finds claude processes via lsof and matches them
-// to alive sessions that are missing CWD/repository metadata.
+// enrichAllEmptySessions populates CWD/repository/git_branch for alive sessions
+// that are missing metadata. Direction: session → zellij → PID → CWD → git info.
+// No guessing or reverse-matching.
 func enrichAllEmptySessions(db *sql.DB) {
-	claudeProcs, err := findClaudeProcs()
-	if err != nil || len(claudeProcs) == 0 {
+	// Build PID → zellij session name map from process tree.
+	// zellij server .../session-name → zsh → claude
+	pidToSession := buildPIDToSessionMap()
+	if len(pidToSession) == 0 {
 		return
 	}
 
-	// Build set of CWDs already tracked in DB
-	allSessions, _ := store.ListSessionsByAlive(db, true)
-	knownCWDs := make(map[string]bool)
-	for _, s := range allSessions {
-		if s.CWD != "" {
-			knownCWDs[s.CWD] = true
+	aliveSessions, _ := store.ListSessionsByAlive(db, true)
+	for _, s := range aliveSessions {
+		if s.CWD != "" || s.ZellijSession == "" {
+			continue // already has CWD or no zellij session to trace
 		}
-	}
 
-	// Collect untracked claude CWDs
-	var untrackedCWDs []string
-	for _, p := range claudeProcs {
-		if p.CWD != "" && !knownCWDs[p.CWD] {
-			untrackedCWDs = append(untrackedCWDs, p.CWD)
-		}
-	}
-
-	// Collect sessions needing enrichment
-	var needEnrich []store.Session
-	for _, s := range allSessions {
-		if s.CWD == "" && s.Repository == "" {
-			needEnrich = append(needEnrich, s)
-		}
-	}
-
-	// Match untracked CWDs to sessions needing enrichment.
-	// Use inferZellijSession to deterministically match CWD → session name.
-	muxSet := make(map[string]bool)
-	for _, s := range needEnrich {
-		if s.ZellijSession != "" {
-			muxSet[strings.ToLower(s.ZellijSession)] = true
-		}
-	}
-
-	for _, cwd := range untrackedCWDs {
-		matched := inferZellijSession(cwd, muxSet)
-		if matched == "" {
-			continue
-		}
-		// Find the session with this zellij name
-		for _, s := range needEnrich {
-			if !strings.EqualFold(s.ZellijSession, matched) {
+		// Find claude PID belonging to this zellij session
+		var cwd string
+		for pid, sessionName := range pidToSession {
+			if !strings.EqualFold(sessionName, s.ZellijSession) {
 				continue
 			}
-			repo := gitRepoName(cwd)
-			branch := gitBranchName(cwd)
-
-			updates := []string{"cwd = ?"}
-			args := []any{cwd}
-			if repo != "" {
-				updates = append(updates, "repository = ?")
-				args = append(args, repo)
-			}
-			if branch != "" {
-				updates = append(updates, "git_branch = ?")
-				args = append(args, branch)
-			}
-			updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-			args = append(args, s.ID)
-			db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
-
-			// Remove from muxSet so it doesn't match again
-			delete(muxSet, strings.ToLower(matched))
-			fmt.Printf("Enriched session %s: cwd=%s repo=%s branch=%s\n", s.ZellijSession, cwd, repo, branch)
+			cwd = process.GetCWDByPID(pid)
 			break
 		}
+		if cwd == "" {
+			continue
+		}
+
+		repo := gitRepoName(cwd)
+		branch := gitBranchName(cwd)
+
+		updates := []string{"cwd = ?"}
+		args := []any{cwd}
+		if repo != "" {
+			updates = append(updates, "repository = ?")
+			args = append(args, repo)
+		}
+		if branch != "" {
+			updates = append(updates, "git_branch = ?")
+			args = append(args, branch)
+		}
+		updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
+		args = append(args, s.ID)
+		db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
+		fmt.Printf("Enriched session %s: cwd=%s repo=%s branch=%s\n", s.ZellijSession, cwd, repo, branch)
 	}
 }
 
-// findClaudeProcs returns all running claude processes with CWDs.
+// buildPIDToSessionMap maps claude PIDs to their zellij session names
+// by walking the process tree: claude → zsh → zellij --server .../session-name.
 // Extracted as a variable for testability.
-var findClaudeProcs = func() ([]process.ProcessInfo, error) {
-	return process.FindClaudeProcesses()
+var buildPIDToSessionMap = func() map[int]string {
+	// Get all processes with PID, PPID, command
+	out, err := exec.Command("ps", "-eo", "pid=,ppid=,command=").Output()
+	if err != nil {
+		return nil
+	}
+
+	var allProcs []psProc
+	pidToProc := make(map[int]*psProc)
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		p := psProc{pid: pid, ppid: ppid, command: strings.Join(fields[2:], " ")}
+		allProcs = append(allProcs, p)
+		pidToProc[pid] = &allProcs[len(allProcs)-1]
+	}
+
+	result := make(map[int]string)
+	for _, p := range allProcs {
+		// Find claude processes
+		if !isClaudeCommand(p.command) {
+			continue
+		}
+		// Walk up the process tree to find the zellij server ancestor
+		sessionName := findZellijAncestorSession(p.pid, pidToProc)
+		if sessionName != "" {
+			result[p.pid] = sessionName
+		}
+	}
+	return result
+}
+
+// findZellijAncestorSession walks up the process tree from a PID
+// to find a "zellij --server .../session-name" ancestor and extracts the session name.
+// psProc represents a process from ps output.
+type psProc struct {
+	pid     int
+	ppid    int
+	command string
+}
+
+func findZellijAncestorSession(pid int, pidToProc map[int]*psProc) string {
+	visited := make(map[int]bool)
+	current := pid
+	for i := 0; i < 10; i++ { // max depth to prevent infinite loops
+		if visited[current] {
+			break
+		}
+		visited[current] = true
+		p, ok := pidToProc[current]
+		if !ok {
+			break
+		}
+		if name := extractZellijSessionFromCommand(p.command); name != "" {
+			return name
+		}
+		if p.ppid <= 1 {
+			break
+		}
+		current = p.ppid
+	}
+	return ""
+}
+
+// extractZellijSessionFromCommand extracts the session name from a
+// "zellij --server /path/to/session-name" command string.
+func extractZellijSessionFromCommand(command string) string {
+	// Match: zellij --server /some/path/session-name
+	if !strings.Contains(command, "zellij") || !strings.Contains(command, "--server") {
+		return ""
+	}
+	fields := strings.Fields(command)
+	for i, f := range fields {
+		if f == "--server" && i+1 < len(fields) {
+			// The session name is the last component of the server socket path
+			serverPath := fields[i+1]
+			parts := strings.Split(serverPath, "/")
+			if len(parts) > 0 {
+				return parts[len(parts)-1]
+			}
+		}
+	}
+	return ""
+}
+
+// isClaudeCommand checks if a command string is a claude process.
+func isClaudeCommand(command string) bool {
+	for _, field := range strings.Fields(command) {
+		base := filepath.Base(strings.Trim(field, "\"'"))
+		if base == "claude" {
+			return true
+		}
+	}
+	return false
 }
 
 // gitRepoName extracts the GitHub "owner/repo" from a CWD by running git remote.
