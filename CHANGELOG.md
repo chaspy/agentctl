@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.23] - 2026-04-02
+
+### Added
+
+- **Enrich discovered sessions with metadata**: When sync discovers a new zellij session (or finds alive sessions with empty repository), `enrichSessionMetadata` populates CWD, repository, and git_branch automatically
+  - Infers CWD from zellij session name using spawn's naming convention (`repo` or `repo-branch` → worktree path)
+  - Runs `git remote get-url origin` for repository and `git branch --show-current` for branch
+  - Supports both SSH and HTTPS remote URL formats
+
 ## [0.2.22] - 2026-04-02
 
 ### Added
