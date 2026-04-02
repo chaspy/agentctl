@@ -2,15 +2,25 @@
 
 ## [0.2.22] - 2026-04-02
 
-### Fixed
+### Added
 
-- **Zellij as single source of truth for alive**: Sync Stage 1 now fully derives alive status from `zellij list-sessions`
-  - DB + zellij → alive=1
-  - DB + no zellij → alive=0 (record preserved for respawn)
-  - no DB + zellij → new record alive=1 (Director, manual, respawn sessions)
-- **Revive dead sessions**: Sessions marked dead that reappear in zellij (e.g. after respawn) are automatically revived
-- **Removed process-based alive detection**: No longer uses `ps`/`lsof` CWD matching — zellij is the only runtime truth
-- **Removed `validateAliveWithMux` and `buildMuxSessionSet`**: Replaced by unified `syncAliveFromZellij`
+- **`runtime_status` column**: New column on sessions table tracking observed zellij state:
+  - `running`: zellij session is active
+  - `exited`: zellij session is in EXITED state (can be attached to resurrect)
+  - `gone`: zellij session no longer exists (needs respawn/recreate)
+- **Detailed zellij session parsing**: `ListZellijSessionsDetailed` parses full `zellij list-sessions` output including EXITED state (with ANSI code stripping)
+
+### Changed
+
+- **`alive` is now intent, not runtime state**: `alive=1` means "this session should exist" (set by spawn), `alive=0` means "no longer needed" (set by kill). Sync never changes `alive`.
+- **`syncRuntimeStatus` replaces `syncAliveFromZellij`**: Stage 1 of sync only updates `runtime_status` based on zellij, never touches `alive`
+  - DB alive=1 + zellij active → runtime_status='running'
+  - DB alive=1 + zellij EXITED → runtime_status='exited'
+  - DB alive=1 + not in zellij → runtime_status='gone'
+  - Not in DB + in zellij → new record alive=1 with appropriate runtime_status
+- **Removed process-based alive detection**: No longer uses `ps`/`lsof` CWD matching
+- **Removed `validateAliveWithMux`, `buildMuxSessionSet`, `listMuxSessions`**: Replaced by `syncRuntimeStatus` + `listZellijDetailed`
+- **DB migration V11**: Adds `runtime_status` column to `sessions` and `sessions_archive` tables
 
 ## [0.2.21] - 2026-04-02
 

@@ -13,6 +13,7 @@ var migrations = []string{
 	migrationV8,
 	migrationV9,
 	migrationV10,
+	migrationV11,
 }
 
 // Migrate applies all pending schema migrations.
@@ -202,4 +203,9 @@ CREATE INDEX IF NOT EXISTS idx_task_deps_depends ON task_dependencies(depends_on
 ALTER TABLE sessions ADD COLUMN permission_level INTEGER NOT NULL DEFAULT 1;
 
 ALTER TABLE sessions_archive ADD COLUMN permission_level INTEGER NOT NULL DEFAULT 1;
+`
+
+const migrationV11 = `
+ALTER TABLE sessions ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'gone';
+ALTER TABLE sessions_archive ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'gone';
 `
