@@ -247,6 +247,18 @@ func FindSessionByZellijSession(db *sql.DB, query string) ([]Session, error) {
 		FROM sessions WHERE LOWER(zellij_session) LIKE '%' || LOWER(?) || '%' ORDER BY last_active DESC`, query)
 }
 
+// UpdateSessionMetadata updates JSONL-derived metadata for an existing session.
+// This is UPDATE-only — it will NOT create a new record if the ID doesn't exist.
+func UpdateSessionMetadata(db *sql.DB, s *Session) error {
+	_, err := db.Exec(`UPDATE sessions SET
+		status = ?, git_branch = ?, last_message = ?, last_role = ?,
+		last_active = ?, role = ?, is_loop = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`,
+		s.Status, s.GitBranch, s.LastMessage, s.LastRole,
+		s.LastActive, s.Role, s.IsLoop, s.ID)
+	return err
+}
+
 // UpdateTaskSummary overwrites the task_summary for the given session ID.
 func UpdateTaskSummary(db *sql.DB, id, summary string) error {
 	_, err := db.Exec("UPDATE sessions SET task_summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", summary, id)

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
 	"github.com/chaspy/agentctl/internal/store"
@@ -21,14 +20,19 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+// SyncFunc is the function signature for syncing sessions to DB.
+// It takes (db, agentFilter, hours, regenerateSummaries) and returns (count, error).
+type SyncFunc func(*sql.DB, string, int, bool) (int, error)
+
 // Server serves the PWA dashboard and API endpoints.
 type Server struct {
-	db *sql.DB
+	db       *sql.DB
+	syncFunc SyncFunc
 }
 
-// New creates a new Server with the given database connection.
-func New(db *sql.DB) *Server {
-	return &Server{db: db}
+// New creates a new Server with the given database connection and sync function.
+func New(db *sql.DB, syncFunc SyncFunc) *Server {
+	return &Server{db: db, syncFunc: syncFunc}
 }
 
 // Handler returns the HTTP handler for the server.
@@ -275,97 +279,10 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── Stage 1: Zellij Truth ──
-	// Mark DB sessions dead if their zellij session no longer exists.
-	muxSet := buildWebMuxSessionSet()
-	if muxSet != nil {
-		aliveSessions, _ := store.ListSessionsByAlive(s.db, true)
-		for _, sess := range aliveSessions {
-			if sess.ZellijSession == "" {
-				s.db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", sess.ID)
-				continue
-			}
-			if !muxSet[strings.ToLower(sess.ZellijSession)] {
-				s.db.Exec("UPDATE sessions SET alive = 0, status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE id = ?", sess.ID)
-			}
-		}
-	}
-
-	// ── Stage 2: JSONL Enrichment ──
-	// Only enrich existing DB sessions — do NOT create new sessions from JSONL.
-	maxAge := 24 * time.Hour
-	sessions, _ := provider.ScanClaudeSessions(maxAge)
-	codexSessions, _ := provider.ScanCodexSessions(maxAge)
-	sessions = append(sessions, codexSessions...)
-
-	claudeProcs, _ := process.FindClaudeProcesses()
-	codexProcs, _ := process.FindCodexProcesses()
-
-	// Build CWD -> JSONL index
-	jsonlByCWD := make(map[string]provider.SessionInfo)
-	for _, sess := range sessions {
-		if sess.CWD != "" {
-			// Keep most recent per CWD
-			if existing, ok := jsonlByCWD[sess.CWD]; !ok || sess.ModTime.After(existing.ModTime) {
-				jsonlByCWD[sess.CWD] = sess
-			}
-		}
-	}
-
-	// Enrich alive DB sessions with JSONL metadata
-	aliveSessions, _ := store.ListSessionsByAlive(s.db, true)
-	var count int
-	for _, dbSess := range aliveSessions {
-		jsonl, found := jsonlByCWD[dbSess.CWD]
-		if !found {
-			continue
-		}
-
-		alive := false
-		switch provider.Agent(dbSess.Agent) {
-		case provider.AgentClaude:
-			alive = process.IsAliveForCWD(claudeProcs, dbSess.CWD)
-		case provider.AgentCodex:
-			alive = process.IsAliveForCWD(codexProcs, dbSess.CWD)
-		}
-
-		// Validate alive against mux
-		zellijSession := dbSess.ZellijSession
-		if alive && muxSet != nil {
-			if zellijSession == "" || !muxSet[strings.ToLower(zellijSession)] {
-				alive = false
-			}
-		} else if alive && muxSet == nil {
-			alive = false
-		}
-
-		statusMsg := jsonl.LastFullMessage
-		if statusMsg == "" {
-			statusMsg = jsonl.LastMessage
-		}
-		status := session.DetectStatus(statusMsg, jsonl.LastRole, alive, jsonl.ErrorType, jsonl.IsAPIError)
-
-		role := dbSess.Role
-		if role == "" {
-			role = "worker"
-		}
-
-		_ = store.UpsertSession(s.db, &store.Session{
-			ID:            dbSess.ID,
-			Agent:         dbSess.Agent,
-			Repository:    dbSess.Repository,
-			SessionID:     dbSess.SessionID,
-			CWD:           dbSess.CWD,
-			GitBranch:     jsonl.GitBranch,
-			ZellijSession: zellijSession,
-			Status:        status,
-			Alive:         alive,
-			LastMessage:   jsonl.LastMessage,
-			LastRole:      jsonl.LastRole,
-			LastActive:    jsonl.ModTime,
-			Role:          role,
-		})
-		count++
+	count, err := s.syncFunc(s.db, "all", 24, false)
+	if err != nil {
+		http.Error(w, "sync error: "+err.Error(), 500)
+		return
 	}
 
 	writeJSON(w, map[string]int{"synced": count})
@@ -486,46 +403,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, messages)
 }
 
-// buildWebMuxSessionSet returns a set of lowercased mux session names.
-func buildWebMuxSessionSet() map[string]bool {
-	out, err := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	if err != nil {
-		return nil
-	}
-	lines := splitLines(string(out))
-	if len(lines) == 0 {
-		return nil
-	}
-	set := make(map[string]bool, len(lines))
-	for _, l := range lines {
-		set[strings.ToLower(l)] = true
-	}
-	return set
-}
 
-// inferWebZellijSession derives the expected zellij session name from a CWD path.
-func inferWebZellijSession(cwd string, muxSet map[string]bool) string {
-	if cwd == "" || muxSet == nil {
-		return ""
-	}
-	parts := strings.Split(strings.TrimRight(cwd, "/"), "/")
-	if len(parts) == 0 {
-		return ""
-	}
-	lastPart := parts[len(parts)-1]
-	if strings.HasPrefix(lastPart, "worktree-") && len(parts) >= 2 {
-		repoBase := parts[len(parts)-2]
-		branch := strings.TrimPrefix(lastPart, "worktree-")
-		candidate := repoBase + "-" + branch
-		if muxSet[strings.ToLower(candidate)] {
-			return candidate
-		}
-	}
-	if muxSet[strings.ToLower(lastPart)] {
-		return lastPart
-	}
-	return ""
-}
 
 func splitLines(s string) []string {
 	var lines []string

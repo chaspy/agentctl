@@ -37,7 +37,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	// Note: db is kept open for the lifetime of the server
 
-	srv := web.New(db)
+	srv := web.New(db, syncSessionsToDB)
 	addr := fmt.Sprintf(":%d", servePort)
 	fmt.Printf("Agents Manager dashboard: http://localhost%s\n", addr)
 	fmt.Printf("For mobile access: tailscale serve --bg %d\n", servePort)
