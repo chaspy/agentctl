@@ -12,6 +12,7 @@ var migrations = []string{
 	migrationV7,
 	migrationV8,
 	migrationV9,
+	migrationV10,
 }
 
 // Migrate applies all pending schema migrations.
@@ -182,4 +183,23 @@ FROM sessions
 WHERE alive = 0 AND status IN ('dead', 'error');
 
 DELETE FROM sessions WHERE alive = 0 AND status IN ('dead', 'error');
+`
+
+const migrationV10 = `
+ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+	task_id    INTEGER NOT NULL,
+	depends_on INTEGER NOT NULL,
+	PRIMARY KEY (task_id, depends_on),
+	FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+	FOREIGN KEY (depends_on) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_deps_depends ON task_dependencies(depends_on);
+
+ALTER TABLE sessions ADD COLUMN permission_level INTEGER NOT NULL DEFAULT 1;
+
+ALTER TABLE sessions_archive ADD COLUMN permission_level INTEGER NOT NULL DEFAULT 1;
 `

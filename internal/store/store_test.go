@@ -169,6 +169,193 @@ func TestTaskCRUD(t *testing.T) {
 	}
 }
 
+func TestTaskOwnerAndDependencies(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	UpsertSession(db, &Session{
+		ID: "claude:test:s1", Agent: "claude", Repository: "test", SessionID: "s1",
+		Status: "active", LastActive: time.Now(),
+	})
+
+	// Create tasks with owner
+	t1 := &Task{SessionID: "claude:test:s1", Description: "setup infra", Status: "pending", Owner: "worker-1"}
+	t2 := &Task{SessionID: "claude:test:s1", Description: "build API", Status: "pending", Owner: "worker-2"}
+	t3 := &Task{SessionID: "claude:test:s1", Description: "write tests", Status: "pending"}
+	if err := CreateTask(db, t1); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateTask(db, t2); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateTask(db, t3); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify owner is persisted
+	got, err := GetTaskByID(db, t1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Owner != "worker-1" {
+		t.Errorf("expected owner worker-1, got %q", got.Owner)
+	}
+
+	// Update owner
+	if err := UpdateTaskOwner(db, t3.ID, "worker-3"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = GetTaskByID(db, t3.ID)
+	if got.Owner != "worker-3" {
+		t.Errorf("expected owner worker-3, got %q", got.Owner)
+	}
+
+	// Add dependencies: t2 blocked by t1, t3 blocked by t1 and t2
+	if err := AddTaskDependency(db, t2.ID, t1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddTaskDependency(db, t3.ID, t1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddTaskDependency(db, t3.ID, t2.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check blockedBy
+	blockedBy, err := GetBlockedBy(db, t3.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blockedBy) != 2 {
+		t.Errorf("expected 2 blockers for t3, got %d", len(blockedBy))
+	}
+
+	// Check blocks
+	blocks, err := GetBlocks(db, t1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 2 {
+		t.Errorf("expected t1 to block 2 tasks, got %d", len(blocks))
+	}
+
+	// IsTaskBlocked
+	blocked, err := IsTaskBlocked(db, t2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocked {
+		t.Error("t2 should be blocked by t1")
+	}
+
+	// GetReadyTasks — only t1 should be ready
+	ready, err := GetReadyTasks(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready) != 1 || ready[0].ID != t1.ID {
+		t.Errorf("expected only t1 ready, got %+v", ready)
+	}
+
+	// Complete t1 — now t2 becomes ready
+	UpdateTaskStatus(db, t1.ID, "completed", "done")
+	ready, _ = GetReadyTasks(db)
+	if len(ready) != 1 || ready[0].ID != t2.ID {
+		t.Errorf("after completing t1, expected t2 ready, got %+v", ready)
+	}
+
+	blocked, _ = IsTaskBlocked(db, t2.ID)
+	if blocked {
+		t.Error("t2 should no longer be blocked after t1 completed")
+	}
+
+	// Complete t2 — now t3 becomes ready
+	UpdateTaskStatus(db, t2.ID, "completed", "done")
+	ready, _ = GetReadyTasks(db)
+	if len(ready) != 1 || ready[0].ID != t3.ID {
+		t.Errorf("after completing t2, expected t3 ready, got %+v", ready)
+	}
+
+	// Remove dependency
+	if err := RemoveTaskDependency(db, t3.ID, t1.ID); err != nil {
+		t.Fatal(err)
+	}
+	blockedBy, _ = GetBlockedBy(db, t3.ID)
+	if len(blockedBy) != 1 {
+		t.Errorf("expected 1 blocker after removal, got %d", len(blockedBy))
+	}
+
+	// Duplicate dependency should be ignored (INSERT OR IGNORE)
+	if err := AddTaskDependency(db, t3.ID, t2.ID); err != nil {
+		t.Fatal(err)
+	}
+	blockedBy, _ = GetBlockedBy(db, t3.ID)
+	if len(blockedBy) != 1 {
+		t.Errorf("duplicate dep should be ignored, got %d blockers", len(blockedBy))
+	}
+}
+
+func TestPermissionLevel(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Default permission level should be 1 (suggest)
+	UpsertSession(db, &Session{
+		ID: "claude:test:s1", Agent: "claude", Repository: "test", SessionID: "s1",
+		Status: "active", LastActive: time.Now(),
+	})
+	got, _ := GetSession(db, "claude:test:s1")
+	if got.PermissionLevel != PermissionSuggest {
+		t.Errorf("expected default permission %d, got %d", PermissionSuggest, got.PermissionLevel)
+	}
+
+	// Set permission level
+	if err := SetPermissionLevel(db, "claude:test:s1", PermissionAutoEdit); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = GetSession(db, "claude:test:s1")
+	if got.PermissionLevel != PermissionAutoEdit {
+		t.Errorf("expected permission %d, got %d", PermissionAutoEdit, got.PermissionLevel)
+	}
+
+	// Upsert should preserve higher permission level
+	UpsertSession(db, &Session{
+		ID: "claude:test:s1", Agent: "claude", Repository: "test", SessionID: "s1",
+		Status: "active", LastActive: time.Now(),
+	})
+	got, _ = GetSession(db, "claude:test:s1")
+	if got.PermissionLevel != PermissionAutoEdit {
+		t.Errorf("upsert should preserve permission level, got %d", got.PermissionLevel)
+	}
+
+	// Upsert with explicit higher level should update
+	UpsertSession(db, &Session{
+		ID: "claude:test:s1", Agent: "claude", Repository: "test", SessionID: "s1",
+		Status: "active", LastActive: time.Now(), PermissionLevel: PermissionFullAuto,
+	})
+	got, _ = GetSession(db, "claude:test:s1")
+	if got.PermissionLevel != PermissionFullAuto {
+		t.Errorf("expected permission %d, got %d", PermissionFullAuto, got.PermissionLevel)
+	}
+
+	// PermissionLabel
+	if PermissionLabel(PermissionSuggest) != "suggest" {
+		t.Error("unexpected label for suggest")
+	}
+	if PermissionLabel(PermissionFullAuto) != "full-auto" {
+		t.Error("unexpected label for full-auto")
+	}
+	if PermissionLabel(99) != "unknown" {
+		t.Error("unexpected label for unknown level")
+	}
+}
+
 func TestActionLog(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

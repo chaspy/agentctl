@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.20] - 2026-04-02
+
+### Added
+
+- **Task dependencies**: Tasks now support `blocks`/`blockedBy` relationships via `task_dependencies` table. New CLI commands: `agentctl state task dep`, `undep`, `ready`
+- **Task owner**: Tasks can have an `owner` field (`--owner` flag on `task add`) to track which agent/session is responsible
+- **Permission 5-level model**: Sessions have a `permission_level` column (1=suggest, 2=auto-read, 3=auto-edit, 4=auto-run, 5=full-auto) inspired by Anthropic's graduated constraint pattern
+- **Ready task query**: `agentctl state task ready` lists tasks with no incomplete blockers, enabling dependency-aware scheduling
+
 ## [0.2.19] - 2026-04-02
 
 ### Fixed
