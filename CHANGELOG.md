@@ -21,6 +21,7 @@
 - **Removed process-based alive detection**: No longer uses `ps`/`lsof` CWD matching
 - **Removed `validateAliveWithMux`, `buildMuxSessionSet`, `listMuxSessions`**: Replaced by `syncRuntimeStatus` + `listZellijDetailed`
 - **DB migration V11**: Adds `runtime_status` column to `sessions` and `sessions_archive` tables
+- **`enrichSessionMetadata`**: Discovered zellij sessions are enriched with CWD, repository, and git_branch by inferring the working directory from the session name and running `git remote get-url origin` / `git branch --show-current`
 
 ## [0.2.21] - 2026-04-02
 
