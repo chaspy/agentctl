@@ -45,6 +45,12 @@ agentctl rate
 # Spawn a new session
 agentctl spawn owner/repo --branch feature/foo --message "implement feature X"
 
+# Let agentctl choose Claude/Codex automatically from task type + current rate state
+agentctl spawn owner/repo --branch feature/foo --task-type research --agent auto --message "analyze PR #123"
+
+# Pin a repository to Codex workers by default
+agentctl config set owner/repo --agent codex
+
 # Kill a session (with safety checks)
 agentctl kill <session-name>
 
@@ -96,7 +102,7 @@ agentctl uses SQLite for persistent state. The database is stored at `~/.agentct
 - **Sessions**: Synced from live scans, preserving status history
 - **Tasks**: Track work items per session
 - **Actions**: Log decisions and events for auditability
-- **Repo configs**: Per-repository settings (branching mode, descriptions)
+- **Repo configs**: Per-repository settings (branching mode, preferred agent, descriptions)
 
 ## Architecture
 
