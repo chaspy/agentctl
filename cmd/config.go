@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	configSetMode string
-	configSetDesc string
+	configSetMode  string
+	configSetAgent string
+	configSetDesc  string
 )
 
 var configCmd = &cobra.Command{
@@ -26,14 +27,16 @@ var configSetCmd = &cobra.Command{
 	Long: `Set configuration for a repository.
 
 Use --mode to set operation mode ("main" or "branch").
+Use --agent to set the preferred worker agent ("auto", "claude", or "codex").
 Use --desc to set a repository description/rules.
 
-At least one of --mode or --desc must be specified.
+At least one of --mode, --agent, or --desc must be specified.
 
 Examples:
   agentctl config set owner/myrepo --mode main
+  agentctl config set owner/myrepo --agent codex
   agentctl config set owner/myrepo --desc "CLI tool for managing Claude sessions"
-  agentctl config set owner/myrepo --mode main --desc "CLI tool"`,
+  agentctl config set owner/myrepo --mode main --agent auto --desc "CLI tool"`,
 	Args: cobra.ExactArgs(1),
 	RunE: runConfigSet,
 }
@@ -59,18 +62,22 @@ func init() {
 	configCmd.AddCommand(configListCmd)
 
 	configSetCmd.Flags().StringVar(&configSetMode, "mode", "", `Operation mode: "main" or "branch"`)
+	configSetCmd.Flags().StringVar(&configSetAgent, "agent", "", `Preferred agent: "auto", "claude", or "codex"`)
 	configSetCmd.Flags().StringVar(&configSetDesc, "desc", "", "Repository description/rules")
 }
 
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	repo := args[0]
 
-	if configSetMode == "" && configSetDesc == "" {
-		return fmt.Errorf("at least one of --mode or --desc must be specified")
+	if configSetMode == "" && configSetAgent == "" && configSetDesc == "" {
+		return fmt.Errorf("at least one of --mode, --agent, or --desc must be specified")
 	}
 
 	if configSetMode != "" && configSetMode != "main" && configSetMode != "branch" {
 		return fmt.Errorf("invalid mode %q: must be \"main\" or \"branch\"", configSetMode)
+	}
+	if configSetAgent != "" && configSetAgent != "auto" && configSetAgent != "claude" && configSetAgent != "codex" {
+		return fmt.Errorf("invalid agent %q: must be \"auto\", \"claude\", or \"codex\"", configSetAgent)
 	}
 
 	db, err := store.Open("")
@@ -84,6 +91,13 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("set repo mode: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "Set %s mode → %s\n", repo, configSetMode)
+	}
+
+	if configSetAgent != "" {
+		if err := store.SetRepoAgent(db, repo, configSetAgent); err != nil {
+			return fmt.Errorf("set repo agent: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Set %s agent → %s\n", repo, configSetAgent)
 	}
 
 	if configSetDesc != "" {
@@ -111,12 +125,17 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if cfg == nil {
-		fmt.Printf("%s: mode=branch (default), description=(none)\n", repo)
+		fmt.Printf("%s: mode=branch (default), agent=auto (default), description=(none)\n", repo)
 		return nil
 	}
 
 	fmt.Printf("Repository:  %s\n", cfg.Repo)
 	fmt.Printf("Mode:        %s\n", cfg.Mode)
+	if cfg.Agent != "" {
+		fmt.Printf("Agent:       %s\n", cfg.Agent)
+	} else {
+		fmt.Printf("Agent:       auto\n")
+	}
 	if cfg.Description != "" {
 		fmt.Printf("Description: %s\n", cfg.Description)
 	} else {
@@ -139,18 +158,22 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(configs) == 0 {
-		fmt.Println("No repository configurations set. Default mode is \"branch\".")
+		fmt.Println("No repository configurations set. Defaults: mode=branch, agent=auto.")
 		return nil
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "REPO\tMODE\tDESCRIPTION\tUPDATED")
+	fmt.Fprintln(w, "REPO\tMODE\tAGENT\tDESCRIPTION\tUPDATED")
 	for _, c := range configs {
 		desc := c.Description
 		if len(desc) > 50 {
 			desc = desc[:47] + "..."
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Repo, c.Mode, desc, c.UpdatedAt)
+		agent := c.Agent
+		if agent == "" {
+			agent = "auto"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", c.Repo, c.Mode, agent, desc, c.UpdatedAt)
 	}
 	return w.Flush()
 }

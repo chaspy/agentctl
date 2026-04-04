@@ -9,29 +9,32 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
 )
 
 var (
-	spawnBranch  string
-	spawnName    string
-	spawnMessage string
-	spawnSummary string
-	spawnLoop    bool
+	spawnBranch   string
+	spawnName     string
+	spawnMessage  string
+	spawnSummary  string
+	spawnLoop     bool
+	spawnAgent    string
+	spawnTaskType string
 )
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn <repo>",
-	Short: "Create a new zellij session with claude in the specified repo",
+	Short: "Create a new zellij session with Claude or Codex in the specified repo",
 	Long: `Resolves a repository short name (e.g. "org/myproject" or "myproject"),
 optionally creates a git worktree for the specified branch, creates a new zellij session,
-and starts claude in it.
+and starts the selected agent in it.
 
 Examples:
   agentctl spawn owner/repo
   agentctl spawn myproject --branch fix/bug-123
-  agentctl spawn myproject --branch fix/bug-123 --message "issue #123 を修正して"`,
+  agentctl spawn myproject --branch fix/bug-123 --agent codex --message "issue #123 を修正して"`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSpawn,
 }
@@ -40,9 +43,11 @@ func init() {
 	rootCmd.AddCommand(spawnCmd)
 	spawnCmd.Flags().StringVar(&spawnBranch, "branch", "", "Create a worktree with this branch name")
 	spawnCmd.Flags().StringVar(&spawnName, "name", "", "Zellij session name (auto-generated if not set)")
-	spawnCmd.Flags().StringVar(&spawnMessage, "message", "", "Initial instruction to send after claude starts")
+	spawnCmd.Flags().StringVar(&spawnMessage, "message", "", "Initial instruction to send after the agent starts")
 	spawnCmd.Flags().StringVar(&spawnSummary, "summary", "", "Task summary for this session (skips LLM generation)")
 	spawnCmd.Flags().BoolVar(&spawnLoop, "loop", false, "Mark this session as a loop session (is_loop=1 in DB)")
+	spawnCmd.Flags().StringVar(&spawnAgent, "agent", "", `Worker agent: "auto", "claude", or "codex" (defaults to repo config, then auto)`)
+	spawnCmd.Flags().StringVar(&spawnTaskType, "task-type", "general", `Task type hint for auto routing: "general", "implementation", "research", "docs", or "review"`)
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
@@ -54,15 +59,30 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	workDir := repo.FullPath
 	repoBaseName := filepath.Base(repo.FullPath)
 	sessionName := spawnName
-
-	// Check repo config mode (default: "branch")
 	repoMode := "branch"
+	repoAgent := spawnAgentAuto
+
 	if db, err := store.Open(""); err == nil {
-		if mode, err := store.GetRepoConfig(db, repo.ShortName); err == nil && mode != "" {
-			repoMode = mode
+		if cfg, err := store.GetRepoFullConfig(db, repo.ShortName); err == nil && cfg != nil {
+			if cfg.Mode != "" {
+				repoMode = cfg.Mode
+			}
+			if cfg.Agent != "" {
+				repoAgent = cfg.Agent
+			}
 		}
 		db.Close()
 	}
+
+	agentPref := spawnAgent
+	if agentPref == "" {
+		agentPref = repoAgent
+	}
+	selectedAgent, reason, err := chooseSpawnAgent(agentPref, spawnTaskType)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Selected agent %q (%s)\n", selectedAgent, reason)
 
 	// If mode=main and no branch specified, work directly on main
 	if repoMode == "main" && spawnBranch == "" {
@@ -145,12 +165,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	_ = dismissTip.Run()
 	time.Sleep(500 * time.Millisecond)
 
-	// Start claude in the new session with bypass permissions for unattended operation.
-	// Deny rules in ~/.claude/settings.json still apply in bypass mode.
+	// Start the selected agent in the new session.
 	writeChars := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write-chars", "claude --dangerously-skip-permissions")
+		"zellij", "-s", sessionName, "action", "write-chars", agentLaunchCommand(selectedAgent))
 	if out, err := writeChars.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send claude command: %w\n%s", err, string(out))
+		return fmt.Errorf("failed to send %s command: %w\n%s", selectedAgent, err, string(out))
 	}
 	writeEnter := exec.Command("env", "-u", "ZELLIJ",
 		"zellij", "-s", sessionName, "action", "write", "13")
@@ -170,10 +189,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		})
 
 		// Register session in DB so sync can find it by zellij_session
-		sessionID := fmt.Sprintf("claude:%s:zellij-%s", repo.ShortName, sessionName)
+		sessionID := fmt.Sprintf("%s:%s:zellij-%s", selectedAgent, repo.ShortName, sessionName)
 		_ = store.UpsertSession(db, &store.Session{
 			ID:            sessionID,
-			Agent:         "claude",
+			Agent:         string(selectedAgent),
 			Repository:    repo.ShortName,
 			SessionID:     "zellij-" + sessionName,
 			CWD:           workDir,
@@ -193,12 +212,19 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if selectedAgent == provider.AgentCodex {
+		fmt.Fprintf(os.Stderr, "Waiting for codex to become ready...\n")
+		if err := waitForCodexReady(sessionName, 20*time.Second); err != nil {
+			return err
+		}
+	}
+
 	// Send initial message if specified
 	if spawnMessage != "" {
-		// Wait for claude to initialize
-		fmt.Fprintf(os.Stderr, "Waiting for claude to start...\n")
-		time.Sleep(5 * time.Second)
-
+		if selectedAgent != provider.AgentCodex {
+			fmt.Fprintf(os.Stderr, "Waiting for %s to start...\n", selectedAgent)
+			time.Sleep(5 * time.Second)
+		}
 		writeMsg := exec.Command("env", "-u", "ZELLIJ",
 			"zellij", "-s", sessionName, "action", "write-chars", spawnMessage)
 		if out, err := writeMsg.CombinedOutput(); err != nil {

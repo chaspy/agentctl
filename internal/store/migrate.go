@@ -14,6 +14,7 @@ var migrations = []string{
 	migrationV9,
 	migrationV10,
 	migrationV11,
+	migrationV12,
 }
 
 // Migrate applies all pending schema migrations.
@@ -208,4 +209,8 @@ ALTER TABLE sessions_archive ADD COLUMN permission_level INTEGER NOT NULL DEFAUL
 const migrationV11 = `
 ALTER TABLE sessions ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'gone';
 ALTER TABLE sessions_archive ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'gone';
+`
+
+const migrationV12 = `
+ALTER TABLE repo_config ADD COLUMN agent TEXT NOT NULL DEFAULT 'auto';
 `

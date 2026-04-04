@@ -805,6 +805,18 @@ func TestRepoConfigCRUD(t *testing.T) {
 		t.Errorf("expected description, got %q", desc)
 	}
 
+	// Set preferred agent
+	if err := SetRepoAgent(db, "owner/myrepo", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := GetRepoAgent(db, "owner/myrepo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent != "codex" {
+		t.Errorf("expected codex, got %q", agent)
+	}
+
 	// Verify mode was not overwritten by SetRepoDescription
 	mode, _ = GetRepoConfig(db, "owner/myrepo")
 	if mode != "branch" {
@@ -819,8 +831,8 @@ func TestRepoConfigCRUD(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("expected non-nil config")
 	}
-	if cfg.Mode != "branch" || cfg.Description != "CLI tool for managing Claude sessions" {
-		t.Errorf("GetRepoFullConfig: mode=%q desc=%q", cfg.Mode, cfg.Description)
+	if cfg.Mode != "branch" || cfg.Agent != "codex" || cfg.Description != "CLI tool for managing Claude sessions" {
+		t.Errorf("GetRepoFullConfig: mode=%q agent=%q desc=%q", cfg.Mode, cfg.Agent, cfg.Description)
 	}
 
 	// GetRepoFullConfig for non-existent repo
@@ -843,6 +855,10 @@ func TestRepoConfigCRUD(t *testing.T) {
 	desc, _ = GetRepoDescription(db, "chaspy/new-repo")
 	if desc != "A new repo" {
 		t.Errorf("expected 'A new repo', got %q", desc)
+	}
+	agent, _ = GetRepoAgent(db, "chaspy/new-repo")
+	if agent != "auto" {
+		t.Errorf("new repo should have default agent 'auto', got %q", agent)
 	}
 
 	// GetRepoDescription for non-existent repo
@@ -867,8 +883,8 @@ func TestRepoConfigCRUD(t *testing.T) {
 	}
 	// Verify description is returned in list
 	for _, c := range configs {
-		if c.Repo == "owner/myrepo" && c.Description != "CLI tool for managing Claude sessions" {
-			t.Errorf("list: expected description for agentctl, got %q", c.Description)
+		if c.Repo == "owner/myrepo" && (c.Description != "CLI tool for managing Claude sessions" || c.Agent != "codex") {
+			t.Errorf("list: expected description/agent for owner/myrepo, got description=%q agent=%q", c.Description, c.Agent)
 		}
 	}
 

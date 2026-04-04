@@ -6,6 +6,7 @@ import "database/sql"
 type RepoConfig struct {
 	Repo        string
 	Mode        string // "main" or "branch"
+	Agent       string // "auto", "claude", or "codex"
 	Description string
 	CreatedAt   string
 	UpdatedAt   string
@@ -20,11 +21,21 @@ func SetRepoConfig(db *sql.DB, repo, mode string) error {
 	return err
 }
 
+// SetRepoAgent upserts a repository's preferred agent.
+// If the repo doesn't exist yet, it creates a row with mode="branch" (default).
+func SetRepoAgent(db *sql.DB, repo, agent string) error {
+	_, err := db.Exec(`INSERT INTO repo_config (repo, mode, agent, created_at, updated_at)
+		VALUES (?, 'branch', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(repo) DO UPDATE SET agent=excluded.agent, updated_at=CURRENT_TIMESTAMP`,
+		repo, agent)
+	return err
+}
+
 // SetRepoDescription upserts a repository description.
 // If the repo doesn't exist yet, it creates a row with mode="branch" (default).
 func SetRepoDescription(db *sql.DB, repo, description string) error {
-	_, err := db.Exec(`INSERT INTO repo_config (repo, mode, description, created_at, updated_at)
-		VALUES (?, 'branch', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	_, err := db.Exec(`INSERT INTO repo_config (repo, mode, agent, description, created_at, updated_at)
+		VALUES (?, 'branch', 'auto', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		ON CONFLICT(repo) DO UPDATE SET description=excluded.description, updated_at=CURRENT_TIMESTAMP`,
 		repo, description)
 	return err
@@ -50,11 +61,21 @@ func GetRepoDescription(db *sql.DB, repo string) (string, error) {
 	return desc, err
 }
 
+// GetRepoAgent retrieves the preferred agent for a repository. Returns empty string if not found.
+func GetRepoAgent(db *sql.DB, repo string) (string, error) {
+	var agent string
+	err := db.QueryRow("SELECT agent FROM repo_config WHERE repo = ?", repo).Scan(&agent)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return agent, err
+}
+
 // GetRepoFullConfig retrieves the full configuration for a repository. Returns nil if not found.
 func GetRepoFullConfig(db *sql.DB, repo string) (*RepoConfig, error) {
 	var c RepoConfig
-	err := db.QueryRow("SELECT repo, mode, description, created_at, updated_at FROM repo_config WHERE repo = ?", repo).
-		Scan(&c.Repo, &c.Mode, &c.Description, &c.CreatedAt, &c.UpdatedAt)
+	err := db.QueryRow("SELECT repo, mode, agent, description, created_at, updated_at FROM repo_config WHERE repo = ?", repo).
+		Scan(&c.Repo, &c.Mode, &c.Agent, &c.Description, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -66,7 +87,7 @@ func GetRepoFullConfig(db *sql.DB, repo string) (*RepoConfig, error) {
 
 // ListRepoConfigs returns all repository configurations.
 func ListRepoConfigs(db *sql.DB) ([]RepoConfig, error) {
-	rows, err := db.Query("SELECT repo, mode, description, created_at, updated_at FROM repo_config ORDER BY repo")
+	rows, err := db.Query("SELECT repo, mode, agent, description, created_at, updated_at FROM repo_config ORDER BY repo")
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +96,7 @@ func ListRepoConfigs(db *sql.DB) ([]RepoConfig, error) {
 	var configs []RepoConfig
 	for rows.Next() {
 		var c RepoConfig
-		if err := rows.Scan(&c.Repo, &c.Mode, &c.Description, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.Repo, &c.Mode, &c.Agent, &c.Description, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		configs = append(configs, c)

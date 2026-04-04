@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.26] - 2026-04-04
+
+### Added
+
+- **Agent-aware spawn routing**: `agentctl spawn` now accepts `--agent auto|claude|codex` and `--task-type`
+  - `--agent auto` chooses between Claude and Codex based on task type plus current observed rate capacity
+  - Research/docs work now prefers Codex; implementation/review work prefers Claude unless Claude is rate-limited
+- **Per-repository agent preference**: `agentctl config set <repo> --agent auto|claude|codex`
+  - Stored in `repo_config.agent`
+  - Used as the default when `spawn --agent` is omitted
+
+### Changed
+
+- **Codex spawn support**: `spawn` can now launch interactive Codex workers directly in zellij
+  - Registers spawned Codex sessions in SQLite immediately, so `list --sync --agent codex` can track them
+  - Automatically accepts Codex's directory trust prompt during startup before sending the initial message
+
 ## [0.2.25] - 2026-04-03
 
 ### Changed
