@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/chaspy/agentctl/internal/mux"
-	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/store"
 )
 
@@ -46,6 +45,26 @@ func TestRepoFromRepository(t *testing.T) {
 		got := repoFromRepository(tt.input)
 		if got != tt.want {
 			t.Errorf("repoFromRepository(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseGitHubRepo(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"git@github.com:chaspy/agentctl.git", "chaspy/agentctl"},
+		{"https://github.com/chaspy/agentctl.git", "chaspy/agentctl"},
+		{"https://github.com/chaspy/agentctl", "chaspy/agentctl"},
+		{"git@github.com:owner/repo.git", "owner/repo"},
+		{"", ""},
+		{"https://gitlab.com/owner/repo.git", ""},
+	}
+	for _, tt := range tests {
+		got := parseGitHubRepo(tt.input)
+		if got != tt.want {
+			t.Errorf("parseGitHubRepo(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }
@@ -97,6 +116,14 @@ func mockZellijDetailed(sessions []mux.ZellijSessionState) func() {
 		return sessions, nil
 	}
 	return func() { listZellijDetailed = orig }
+}
+
+func mockZellijCWD(cwdMap map[string]string) func() {
+	orig := zellijCWD
+	zellijCWD = func(sessionName string) string {
+		return cwdMap[sessionName]
+	}
+	return func() { zellijCWD = orig }
 }
 
 func TestSyncRuntimeStatus_Running(t *testing.T) {
@@ -152,9 +179,6 @@ func TestSyncRuntimeStatus_Exited(t *testing.T) {
 	if s1.RuntimeStatus != "exited" {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "exited")
 	}
-	if !s1.Alive {
-		t.Error("alive should not be changed by sync")
-	}
 }
 
 func TestSyncRuntimeStatus_Gone(t *testing.T) {
@@ -171,7 +195,6 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 		LastActive:     time.Now(),
 	})
 
-	// Zellij has no sessions
 	restore := mockZellijDetailed([]mux.ZellijSessionState{})
 	defer restore()
 
@@ -181,7 +204,6 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 	if s1.RuntimeStatus != "gone" {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
 	}
-	// alive must NOT change — it's intent, not runtime
 	if !s1.Alive {
 		t.Error("alive should not be changed by sync (alive=intent)")
 	}
@@ -194,7 +216,6 @@ func TestSyncRuntimeStatus_NeverChangesAlive(t *testing.T) {
 	}
 	defer db.Close()
 
-	// alive=false (killed), zellij still has it
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
 		Status: "dead", Alive: false, ZellijSession: "a-b",
@@ -209,13 +230,12 @@ func TestSyncRuntimeStatus_NeverChangesAlive(t *testing.T) {
 	syncRuntimeStatus(db)
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
-	// alive must remain false — kill intent preserved
 	if s1.Alive {
 		t.Error("alive should not be changed by sync (was killed)")
 	}
 }
 
-func TestSyncRuntimeStatus_CreatesNewFromZellij(t *testing.T) {
+func TestSyncRuntimeStatus_DoesNotCreateNewFromZellij(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -230,30 +250,13 @@ func TestSyncRuntimeStatus_CreatesNewFromZellij(t *testing.T) {
 
 	syncRuntimeStatus(db)
 
-	s1, err := store.GetSession(db, "claude::new-session")
-	if err != nil {
-		t.Fatalf("expected new session: %v", err)
-	}
-	if !s1.Alive {
-		t.Error("new session should be alive=true")
-	}
-	if s1.RuntimeStatus != "running" {
-		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "running")
-	}
-
-	s2, err := store.GetSession(db, "claude::exited-session")
-	if err != nil {
-		t.Fatalf("expected exited session: %v", err)
-	}
-	if !s2.Alive {
-		t.Error("new exited session should be alive=true")
-	}
-	if s2.RuntimeStatus != "exited" {
-		t.Errorf("runtime_status = %q, want %q", s2.RuntimeStatus, "exited")
+	all, _ := store.ListSessions(db)
+	if len(all) != 0 {
+		t.Errorf("expected 0 sessions, got %d — sync should not create new records", len(all))
 	}
 }
 
-func TestSyncRuntimeStatus_DoesNotDuplicateExisting(t *testing.T) {
+func TestSyncRuntimeStatus_NoZellijSession_MarksGone(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -262,29 +265,20 @@ func TestSyncRuntimeStatus_DoesNotDuplicateExisting(t *testing.T) {
 
 	_ = store.UpsertSession(db, &store.Session{
 		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
-		Status: "active", Alive: true, ZellijSession: "a-b",
-		CWD: "/path/to/a/b", LastActive: time.Now(),
+		Status: "active", Alive: true, ZellijSession: "",
+		LastActive: time.Now(),
 	})
 
 	restore := mockZellijDetailed([]mux.ZellijSessionState{
-		{Name: "a-b", Exited: false},
+		{Name: "some-session", Exited: false},
 	})
 	defer restore()
 
 	syncRuntimeStatus(db)
 
-	// Should NOT create a duplicate "claude::a-b" session
-	_, err = store.GetSession(db, "claude::a-b")
-	if err == nil {
-		t.Error("should not create duplicate session for already-tracked zellij session")
-	}
-
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
-	if s1.RuntimeStatus != "running" {
-		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "running")
-	}
-	if s1.Repository != "a/b" {
-		t.Errorf("repository should be preserved, got %q", s1.Repository)
+	if s1.RuntimeStatus != "gone" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
 	}
 }
 
@@ -309,129 +303,108 @@ func TestSyncRuntimeStatus_NoMux(t *testing.T) {
 
 	syncRuntimeStatus(db)
 
-	// Should not change anything when mux is unavailable
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.RuntimeStatus != "running" {
 		t.Errorf("runtime_status should not change when mux unavailable, got %q", s1.RuntimeStatus)
 	}
 }
 
-func TestInferZellijSession(t *testing.T) {
-	muxSet := map[string]bool{
-		"agentctl":                 true,
-		"agentctl-fix-sync":       true,
-		"myassistant":             true,
-		"myassistant-fix-tts-bug": true,
-	}
+// --- dump-layout enrichment tests ---
 
-	tests := []struct {
-		cwd  string
-		want string
-	}{
-		{"/Users/chaspy/go/src/github.com/chaspy/agentctl", "agentctl"},
-		{"/Users/chaspy/go/src/github.com/chaspy/myassistant", "myassistant"},
-		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-fix-sync", "agentctl-fix-sync"},
-		{"/Users/chaspy/go/src/github.com/chaspy/myassistant/worktree-fix-tts-bug", "myassistant-fix-tts-bug"},
-		{"/Users/chaspy/go/src/github.com/chaspy/unknown-repo", ""},
-		{"/Users/chaspy/go/src/github.com/chaspy/agentctl/worktree-unknown-branch", ""},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		got := inferZellijSession(tt.cwd, muxSet)
-		if got != tt.want {
-			t.Errorf("inferZellijSession(%q) = %q, want %q", tt.cwd, got, tt.want)
-		}
-	}
-}
-
-// --- parseGitHubRepo tests ---
-
-func TestParseGitHubRepo(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"git@github.com:chaspy/agentctl.git", "chaspy/agentctl"},
-		{"https://github.com/chaspy/agentctl.git", "chaspy/agentctl"},
-		{"https://github.com/chaspy/agentctl", "chaspy/agentctl"},
-		{"git@github.com:owner/repo.git", "owner/repo"},
-		{"", ""},
-		{"https://gitlab.com/owner/repo.git", ""},
-	}
-	for _, tt := range tests {
-		got := parseGitHubRepo(tt.input)
-		if got != tt.want {
-			t.Errorf("parseGitHubRepo(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestEnrichAllEmptySessions(t *testing.T) {
+func TestSyncRuntimeStatus_EnrichesCWDViaDumpLayout(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	// Session with empty metadata
+	// Session with empty CWD
 	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude::agentctl-fix-bug", Agent: "claude", ZellijSession: "agentctl-fix-bug",
+		ID: "claude::my-session", Agent: "claude", ZellijSession: "my-session",
 		Status: "idle", Alive: true, LastActive: time.Now(),
 	})
-	// Session with existing metadata (should not be touched)
-	_ = store.UpsertSession(db, &store.Session{
-		ID: "claude:owner/existing:s1", Agent: "claude", Repository: "owner/existing",
-		SessionID: "s1", CWD: "/existing/path", ZellijSession: "existing",
-		Status: "active", Alive: true, LastActive: time.Now(),
-	})
 
-	// Mock: claude process running in a worktree that matches the session name
-	origProcs := findClaudeProcs
-	findClaudeProcs = func() ([]process.ProcessInfo, error) {
-		return []process.ProcessInfo{
-			{PID: 1234, CWD: "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug"},
-			{PID: 5678, CWD: "/existing/path"}, // already tracked
-		}, nil
-	}
-	defer func() { findClaudeProcs = origProcs }()
+	restoreZellij := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "my-session", Exited: false},
+	})
+	defer restoreZellij()
+
+	restoreCWD := mockZellijCWD(map[string]string{
+		"my-session": "/Users/test/go/src/github.com/owner/repo",
+	})
+	defer restoreCWD()
 
 	origRepo := gitRepoName
 	origBranch := gitBranchName
 	gitRepoName = func(cwd string) string {
-		if cwd == "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
-			return "owner/agentctl"
+		if cwd == "/Users/test/go/src/github.com/owner/repo" {
+			return "owner/repo"
 		}
 		return ""
 	}
 	gitBranchName = func(cwd string) string {
-		if cwd == "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
-			return "fix/bug"
+		if cwd == "/Users/test/go/src/github.com/owner/repo" {
+			return "main"
 		}
 		return ""
 	}
 	defer func() { gitRepoName = origRepo; gitBranchName = origBranch }()
 
-	enrichAllEmptySessions(db)
+	syncRuntimeStatus(db)
 
-	s, _ := store.GetSession(db, "claude::agentctl-fix-bug")
-	if s.CWD != "/Users/test/go/src/github.com/owner/agentctl/worktree-fix-bug" {
-		t.Errorf("cwd = %q, want worktree path", s.CWD)
+	s, _ := store.GetSession(db, "claude::my-session")
+	if s.CWD != "/Users/test/go/src/github.com/owner/repo" {
+		t.Errorf("cwd = %q, want /Users/test/go/src/github.com/owner/repo", s.CWD)
 	}
-	if s.Repository != "owner/agentctl" {
-		t.Errorf("repository = %q, want %q", s.Repository, "owner/agentctl")
+	if s.Repository != "owner/repo" {
+		t.Errorf("repository = %q, want owner/repo", s.Repository)
 	}
-	if s.GitBranch != "fix/bug" {
-		t.Errorf("git_branch = %q, want %q", s.GitBranch, "fix/bug")
+	if s.GitBranch != "main" {
+		t.Errorf("git_branch = %q, want main", s.GitBranch)
 	}
-
-	// Existing session should not be modified
-	s2, _ := store.GetSession(db, "claude:owner/existing:s1")
-	if s2.Repository != "owner/existing" {
-		t.Errorf("existing session repository changed to %q", s2.Repository)
+	if s.RuntimeStatus != "running" {
+		t.Errorf("runtime_status = %q, want running", s.RuntimeStatus)
 	}
 }
 
-func TestEnrichAllEmptySessions_NoProcs(t *testing.T) {
+func TestSyncRuntimeStatus_SkipsEnrichmentWhenCWDExists(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		CWD: "/existing/path", LastActive: time.Now(),
+	})
+
+	restoreZellij := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "a-b", Exited: false},
+	})
+	defer restoreZellij()
+
+	cwdCalled := false
+	origCWD := zellijCWD
+	zellijCWD = func(sessionName string) string {
+		cwdCalled = true
+		return "/should/not/be/used"
+	}
+	defer func() { zellijCWD = origCWD }()
+
+	syncRuntimeStatus(db)
+
+	if cwdCalled {
+		t.Error("zellijCWD should not be called when session already has CWD")
+	}
+	s, _ := store.GetSession(db, "claude:a/b:s1")
+	if s.CWD != "/existing/path" {
+		t.Errorf("CWD should be preserved, got %q", s.CWD)
+	}
+}
+
+func TestSyncRuntimeStatus_DumpLayoutReturnsEmpty(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -443,17 +416,89 @@ func TestEnrichAllEmptySessions_NoProcs(t *testing.T) {
 		Status: "idle", Alive: true, LastActive: time.Now(),
 	})
 
-	origProcs := findClaudeProcs
-	findClaudeProcs = func() ([]process.ProcessInfo, error) {
-		return nil, nil
-	}
-	defer func() { findClaudeProcs = origProcs }()
+	restoreZellij := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "my-session", Exited: false},
+	})
+	defer restoreZellij()
 
-	enrichAllEmptySessions(db)
+	restoreCWD := mockZellijCWD(map[string]string{}) // returns "" for all
+	defer restoreCWD()
+
+	syncRuntimeStatus(db)
 
 	s, _ := store.GetSession(db, "claude::my-session")
 	if s.CWD != "" {
-		t.Errorf("cwd should remain empty when no procs, got %q", s.CWD)
+		t.Errorf("CWD should remain empty when dump-layout returns nothing, got %q", s.CWD)
+	}
+}
+
+// --- UpdateSessionMetadata tests ---
+
+func TestUpdateSessionMetadata_DoesNotCreateNew(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Try to update a non-existent session — should not create it
+	err = store.UpdateSessionMetadata(db, &store.Session{
+		ID:          "nonexistent-id",
+		Status:      "active",
+		LastMessage: "hello",
+		LastActive:  time.Now(),
+		Role:        "worker",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify no session was created
+	_, err = store.GetSession(db, "nonexistent-id")
+	if err == nil {
+		t.Error("UpdateSessionMetadata should not create new records")
+	}
+}
+
+func TestUpdateSessionMetadata_UpdatesExisting(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "idle", Alive: true, LastActive: time.Now(),
+	})
+
+	now := time.Now()
+	_ = store.UpdateSessionMetadata(db, &store.Session{
+		ID:          "claude:a/b:s1",
+		Status:      "active",
+		GitBranch:   "feat/test",
+		LastMessage: "working on it",
+		LastRole:    "assistant",
+		LastActive:  now,
+		Role:        "worker",
+	})
+
+	s, _ := store.GetSession(db, "claude:a/b:s1")
+	if s.Status != "active" {
+		t.Errorf("status = %q, want active", s.Status)
+	}
+	if s.GitBranch != "feat/test" {
+		t.Errorf("git_branch = %q, want feat/test", s.GitBranch)
+	}
+	if s.LastMessage != "working on it" {
+		t.Errorf("last_message = %q, want 'working on it'", s.LastMessage)
+	}
+	// Ensure other fields are preserved
+	if s.Repository != "a/b" {
+		t.Errorf("repository should be preserved, got %q", s.Repository)
+	}
+	if !s.Alive {
+		t.Error("alive should be preserved")
 	}
 }
 

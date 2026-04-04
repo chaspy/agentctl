@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.25] - 2026-04-03
+
+### Changed
+
+- **Minimal sync**: Rewrote `syncSessionsToDB` to only update existing DB records
+  - DB is the sole source of truth; only `spawn` and `kill` create/delete records
+  - sync updates `runtime_status` for `alive=1` DB sessions by matching `zellij_session`
+  - sync updates `LastMessage` via JSONL only for sessions with CWD in DB
+- **dump-layout CWD enrichment**: Alive sessions with empty CWD are enriched via `zellij action dump-layout`
+  - Deterministic CWD extraction — no process scanning or heuristics
+  - CWD → `git remote get-url origin` for repository, `git branch --show-current` for branch
+- **Ghost session prevention**: JSONL enrichment uses `UpdateSessionMetadata` (UPDATE only) instead of `UpsertSession` (INSERT ... ON CONFLICT)
+  - No new records are ever created by sync, regardless of JSONL content
+
+### Removed
+
+- `enrichAllEmptySessions()` — replaced by dump-layout based enrichment
+- `inferZellijSession()` — no more heuristic session name inference
+- `findClaudeProcs()` — no more process scanning
+- `process` package import from sync
+- Auto-creation of DB records from zellij sessions not in DB
+- Web server's independent sync logic — `handleSync` now delegates to shared `syncSessionsToDB`
+- `buildWebMuxSessionSet()`, `inferWebZellijSession()` from web/server.go
+- `process` package import from web/server.go
+
 ## [0.2.24] - 2026-04-02
 
 ### Changed

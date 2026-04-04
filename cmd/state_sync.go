@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/chaspy/agentctl/internal/mux"
-	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
 	"github.com/chaspy/agentctl/internal/store"
@@ -19,8 +18,8 @@ import (
 )
 
 var (
-	syncAgent              string
-	syncHours              int
+	syncAgent               string
+	syncHours               int
 	syncRegenerateSummaries bool
 )
 
@@ -53,22 +52,18 @@ func runStateSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// syncSessionsToDB performs a two-stage sync:
-//   Stage 1 (Runtime Status): Update runtime_status from zellij sessions.
-//     alive is intent (spawn/kill only). runtime_status is observed state.
-//     - DB + zellij active   → runtime_status='running'
-//     - DB + zellij EXITED   → runtime_status='exited'
-//     - DB + not in zellij   → runtime_status='gone'
-//     - not in DB + zellij   → new record alive=1, runtime_status='running'/'exited'
-//   Stage 2 (JSONL Enrichment): Read JSONL only for alive DB sessions, updating metadata only.
-// New sessions are NOT created from JSONL — only from zellij session list.
+// syncSessionsToDB performs a minimal sync:
+//  1. Update runtime_status from zellij sessions (alive=1 DB records only)
+//  2. Enrich CWD/repo/branch for alive sessions with empty CWD via dump-layout
+//  3. Read JSONL to update LastMessage for alive sessions with CWD (UPDATE only, no INSERT)
+//
+// DB is the sole source of truth. Only spawn and kill write new records.
+// sync only updates existing records.
 func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSummaries bool) (int, error) {
-	// ── Stage 1: Runtime Status ──
-	// alive = intent (set by spawn/kill). runtime_status = observed zellij state.
+	// ── Step 1+2: Runtime Status + dump-layout enrichment ──
 	syncRuntimeStatus(db)
 
-	// ── Stage 2: JSONL Enrichment ──
-	// Scan JSONL files, but only use them to enrich existing DB sessions.
+	// ── Step 3: JSONL Enrichment (UPDATE only, no INSERT) ──
 	agents, err := selectedAgents(agentFilter)
 	if err != nil {
 		return 0, err
@@ -137,11 +132,13 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		}
 	}
 
-	// Enrich existing alive DB sessions with JSONL metadata.
-	// alive status was already set by Stage 1 — do not change it here.
+	// Enrich existing alive DB sessions with JSONL metadata (UPDATE only).
 	aliveSessions, _ := store.ListSessionsByAlive(db, true)
 	var enriched int
 	for _, dbSess := range aliveSessions {
+		if dbSess.CWD == "" {
+			continue // no CWD → can't match JSONL
+		}
 		jsonl, found := jsonlByCWD[dbSess.CWD]
 		if !found {
 			continue
@@ -161,21 +158,16 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			role = "manager"
 		}
 
-		_ = store.UpsertSession(db, &store.Session{
-			ID:            dbSess.ID,
-			Agent:         dbSess.Agent,
-			Repository:    dbSess.Repository,
-			SessionID:     dbSess.SessionID,
-			CWD:           dbSess.CWD,
-			GitBranch:     jsonl.GitBranch,
-			ZellijSession: dbSess.ZellijSession,
-			Status:        status,
-			Alive:         dbSess.Alive,
-			LastMessage:   jsonl.LastMessage,
-			LastRole:      jsonl.LastRole,
-			LastActive:    jsonl.ModTime,
-			Role:          role,
-			IsLoop:        loopCWDs[dbSess.CWD],
+		// UPDATE only — never creates new records
+		_ = store.UpdateSessionMetadata(db, &store.Session{
+			ID:         dbSess.ID,
+			Status:     status,
+			GitBranch:  jsonl.GitBranch,
+			LastMessage: jsonl.LastMessage,
+			LastRole:   jsonl.LastRole,
+			LastActive: jsonl.ModTime,
+			Role:       role,
+			IsLoop:     loopCWDs[dbSess.CWD],
 		})
 
 		// Apply task_summary
@@ -279,7 +271,6 @@ func checkPRConflicts(db *sql.DB) {
 		mergeableCacheKey := "mergeable_cache:" + prURL
 		mergeable := ""
 		if cached, _ := store.GetState(db, mergeableCacheKey); cached != "" {
-			// Format: "STATE|RFC3339_TIME"
 			if parts := strings.SplitN(cached, "|", 2); len(parts) == 2 {
 				if t, err := time.Parse(time.RFC3339, parts[1]); err == nil && time.Since(t) < 5*time.Minute {
 					mergeable = parts[0]
@@ -301,7 +292,6 @@ func checkPRConflicts(db *sql.DB) {
 			continue
 		}
 
-		// Find the mux session name to send to
 		sessionName := resolveMuxSessionName(s, adapter)
 		if sessionName == "" {
 			fmt.Printf("[sync] PR #%s is CONFLICTING but could not resolve mux session for %s\n", prNum, s.Repository)
@@ -316,10 +306,7 @@ func checkPRConflicts(db *sql.DB) {
 			continue
 		}
 
-		// Record the time we sent the rebase instruction
 		_ = store.SetState(db, stateKey, time.Now().Format(time.RFC3339))
-
-		// Log the action
 		_ = store.LogAction(db, &store.Action{
 			SessionID:  s.ID,
 			ActionType: "rebase_instruction",
@@ -330,7 +317,6 @@ func checkPRConflicts(db *sql.DB) {
 }
 
 // extractPRNumber extracts the PR number from a GitHub PR URL.
-// e.g., "https://github.com/owner/repo/pull/42" -> "42"
 func extractPRNumber(prURL string) string {
 	parts := strings.Split(prURL, "/")
 	if len(parts) < 2 || parts[len(parts)-2] != "pull" {
@@ -339,13 +325,10 @@ func extractPRNumber(prURL string) string {
 	return parts[len(parts)-1]
 }
 
-// prMergeableResult is used to parse gh pr view JSON output.
 type prMergeableResult struct {
 	Mergeable string `json:"mergeable"`
 }
 
-// checkPRMergeable returns the mergeable state of a PR.
-// Returns "MERGEABLE", "CONFLICTING", "UNKNOWN", or "" on error.
 var checkPRMergeable = func(repo, prNumber string) string {
 	cmd := exec.Command("gh", "pr", "view", prNumber, "--repo", repo, "--json", "mergeable")
 	out, err := cmd.Output()
@@ -359,39 +342,27 @@ var checkPRMergeable = func(repo, prNumber string) string {
 	return result.Mergeable
 }
 
-// resolveMuxSessionName finds the mux session name for a given DB session.
 func resolveMuxSessionName(s store.Session, adapter mux.Adapter) string {
-	// Try zellij_session field first
 	if s.ZellijSession != "" {
 		if resolved, err := adapter.ResolveSession(s.ZellijSession); err == nil {
 			return resolved
 		}
 	}
-	// Try repository name
 	if resolved, err := adapter.ResolveSession(s.Repository); err == nil {
 		return resolved
 	}
 	return ""
 }
 
-// worktreeSuffix matches "-worktree-<branch>" or "/worktree-<branch>" suffixes
-// that spawn creates for git worktrees.
 var worktreeSuffix = regexp.MustCompile(`[/-]worktree-.+$`)
 
-// knownRepoCorrections maps incorrect repository names to their correct values.
-// These are known data quality issues from historical sync data.
 var knownRepoCorrections = map[string]string{
 	"chaspy/myassistant-server": "chaspy/myassistant",
 	"studiuos/jp-Studious-JP":  "studiuos-jp/Studious_JP",
 }
 
-// repoFromRepository extracts the clean GitHub "owner/repo" from the repository field.
-// Handles worktree-suffixed names like "chaspy/agentctl/worktree-feat-xxx" -> "chaspy/agentctl".
-// Also applies known corrections for historically incorrect repository names.
 func repoFromRepository(repository string) string {
-	// Strip worktree suffix if present
 	cleaned := worktreeSuffix.ReplaceAllString(repository, "")
-	// Expect "owner/repo" format
 	parts := strings.Split(cleaned, "/")
 	var repo string
 	if len(parts) >= 2 {
@@ -400,15 +371,12 @@ func repoFromRepository(repository string) string {
 	if repo == "" {
 		return ""
 	}
-	// Apply known corrections
 	if corrected, ok := knownRepoCorrections[repo]; ok {
 		return corrected
 	}
 	return repo
 }
 
-// normalizeExistingRepoNames updates repository names in the DB for sessions
-// that have known incorrect names.
 func normalizeExistingRepoNames(db *sql.DB) {
 	for incorrect, correct := range knownRepoCorrections {
 		result, err := db.Exec(
@@ -420,68 +388,22 @@ func normalizeExistingRepoNames(db *sql.DB) {
 		if n, _ := result.RowsAffected(); n > 0 {
 			fmt.Printf("Normalized %d session(s): %s -> %s\n", n, incorrect, correct)
 		}
-		// Also fix in archive table
 		db.Exec(
 			"UPDATE sessions_archive SET repository = ?, updated_at = CURRENT_TIMESTAMP WHERE repository = ?",
 			correct, incorrect)
 	}
 }
 
-// inferZellijSession derives the expected zellij session name from a CWD path
-// by matching spawn's naming convention, then checks if it exists in the mux session list.
-// Returns the matched session name or "".
-//
-// Spawn naming convention:
-//   - /path/to/repo                          -> "repo"
-//   - /path/to/repo/worktree-fix-bug         -> "repo-fix-bug"
-func inferZellijSession(cwd string, muxSet map[string]bool) string {
-	if cwd == "" || muxSet == nil {
-		return ""
-	}
-
-	// Determine repo base name and optional worktree branch
-	parts := strings.Split(strings.TrimRight(cwd, "/"), "/")
-	if len(parts) == 0 {
-		return ""
-	}
-
-	lastPart := parts[len(parts)-1]
-
-	// Check if last part is a worktree directory (worktree-<branch>)
-	if strings.HasPrefix(lastPart, "worktree-") && len(parts) >= 2 {
-		repoBase := parts[len(parts)-2]
-		branch := strings.TrimPrefix(lastPart, "worktree-")
-		candidate := repoBase + "-" + branch
-		if muxSet[strings.ToLower(candidate)] {
-			return candidate
-		}
-		// Also try exact case match
-		if muxSet[candidate] {
-			return candidate
-		}
-	}
-
-	// Non-worktree: session name = directory name
-	if muxSet[strings.ToLower(lastPart)] {
-		return lastPart
-	}
-
-	return ""
-}
-
-// syncRuntimeStatus updates runtime_status based on zellij session state.
-// alive is NEVER changed here — it represents intent (spawn/kill only).
-// runtime_status reflects the observed zellij state:
-//   - running: zellij session is active
-//   - exited: zellij session is in EXITED state (can be attached)
-//   - gone: zellij session no longer exists (needs respawn)
+// syncRuntimeStatus updates runtime_status based on zellij session state,
+// then enriches CWD/repo/branch for alive sessions with empty CWD via dump-layout.
+// Only updates existing alive=1 DB records. Does NOT create new records.
 func syncRuntimeStatus(db *sql.DB) {
 	zellijSessions, err := listZellijDetailed()
 	if err != nil || zellijSessions == nil {
-		return // no mux available, skip
+		return
 	}
 
-	// Build maps: name(lower) -> state
+	// Build map: name(lower) -> state
 	type zellijState struct {
 		name   string
 		exited bool
@@ -491,24 +413,10 @@ func syncRuntimeStatus(db *sql.DB) {
 		zellijMap[strings.ToLower(zs.Name)] = zellijState{name: zs.Name, exited: zs.Exited}
 	}
 
-	// Build name set for inferZellijSession
-	muxNameSet := make(map[string]bool)
-	for k := range zellijMap {
-		muxNameSet[k] = true
-	}
-
 	// Step 1: Update runtime_status for all alive=1 DB sessions
 	aliveSessions, _ := store.ListSessionsByAlive(db, true)
 	for _, s := range aliveSessions {
 		zellijName := s.ZellijSession
-		if zellijName == "" {
-			// Try to infer from CWD
-			if inferred := inferZellijSession(s.CWD, muxNameSet); inferred != "" {
-				zellijName = inferred
-				db.Exec("UPDATE sessions SET zellij_session = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", inferred, s.ID)
-			}
-		}
-
 		if zellijName == "" {
 			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			continue
@@ -525,122 +433,57 @@ func syncRuntimeStatus(db *sql.DB) {
 		}
 	}
 
-	// Step 2: Zellij sessions not in DB → create new records (alive=1)
-	allSessions, _ := store.ListSessions(db)
-	dbZellijSet := make(map[string]bool)
-	for _, s := range allSessions {
-		if s.ZellijSession != "" {
-			dbZellijSet[strings.ToLower(s.ZellijSession)] = true
-		}
-	}
-
-	for _, zs := range zellijSessions {
-		if dbZellijSet[strings.ToLower(zs.Name)] {
-			continue // already tracked
-		}
-		rs := "running"
-		if zs.Exited {
-			rs = "exited"
-		}
-		id := fmt.Sprintf("claude::%s", zs.Name)
-		_ = store.UpsertSession(db, &store.Session{
-			ID:            id,
-			Agent:         "claude",
-			ZellijSession: zs.Name,
-			Status:        "idle",
-			Alive:         true,
-			RuntimeStatus: rs,
-			LastActive:    time.Now(),
-			Role:          "worker",
-		})
-		fmt.Printf("Discovered new zellij session: %s (runtime_status=%s)\n", zs.Name, rs)
-	}
-
-	// Enrich sessions missing metadata using lsof-based claude process CWD detection
-	enrichAllEmptySessions(db)
-}
-
-// enrichAllEmptySessions finds claude processes via lsof and matches them
-// to alive sessions that are missing CWD/repository metadata.
-func enrichAllEmptySessions(db *sql.DB) {
-	claudeProcs, err := findClaudeProcs()
-	if err != nil || len(claudeProcs) == 0 {
-		return
-	}
-
-	// Build set of CWDs already tracked in DB
-	allSessions, _ := store.ListSessionsByAlive(db, true)
-	knownCWDs := make(map[string]bool)
-	for _, s := range allSessions {
+	// Step 2: Enrich CWD/repo/branch for alive sessions with empty CWD via dump-layout
+	// Re-fetch to get updated runtime_status
+	aliveSessions, _ = store.ListSessionsByAlive(db, true)
+	for _, s := range aliveSessions {
 		if s.CWD != "" {
-			knownCWDs[s.CWD] = true
+			continue // already has CWD
 		}
-	}
-
-	// Collect untracked claude CWDs
-	var untrackedCWDs []string
-	for _, p := range claudeProcs {
-		if p.CWD != "" && !knownCWDs[p.CWD] {
-			untrackedCWDs = append(untrackedCWDs, p.CWD)
-		}
-	}
-
-	// Collect sessions needing enrichment
-	var needEnrich []store.Session
-	for _, s := range allSessions {
-		if s.CWD == "" && s.Repository == "" {
-			needEnrich = append(needEnrich, s)
-		}
-	}
-
-	// Match untracked CWDs to sessions needing enrichment.
-	// Use inferZellijSession to deterministically match CWD → session name.
-	muxSet := make(map[string]bool)
-	for _, s := range needEnrich {
-		if s.ZellijSession != "" {
-			muxSet[strings.ToLower(s.ZellijSession)] = true
-		}
-	}
-
-	for _, cwd := range untrackedCWDs {
-		matched := inferZellijSession(cwd, muxSet)
-		if matched == "" {
+		if s.ZellijSession == "" {
 			continue
 		}
-		// Find the session with this zellij name
-		for _, s := range needEnrich {
-			if !strings.EqualFold(s.ZellijSession, matched) {
-				continue
-			}
-			repo := gitRepoName(cwd)
-			branch := gitBranchName(cwd)
 
-			updates := []string{"cwd = ?"}
-			args := []any{cwd}
-			if repo != "" {
-				updates = append(updates, "repository = ?")
-				args = append(args, repo)
-			}
-			if branch != "" {
-				updates = append(updates, "git_branch = ?")
-				args = append(args, branch)
-			}
-			updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-			args = append(args, s.ID)
-			db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
-
-			// Remove from muxSet so it doesn't match again
-			delete(muxSet, strings.ToLower(matched))
-			fmt.Printf("Enriched session %s: cwd=%s repo=%s branch=%s\n", s.ZellijSession, cwd, repo, branch)
-			break
+		cwd := zellijCWD(s.ZellijSession)
+		if cwd == "" {
+			continue
 		}
+
+		updates := []string{"cwd = ?"}
+		args := []any{cwd}
+
+		if repo := gitRepoName(cwd); repo != "" {
+			updates = append(updates, "repository = ?")
+			args = append(args, repo)
+		}
+		if branch := gitBranchName(cwd); branch != "" {
+			updates = append(updates, "git_branch = ?")
+			args = append(args, branch)
+		}
+		updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
+		args = append(args, s.ID)
+		db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
+		fmt.Printf("Enriched session %s: cwd=%s\n", s.ZellijSession, cwd)
 	}
 }
 
-// findClaudeProcs returns all running claude processes with CWDs.
-// Extracted as a variable for testability.
-var findClaudeProcs = func() ([]process.ProcessInfo, error) {
-	return process.FindClaudeProcesses()
+// zellijCWD extracts CWD from a zellij session's layout dump.
+// Uses `zellij --session <name> action dump-layout` which outputs lines like:
+//
+//	cwd "/Users/chaspy/go/src/github.com/chaspy/myassistant"
+var zellijCWD = func(sessionName string) string {
+	cmd := exec.Command("env", "-u", "ZELLIJ", "zellij", "--session", sessionName, "action", "dump-layout")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "cwd \"") {
+			return strings.Trim(strings.TrimPrefix(trimmed, "cwd "), "\"")
+		}
+	}
+	return ""
 }
 
 // gitRepoName extracts the GitHub "owner/repo" from a CWD by running git remote.
@@ -664,15 +507,12 @@ var gitBranchName = func(cwd string) string {
 }
 
 // parseGitHubRepo extracts "owner/repo" from a git remote URL.
-// Handles both SSH and HTTPS formats.
 func parseGitHubRepo(remoteURL string) string {
-	// SSH: git@github.com:owner/repo.git
 	if strings.Contains(remoteURL, "git@github.com:") {
 		part := strings.TrimPrefix(remoteURL, "git@github.com:")
 		part = strings.TrimSuffix(part, ".git")
 		return part
 	}
-	// HTTPS: https://github.com/owner/repo.git
 	if strings.Contains(remoteURL, "github.com/") {
 		idx := strings.Index(remoteURL, "github.com/")
 		part := remoteURL[idx+len("github.com/"):]
@@ -682,13 +522,10 @@ func parseGitHubRepo(remoteURL string) string {
 	return ""
 }
 
-// listZellijDetailed returns detailed zellij session info.
-// Extracted as a variable for testability.
 var listZellijDetailed = func() ([]mux.ZellijSessionState, error) {
 	return mux.ListZellijSessionsDetailed()
 }
 
-// lookupPRURL uses gh CLI to find the PR URL for a given branch and repo.
 func lookupPRURL(repo, branch string) string {
 	cmd := exec.Command("gh", "pr", "list", "--head", branch, "--repo", repo, "--json", "url", "--jq", ".[0].url")
 	out, err := cmd.Output()
