@@ -2,42 +2,41 @@
 
 ## 目的
 
-`agentctl` に、個別 `launchd plist` を増やさずに定期実行ジョブを管理できる job scheduler 機能を追加する。
+`agentctl` に job scheduler 機能を追加し、個別 `launchd plist` の増殖を止める。
 
 採用方針はアプローチ D とし、以下を前提とする。
 
-- `launchd` で常駐させる親プロセスは `agentctl-scheduler.plist` の 1 本だけにする
+- 親 `launchd` は `agentctl-scheduler.plist` の 1 本だけを持つ
 - 個別 job 定義は `agentctl` の SQLite DB で管理する
-- 親 scheduler が定期的に DB を参照し、実行対象の job を spawn する
-- モデルは Kubernetes の CronJob -> Pod に寄せる
+- 親 scheduler が定期的に DB を参照し、due な job を `agentctl` の内部機能として実行する
+- モデルは Kubernetes の CronJob -> Job に寄せる
 
-本ドキュメントは設計のみを扱い、実装詳細やコード変更は含まない。
+## 問題意識
 
-## 背景と課題
+初期案では job 定義に `command` 文字列を持たせ、scheduler が shell command を実行する構造を想定していた。しかしこの形だと実質的に cron の再実装になり、`agentctl` 固有の価値が薄い。
 
-現状は各用途ごとに `launchd plist` を持ち、cron 的なジョブや daemon 的な処理を個別管理している。これには次の問題がある。
+`agentctl` にとって job の実態は自由な shell command ではなく、主に次の 2 種類である。
 
-- ジョブ追加や schedule 変更のたびに plist 編集が必要
-- 実行履歴や現在状態が plist 側に散らばり、一覧性が低い
-- CLI からの追加・削除・一時停止・手動実行がしにくい
-- 将来的な job 数増加で運用負荷が上がる
+- `agentctl spawn`
+- `agentctl send`
 
-これを `agentctl` の DB と CLI に集約し、運用対象を「親 scheduler 1 本 + SQLite 管理 job 群」に単純化する。
+このため job 定義は command 文字列ではなく、`agentctl` が直接解釈できる構造化フィールドとして持つ。
 
 ## 設計原則
 
-- `launchd` は supervisor に徹し、スケジュール判定は `agentctl` が担う
-- job 定義は宣言的に DB に保存する
-- 実行履歴と定義を分離し、監査可能にする
-- 同一 job の多重起動は DB レベルと OS レベルの両方で抑止する
-- 失敗時は黙ってリトライせず、状態を残してユーザが確認できるようにする
-- 初期実装では macOS + `launchd` を前提にし、Linux systemd 等への汎化は後段で検討する
+- scheduler は shell 実行基盤ではなく、`agentctl` オーケストレータとして振る舞う
+- job 定義は `spawn` / `send` の意図を構造化して保存する
+- 指示文は DB に可読なデータとして残す
+- shell quoting や escaping に依存しない
+- 実行履歴と job 定義を分離して監査可能にする
+- 同一 job の多重起動は DB レベルで抑止する
+- 初期実装は macOS + `launchd` 前提に絞る
 
 ## スコープ
 
 今回の設計対象:
 
-- job 定義を保存する DB スキーマ
+- 構造化 job 定義の DB スキーマ
 - `agentctl job ...` CLI
 - 親 scheduler ループ
 - 親 `launchd plist` 例
@@ -46,10 +45,10 @@
 
 今回の設計対象外:
 
-- Web UI 追加
+- 任意 shell command 実行
+- Web UI
 - 分散実行
 - 秒単位の高精度スケジューリング
-- 高度な依存関係 DAG 実行
 
 ## 全体アーキテクチャ
 
@@ -58,81 +57,130 @@ launchd (agentctl-scheduler.plist)
   -> agentctl job scheduler run
        -> SQLite から due jobs を取得
        -> 実行ロックを確保
-       -> 子プロセス起動
+       -> job.action を解釈
+       -> spawn または send を内部 API として実行
        -> 実行結果を DB に記録
        -> 次回実行時刻を再計算
 ```
 
-責務分担は以下の通り。
+責務分担:
 
-- `launchd`: 親プロセスの起動、再起動、標準ログ出力先管理
-- `agentctl scheduler`: poll、due 判定、spawn、排他、実行結果反映
-- SQLite: job 定義、実行履歴、ロック状態、次回実行時刻
+- `launchd`: 親 scheduler の起動と再起動
+- `agentctl scheduler`: due 判定、排他、action 実行、結果保存
+- SQLite: job 定義、run 履歴、lock 状態、次回実行時刻
+
+## Job モデル
+
+job は `action` によって 2 種類に分かれる。
+
+### `action=spawn`
+
+新しい agent session を起動し、初期 instruction を投入する。
+
+対応イメージ:
+
+```bash
+agentctl spawn <repo> --branch <branch> --agent <agent> --message <instruction>
+```
+
+主用途:
+
+- 定期レポート作成
+- 差分レビュー
+- 朝会前の集計や比較
+- PR 作成を含む定期タスク
+
+### `action=send`
+
+既存 session に対して instruction を送る。
+
+対応イメージ:
+
+```bash
+agentctl send <session> <instruction>
+```
+
+主用途:
+
+- 常駐 patrol session への巡回依頼
+- manager session への定期確認依頼
+- 既存 loop session へのトリガー
 
 ## DB スキーマ
 
-既存 DB は `internal/store` の migration 管理を使っているため、scheduler 追加も新しい migration として入れる前提にする。
+既存 DB は `internal/store` の migration 管理を使っているため、scheduler 追加も新しい migration として入れる。
 
-### 追加テーブル
+### `jobs`
 
-#### `jobs`
-
-ジョブ定義本体。
+job 定義本体。
 
 | column | type | required | description |
 |---|---|---:|---|
 | `id` | `INTEGER PRIMARY KEY AUTOINCREMENT` | yes | job 識別子 |
 | `name` | `TEXT` | yes | 人間可読な一意名 |
-| `schedule` | `TEXT` | yes | cron 形式。例: `*/5 * * * *` |
+| `schedule` | `TEXT` | yes | cron 形式。例: `0 9 * * 1` |
 | `timezone` | `TEXT` | yes | IANA TZ。初期値 `Asia/Tokyo` |
-| `command` | `TEXT` | yes | 実行コマンド本体 |
-| `shell` | `TEXT` | yes | 実行 shell。初期値 `/bin/zsh` |
-| `working_directory` | `TEXT` | no | 実行時 cwd |
+| `action` | `TEXT` | yes | `spawn` or `send` |
+| `repo` | `TEXT` | no | `spawn` の対象 repo。例: `chaspy/myassistant` |
+| `session` | `TEXT` | no | `send` の対象 session 名 |
+| `branch` | `TEXT` | no | `spawn` の branch |
+| `agent` | `TEXT` | no | `spawn` 時の agent。`claude` / `codex` / `auto` |
+| `instruction` | `TEXT` | yes | LLM に渡す指示文 |
 | `enabled` | `INTEGER` | yes | 1=有効, 0=無効 |
 | `concurrency_policy` | `TEXT` | yes | `forbid` / `replace` / `allow` |
 | `catch_up_policy` | `TEXT` | yes | `none` / `one` |
-| `max_runtime_seconds` | `INTEGER` | no | 実行上限秒数 |
-| `last_scheduled_at` | `TIMESTAMP` | no | 前回「実行対象と判断した」時刻 |
+| `last_scheduled_at` | `TIMESTAMP` | no | 前回 due と判断した時刻 |
 | `last_run_started_at` | `TIMESTAMP` | no | 前回起動時刻 |
 | `last_run_finished_at` | `TIMESTAMP` | no | 前回終了時刻 |
 | `last_run_status` | `TEXT` | no | `success` / `failed` / `running` / `skipped` |
-| `last_exit_code` | `INTEGER` | no | 前回終了コード |
-| `last_error` | `TEXT` | no | spawn 失敗や timeout 内容 |
-| `next_run_at` | `TIMESTAMP` | no | scheduler が使う次回予定時刻 |
+| `last_error` | `TEXT` | no | 実行失敗内容 |
+| `next_run_at` | `TIMESTAMP` | no | scheduler が参照する次回予定時刻 |
 | `created_at` | `TIMESTAMP` | yes | 作成時刻 |
 | `updated_at` | `TIMESTAMP` | yes | 更新時刻 |
-| `deleted_at` | `TIMESTAMP` | no | 論理削除用。初期段階では未使用でも列は持たない選択可 |
 
 制約・index:
 
 - `UNIQUE(name)`
+- `CHECK(action IN ('spawn', 'send'))`
+- `CHECK(concurrency_policy IN ('forbid', 'replace', 'allow'))`
+- `CHECK(catch_up_policy IN ('none', 'one'))`
 - `INDEX(enabled, next_run_at)`
-- `INDEX(last_run_status)`
+- `INDEX(action, enabled)`
 
-補足:
+action ごとの必須条件:
 
-- 初期設計では `command` を 1 本の shell command として保存する
-- 将来的に `args` や `env_json` を分離する余地を残す
-- `status` は派生値が多いため、恒久列ではなく `enabled` + 最新 run から計算する方針を基本とする
+- `spawn`: `repo`, `instruction` 必須
+- `send`: `session`, `instruction` 必須
 
-#### `job_runs`
+設計メモ:
 
-ジョブ実行履歴。CronJob の Job/Pod 履歴に相当。
+- `spawn` では `repo` / `branch` / `agent` / `instruction` をそのまま `runSpawn` 相当へ渡す
+- `send` では `session` / `instruction` を `runSend` 相当へ渡す
+- `instruction` が job 定義の中心データになる
+- shell command は持たない
+
+### `job_runs`
+
+job 実行履歴。
 
 | column | type | required | description |
 |---|---|---:|---|
 | `id` | `INTEGER PRIMARY KEY AUTOINCREMENT` | yes | run 識別子 |
 | `job_id` | `INTEGER` | yes | 親 job |
 | `trigger_type` | `TEXT` | yes | `schedule` / `manual` / `recovery` |
-| `scheduled_at` | `TIMESTAMP` | no | 本来実行すべきだった時刻 |
-| `started_at` | `TIMESTAMP` | yes | 実際の起動時刻 |
+| `scheduled_at` | `TIMESTAMP` | no | 本来の実行時刻 |
+| `started_at` | `TIMESTAMP` | yes | 実際の開始時刻 |
 | `finished_at` | `TIMESTAMP` | no | 終了時刻 |
-| `status` | `TEXT` | yes | `running` / `success` / `failed` / `skipped` / `timeout` |
-| `exit_code` | `INTEGER` | no | 終了コード |
-| `pid` | `INTEGER` | no | 親が把握した PID |
-| `hostname` | `TEXT` | yes | 実行ホスト識別 |
-| `log_path` | `TEXT` | no | 実行ログ保存先 |
-| `error_message` | `TEXT` | no | spawn 失敗や強制終了理由 |
+| `status` | `TEXT` | yes | `running` / `success` / `failed` / `skipped` |
+| `action` | `TEXT` | yes | 実行した action のスナップショット |
+| `repo` | `TEXT` | no | 実行時の repo |
+| `session` | `TEXT` | no | 実行時の session |
+| `branch` | `TEXT` | no | 実行時の branch |
+| `agent` | `TEXT` | no | 実行時の agent |
+| `instruction` | `TEXT` | yes | 実行時の instruction スナップショット |
+| `result_session` | `TEXT` | no | `spawn` 結果の session 名 |
+| `result_session_id` | `TEXT` | no | DB 上の session ID |
+| `error_message` | `TEXT` | no | 実行失敗内容 |
 | `created_at` | `TIMESTAMP` | yes | 作成時刻 |
 
 制約・index:
@@ -140,16 +188,17 @@ launchd (agentctl-scheduler.plist)
 - `FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE`
 - `INDEX(job_id, started_at DESC)`
 - `INDEX(status, started_at DESC)`
-- `UNIQUE(job_id, scheduled_at)` を部分的に使えるなら `trigger_type='schedule'` 時だけ適用したい
+- `INDEX(action, started_at DESC)`
 
-補足:
+設計メモ:
 
-- scheduled run の重複抑止には `job_id + scheduled_at` の一意性が有効
-- manual run は `scheduled_at = NULL` でよい
+- `job_runs` には job 定義の重要フィールドをスナップショットとして残す
+- 後から job 定義が変わっても、当時どの instruction を送ったか追跡できる
+- `spawn` の場合は生成した session 名や session ID を残す
 
-#### `job_locks`
+### `job_locks`
 
-多重起動防止と scheduler インスタンス排他用。初期段階では 1 テーブルに集約する。
+多重起動防止と scheduler 排他用。
 
 | column | type | required | description |
 |---|---|---:|---|
@@ -161,21 +210,13 @@ launchd (agentctl-scheduler.plist)
 
 用途:
 
-- 親 scheduler の二重起動検知
+- 親 scheduler の二重起動防止
 - `concurrency_policy=forbid` の job 実行抑止
-- crash 時に lock を TTL で自然回収
-
-### 追加しないもの
-
-初期フェーズでは以下は追加しない。
-
-- job ごとの環境変数専用テーブル
-- 実行成果物アーティファクト管理
-- 複数ノード前提の分散 lease
+- crash 時の TTL 回収
 
 ## CLI インターフェース
 
-新しいトップレベルとして `agentctl job` を追加する。
+トップレベルに `agentctl job` を追加する。
 
 ### サブコマンド一覧
 
@@ -184,69 +225,84 @@ launchd (agentctl-scheduler.plist)
 | `agentctl job add` | job 定義を追加 |
 | `agentctl job list` | job 一覧表示 |
 | `agentctl job show <name|id>` | 単一 job 詳細表示 |
-| `agentctl job update <name|id>` | schedule や command を更新 |
+| `agentctl job update <name|id>` | job 定義更新 |
 | `agentctl job delete <name|id>` | job 削除 |
 | `agentctl job enable <name|id>` | 有効化 |
 | `agentctl job disable <name|id>` | 無効化 |
 | `agentctl job run <name|id>` | 手動実行 |
-| `agentctl job logs <name|id>` | 直近 run のログ確認 |
-| `agentctl job history <name|id>` | 実行履歴表示 |
-| `agentctl job scheduler run` | 親 scheduler のメインループ |
-| `agentctl job scheduler once` | 1 回だけ due 判定して終了 |
-| `agentctl job doctor` | schedule / DB / launchd の診断 |
-
-ユーザ要件には `add/list/delete/run/logs` が必須だが、運用性のため `show/update/enable/disable/history/scheduler/doctor` も併記しておく。
-
-### 代表的な CLI 例
-
-```bash
-agentctl job add manager-status \
-  --schedule "*/5 * * * *" \
-  --cwd "$HOME/src/github.com/chaspy/agentctl" \
-  --command "agentctl manager status" \
-  --concurrency forbid
-
-agentctl job list
-agentctl job run manager-status
-agentctl job logs manager-status --follow
-agentctl job disable manager-status
-agentctl job delete manager-status
-```
+| `agentctl job logs <name|id>` | 実行履歴確認 |
+| `agentctl job history <name|id>` | 実行履歴一覧 |
+| `agentctl job scheduler run` | 親 scheduler ループ |
+| `agentctl job scheduler once` | due 判定を 1 回だけ実施 |
 
 ### `job add` の主要 flag
+
+共通:
 
 | flag | description |
 |---|---|
 | `--schedule` | cron 式。必須 |
 | `--timezone` | 省略時 `Asia/Tokyo` |
-| `--command` | 実行コマンド。必須 |
-| `--shell` | 省略時 `/bin/zsh -lc` 相当 |
-| `--cwd` | 実行ディレクトリ |
+| `--action` | `spawn` or `send`。必須 |
+| `--instruction` | 指示文。必須 |
 | `--concurrency` | `forbid` / `replace` / `allow` |
 | `--catch-up` | `none` / `one` |
-| `--max-runtime` | timeout 秒 |
 | `--disabled` | 追加時に無効化 |
+
+`action=spawn`:
+
+| flag | description |
+|---|---|
+| `--repo` | 対象リポジトリ。必須 |
+| `--branch` | ブランチ名 |
+| `--agent` | `claude` / `codex` / `auto` |
+
+`action=send`:
+
+| flag | description |
+|---|---|
+| `--session` | 対象 session 名。必須 |
+
+### CLI 例
+
+```bash
+agentctl job add weekly-report \
+  --schedule '0 9 * * 1' \
+  --action spawn \
+  --repo chaspy/myassistant \
+  --branch feat/weekly-report \
+  --agent codex \
+  --instruction '比較レポートを更新してPRを出してください'
+
+agentctl job add daily-patrol \
+  --schedule '0 8 * * *' \
+  --action send \
+  --session patrol-codex \
+  --instruction '今日の巡回をしてください'
+```
 
 ### 出力方針
 
-- `list` は人間向け表形式を基本とする
-- `show` / `history` / `logs` は将来の自動化を考慮し `--json` を検討する
-- `run` は `run_id` を返し、`logs` と連携しやすくする
+- `list` では `schedule`, `action`, `target`, `next_run_at`, `last_run_status` を見せる
+- `show` では instruction を含む構造化定義を表示する
+- `history` では実行時の instruction スナップショットを辿れるようにする
+- `logs` は shell log ではなく run 履歴と result 情報の確認に寄せる
 
 ## scheduler ループ設計
 
 ### 親プロセス起動形態
 
-親 `launchd` は常駐的に `agentctl job scheduler run` を実行する。
+親 `launchd` は `agentctl job scheduler run` を常駐実行する。
 
-このプロセスは次のループを持つ。
+ループ:
 
-1. scheduler leader lock を取得
-2. 現在時刻以前の `enabled=1 AND next_run_at <= now()` な job を取得
-3. job ごとに実行可否を判定
-4. 実行する job は `job_runs` に `running` を登録して spawn
-5. spawn 結果と終了結果を回収し、`jobs` と `job_runs` を更新
-6. sleep して次の poll へ進む
+1. leader lock を取得
+2. `enabled=1 AND next_run_at <= now()` の job を取得
+3. action ごとに実行可否を判定
+4. `job_runs` に `running` を登録
+5. `spawn` または `send` を内部 API として実行
+6. 実行結果を `jobs` と `job_runs` に反映
+7. `next_run_at` を再計算して sleep
 
 ### polling 間隔
 
@@ -255,18 +311,12 @@ agentctl job delete manager-status
 理由:
 
 - cron 粒度は分単位で十分
-- `launchd` だけに minute 単位実行を任せるより、親常駐の方が変更反映が簡単
-- SQLite poll 負荷は軽微
-
-設定案:
-
-- デフォルト: 10 秒
-- 最小: 5 秒
-- 将来は `agentctl config` か state で変更可能にする
+- due 判定は軽い
+- DB 反映や job 追加直後の追従が速い
 
 ### due 判定
 
-各 job は `next_run_at` を持ち、scheduler は cron 式を毎回フルスキャンしない。
+各 job は `next_run_at` を持つ。
 
 フロー:
 
@@ -274,37 +324,46 @@ agentctl job delete manager-status
 2. run 完了時に次回 `next_run_at` を再計算
 3. scheduler 復旧時、`next_run_at < now` の job を due とみなす
 
-この方式により、一覧表示と due 検索を軽くできる。
-
 ### catch-up 方針
 
-scheduler 停止中に missed run が発生した場合、初期方針は以下とする。
-
-- `catch_up_policy=none`: missed run は捨て、次回時刻のみ進める
-- `catch_up_policy=one`: 復旧時に 1 回だけ即時実行する
+- `none`: missed run は捨てる
+- `one`: 復旧時に 1 回だけ即時実行する
 
 デフォルトは `none`。
 
-理由:
+### action 実行ロジック
 
-- 過去分を全部 replay すると burst 実行になりやすい
-- 監視系 job は「最新状態を一度見る」だけで十分なことが多い
+#### `spawn`
 
-### job 起動ロジック
+scheduler は shell command を組み立てず、`runSpawn` 相当の内部処理を直接呼ぶ。
 
-初期実装は shell command を子プロセスとして直接起動する。
+入力:
 
-- 実行 API は `exec.CommandContext(shell, "-lc", command)` 相当
-- `cwd` 指定があればそこへ移動
-- stdout/stderr は 1 run 1 log file に保存
-- `job_runs.log_path` に保存先を記録
-- `max_runtime_seconds` 超過時は kill して `timeout` 扱い
+- `repo`
+- `branch`
+- `agent`
+- `instruction`
 
-ログ配置案:
+結果として記録したいもの:
 
-```text
-~/.agentctl/jobs/<job-name>/<run-id>.log
-```
+- 生成された zellij session 名
+- DB に登録された session ID
+- 実行エラー
+
+#### `send`
+
+scheduler は `runSend` 相当の内部処理を直接呼ぶ。
+
+入力:
+
+- `session`
+- `instruction`
+
+結果として記録したいもの:
+
+- 対象 session 名
+- 配信成功 / 失敗
+- wait の成否
 
 ### 多重起動防止
 
@@ -312,36 +371,31 @@ scheduler 停止中に missed run が発生した場合、初期方針は以下�
 
 #### `forbid`
 
-- 同一 job の `running` run が存在すれば新規起動しない
-- `job_runs` に `skipped` を記録してもよい
-- デフォルト値として推奨
+- 同一 job の `running` run があれば新規実行しない
+- 初期 default
 
 #### `replace`
 
-- 既存 run を停止して新規 run を起動
-- 初期実装では複雑度が高いため、設計には含めるが milestone 1 では未実装でもよい
+- 既存 run を中断して新規 run を優先
+- 初期実装では保留でもよい
 
 #### `allow`
 
-- 並列実行を許可する
-- 監視系よりバッチ系向け
+- 並列実行を許可
 
 ### scheduler 自身の多重起動防止
 
-親 `launchd` が再起動や手動実行で二重起動する可能性があるため、`job_locks` の `scheduler/leader` を使用する。
+`job_locks` の `scheduler/leader` を使う。
 
-- lock owner は `hostname:pid`
-- TTL は poll 間隔の 3 倍から 6 倍程度
-- leader が heartbeat を更新
-- lock が有効な間は他プロセスは standby または即終了
-
-初期実装では「後続プロセスは即終了」が単純でよい。
+- owner は `hostname:pid`
+- TTL は poll 間隔の数倍
+- 初期実装では後続プロセスは即終了でよい
 
 ### エラー処理
 
-- DB 接続失敗: プロセスは非 0 終了し、`launchd` に再起動させる
-- 個別 job spawn 失敗: scheduler 全体は継続し、その run を `failed` で記録
-- ログファイル作成失敗: run を `failed` とし、標準エラーへも出す
+- DB 接続失敗: scheduler 全体を非 0 終了
+- `spawn` / `send` 実行失敗: 該当 run を `failed` で記録して継続
+- 入力不正な job: `failed` として記録し、明示的に可視化する
 
 ## launchd plist 設計
 
@@ -399,12 +453,11 @@ scheduler 停止中に missed run が発生した場合、初期方針は以下�
 </plist>
 ```
 
-### plist 方針
+方針:
 
-- `StartInterval` は使わず、常駐 + 内部 poll に寄せる
+- `StartInterval` は使わず常駐 + 内部 poll に寄せる
 - `KeepAlive=true` で親プロセスを維持する
-- PATH は明示する
-- `agentctl` binary path は install 方法に応じて調整可能にする
+- scheduler が内部的に `spawn` / `send` を実行する
 
 ## 既存 launchd plist からの移行計画
 
@@ -413,143 +466,114 @@ scheduler 停止中に missed run が発生した場合、初期方針は以下�
 - `manager_status_job`
 - `patrol`
 
-移行は一括置換ではなく、二重実行事故を避けるため段階的に進める。
+移行は段階的に進める。
 
 ### 移行ステップ
 
-1. 現行 plist の一覧を棚卸しし、schedule / command / cwd / ログ出力先を表にする
-2. 同等の `jobs` レコードを DB に登録する
-3. `agentctl job list` と `agentctl job scheduler once` で due 判定を確認する
-4. 親 `agentctl-scheduler.plist` を load する
-5. 旧 plist は unload するが、ファイル自体は一定期間残す
-6. `job_runs` と実ログで期待通り動いていることを確認する
-7. 問題なければ旧 plist を削除する
+1. 現行 plist の用途を `spawn` か `send` に分類する
+2. 既存コマンド文字列を、構造化 job 定義へ分解する
+3. `jobs` レコードを登録する
+4. `agentctl job scheduler once` で due 判定と action 解決を確認する
+5. 親 `agentctl-scheduler.plist` を load する
+6. 旧 plist を unload する
+7. `job_runs` 履歴で期待通りに `spawn` / `send` されることを確認する
 
 ### 移行マッピング例
 
-#### `manager_status_job`
-
-想定用途:
-
-- 一定間隔で `agentctl manager status` を実行し、状態確認や記録を行う
-
-移行案:
-
-```bash
-agentctl job add manager-status \
-  --schedule "*/5 * * * *" \
-  --command "agentctl manager status" \
-  --cwd "/Users/chaspy/go/src/github.com/chaspy/agentctl"
-```
-
 #### `patrol`
 
-想定用途:
-
-- 一定間隔で監視・巡回系コマンドを走らせる
-
-移行案:
+もし常駐 patrol session に定期依頼する設計なら、`send` job に置き換える。
 
 ```bash
 agentctl job add patrol \
-  --schedule "*/10 * * * *" \
-  --command "agentctl <既存 patrol 相当コマンド>" \
-  --cwd "/Users/chaspy/go/src/github.com/chaspy/agentctl"
+  --schedule '0 8 * * *' \
+  --action send \
+  --session patrol-codex \
+  --instruction '今日の巡回をしてください'
+```
+
+#### 比較レポート更新
+
+もし新しい worker を起動してレポート更新と PR 作成まで任せるなら、`spawn` job に置き換える。
+
+```bash
+agentctl job add weekly-report \
+  --schedule '0 9 * * 1' \
+  --action spawn \
+  --repo chaspy/myassistant \
+  --agent codex \
+  --instruction '比較レポートを更新してPRを出してください'
 ```
 
 ### 移行時の注意点
 
 - 旧 plist と新 scheduler の同時有効化は避ける
-- まず read-only / 状態確認系 job から移行する
-- 副作用の強い job は manual run と単発 schedule で先に検証する
-- 既存ログ保存先がある場合、新ログパスとの対応を設計書か migration メモに残す
+- command 文字列をそのまま持ち込まず、job の意図を `spawn` / `send` に再モデリングする
+- まず `send` 系の read-mostly な job から移行すると安全
 
 ## 実装フェーズ分割案
 
-### Milestone 1: 最小実用 scheduler
-
-目的:
-
-- DB に job を保存し、親 scheduler が due job を 1 台で実行できるようにする
+### Milestone 1: 構造化 job 基盤
 
 範囲:
 
 - `jobs`, `job_runs`, `job_locks` migration
+- `action=spawn` / `action=send` のバリデーション
 - `agentctl job add/list/delete/run`
 - `agentctl job scheduler once/run`
 - `forbid` のみ実装
-- ログファイル保存
-- 親 `launchd plist` 手動設置
 
 完了条件:
 
-- 1 分間隔 job を追加して自動実行できる
-- 手動実行で履歴とログが残る
-- 二重起動しない
+- `spawn` job と `send` job を 1 件ずつ登録して実行できる
+- run 履歴に instruction と結果が残る
+- shell command を一切持たない
 
-### Milestone 2: 運用機能の強化
+### Milestone 2: 運用機能
 
 範囲:
 
 - `show/update/enable/disable/history/logs`
-- timeout 管理
 - `catch_up_policy`
-- `doctor` コマンド
+- 入力検証エラーの可視化
 - README / docs 整備
 
 完了条件:
 
 - 日常運用が CLI だけで完結する
-- 停止・再開・状況確認が容易になる
+- instruction と実行結果を追跡できる
 
 ### Milestone 3: 既存 job の移行
 
 範囲:
 
-- `manager_status_job` 移行
-- `patrol` 移行
-- 旧 plist の段階的廃止
+- 既存 plist を `spawn` / `send` job に変換
+- 親 scheduler へ統合
+- 旧 plist 廃止
 
 完了条件:
 
-- 対象 job が親 scheduler 配下で安定稼働する
-- 旧 plist を unload / 削除できる
-
-### Milestone 4: 拡張機能
-
-候補:
-
-- `replace` / `allow` の厳密実装
-- `--json` 出力
-- Web UI 連携
-- job 定義 export/import
-- 将来的な Linux systemd 対応
+- 実運用ジョブが `agentctl` の構造化 job に置き換わる
 
 ## Open Questions
 
-以下は設計レビューで確定したい論点。
-
-1. `schedule` は標準 5 フィールド cron のみでよいか
-2. `timezone` を job ごとに持つか、全体設定に寄せるか
-3. `command` を shell string で持つか、`argv` JSON で持つか
-4. `replace` を初期実装に含めるか
-5. `job delete` を物理削除にするか、論理削除にするか
-6. `manager_status_job` / `patrol` の実際の schedule と command を何にするか
-7. ログローテーションを `agentctl` で持つか、外部運用に委ねるか
+1. `spawn` 時の `agent` は `auto` を default にするか
+2. `spawn` job の `branch` 命名を固定規約にするか
+3. `send` 実行時の `--no-wait` / `--verify` 相当を job 定義に持たせるか
+4. `job logs` は action log ベースで十分か、それとも別途詳細ログが必要か
+5. `manager_status_job` のような「単なる状態確認コマンド」は scheduler の対象に含めるべきか、それとも `send` / `spawn` に寄らない用途として切り分けるべきか
 
 ## 推奨方針
 
-レビュー開始時点では、以下を推奨値とする。
-
-- cron は 5 フィールドのみ
-- timezone は job ごとに保持
-- command は shell string で保持
-- 初期 concurrency は `forbid` のみ必須
-- delete は Milestone 1 では物理削除
-- catch-up の default は `none`
+- job action は `spawn` と `send` の 2 種類に限定する
+- `instruction` を job 定義の主役として持つ
+- shell command は持たない
+- 初期 concurrency は `forbid` を default にする
+- `spawn` の `agent` default は `auto`
+- `catch_up_policy` default は `none`
 
 ## まとめ
 
-本設計では `launchd` を supervisor 1 本に縮小し、job 定義と実行履歴を `agentctl` の SQLite に集約する。これにより、plist 編集中心の運用から CLI / DB 中心の運用へ移行できる。
+job scheduler は cron の代替ではなく、`agentctl` の定期オーケストレーション機能として設計するべきである。したがって job 定義は shell command ではなく、`spawn` / `send` を構造化したデータとして持つ。
 
-最初は最小構成で導入し、`manager_status_job` と `patrol` を段階的に移行する。chaspy のレビュー完了後、Milestone 1 から実装に入る。
+この設計により、`agentctl` は shell 実行基盤ではなく「定期的に agent を起動し、既存 agent に指示を送るオーケストレータ」として意味を持てる。レビュー後はこの方針で実装フェーズへ進む。
