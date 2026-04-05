@@ -462,28 +462,7 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 		}
 	}
 
-	// Step 2: Discover zellij sessions missing from DB
-	discoveredCount := 0
-	for _, zs := range zellijSessions {
-		if _, found := existingAlive[strings.ToLower(zs.Name)]; found {
-			continue
-		}
-		discovered, ok := discoverSessionFromZellij(zs)
-		if !ok {
-			continue
-		}
-		if err := store.UpsertSession(db, &discovered.Session); err != nil {
-			return discoveredCount, fmt.Errorf("registering discovered session %q: %w", zs.Name, err)
-		}
-		discoveredCount++
-		fmt.Printf("Discovered session %s: cwd=%s repo=%s branch=%s\n",
-			discovered.Session.ZellijSession,
-			discovered.Session.CWD,
-			discovered.Session.Repository,
-			discovered.Session.GitBranch)
-	}
-
-	// Step 3: Enrich CWD/repo/branch for alive sessions with empty CWD via dump-layout
+	// Step 2: Enrich CWD/repo/branch for alive sessions with empty CWD via dump-layout
 	// Re-fetch to get updated runtime_status
 	aliveSessions, _ = store.ListSessionsByAlive(db, true)
 	for _, s := range aliveSessions {
@@ -516,7 +495,7 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 		fmt.Printf("Enriched session %s: cwd=%s\n", s.ZellijSession, cwd)
 	}
 
-	return discoveredCount, nil
+	return 0, nil
 }
 
 // zellijCWD extracts CWD from a zellij session's layout dump.
