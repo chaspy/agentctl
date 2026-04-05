@@ -10,6 +10,7 @@ A CLI tool for managing multiple coding agent sessions (Claude Code, Codex CLI) 
 - **Monitoring** - Watch for session changes, auto-notify on new assistant responses
 - **Rate limit tracking** - Check Claude Code and Codex CLI rate limit status
 - **State persistence** - SQLite-backed state with session sync, task tracking, and action logging
+- **Handoff telemetry** - Persist route reason, handoff summary, and token burn for completed worker sessions
 - **PWA dashboard** - Web-based dashboard for mobile monitoring
 
 ## Requirements
@@ -82,6 +83,7 @@ agentctl serve
 | `state sync` | Sync live session data to SQLite |
 | `state show` | Show saved state from SQLite |
 | `state log` | Record or view action logs |
+| `state log handoff <session-id>` | Record route reason, handoff summary, and token burn |
 | `state task` | Manage tasks (add, complete, list) |
 | `config` | Manage per-repository configuration |
 | `repos <query>` | Search for repositories on disk |
@@ -105,6 +107,7 @@ agentctl uses SQLite for persistent state. The database is stored at `~/.agentct
 - **Sessions**: Synced from live scans, preserving status history
 - **Tasks**: Track work items per session
 - **Actions**: Log decisions and events for auditability
+- **Handoffs**: Persist worker route reason, completion summary, and token burn in the action log
 - **Repo configs**: Per-repository settings (branching mode, preferred agent, descriptions)
 
 ## Architecture

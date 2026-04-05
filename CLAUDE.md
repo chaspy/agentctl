@@ -33,6 +33,7 @@ agentctl rate              # Show rate limit status
 agentctl state sync                    # Live scan -> DB sync
 agentctl state show                    # Show saved state
 agentctl state log "memo"              # Record action log
+agentctl state log handoff <session> --route-reason "..." --handoff-summary "..." --token-burn 1234
 agentctl state log --since 1h          # View recent actions
 agentctl state task list               # List active tasks
 agentctl state task add <session> "X"  # Add task

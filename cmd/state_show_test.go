@@ -138,3 +138,41 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 		t.Fatalf("duplicate group mismatch: dup1=%q dup2=%q", dup1.DuplicateGroup, dup2.DuplicateGroup)
 	}
 }
+
+func TestBuildStateShowReportIncludesRecentActionMetadata(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := store.LogAction(db, &store.Action{
+		SessionID:      "codex:a/b:s1",
+		ActionType:     "handoff",
+		Content:        "worker session handoff recorded",
+		RouteReason:    "research task prefers codex",
+		HandoffSummary: "captured comparison notes and left follow-up",
+		TokenBurn:      2048,
+	}); err != nil {
+		t.Fatalf("LogAction: %v", err)
+	}
+
+	report, err := buildStateShowReport(db)
+	if err != nil {
+		t.Fatalf("buildStateShowReport: %v", err)
+	}
+	if len(report.RecentActions) != 1 {
+		t.Fatalf("recent actions = %d, want 1", len(report.RecentActions))
+	}
+
+	action := report.RecentActions[0]
+	if action.RouteReason != "research task prefers codex" {
+		t.Fatalf("route_reason = %q", action.RouteReason)
+	}
+	if action.HandoffSummary != "captured comparison notes and left follow-up" {
+		t.Fatalf("handoff_summary = %q", action.HandoffSummary)
+	}
+	if action.TokenBurn != 2048 {
+		t.Fatalf("token_burn = %d", action.TokenBurn)
+	}
+}
