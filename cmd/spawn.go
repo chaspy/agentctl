@@ -24,6 +24,8 @@ var (
 	spawnTaskType string
 )
 
+const versionBumpReminder = "※ commit & push 前に必ず VERSION ファイルのパッチバージョンを +1 すること（CI の check-version-bump が fail するため）。"
+
 var spawnCmd = &cobra.Command{
 	Use:   "spawn <repo>",
 	Short: "Create a new zellij session with Claude or Codex in the specified repo",
@@ -221,12 +223,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	// Send initial message if specified
 	if spawnMessage != "" {
+		initialMessage := withVersionBumpReminder(spawnMessage)
 		if selectedAgent != provider.AgentCodex {
 			fmt.Fprintf(os.Stderr, "Waiting for %s to start...\n", selectedAgent)
 			time.Sleep(5 * time.Second)
 		}
 		writeMsg := exec.Command("env", "-u", "ZELLIJ",
-			"zellij", "-s", sessionName, "action", "write-chars", spawnMessage)
+			"zellij", "-s", sessionName, "action", "write-chars", initialMessage)
 		if out, err := writeMsg.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to send initial message: %w\n%s", err, string(out))
 		}
@@ -284,4 +287,14 @@ func parseWorktreePath(output, branch string) string {
 		}
 	}
 	return ""
+}
+
+func withVersionBumpReminder(message string) string {
+	if strings.Contains(message, "VERSION") {
+		return message
+	}
+	if strings.HasSuffix(message, "\n") {
+		return message + versionBumpReminder
+	}
+	return message + "\n\n" + versionBumpReminder
 }

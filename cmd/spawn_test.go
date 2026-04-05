@@ -54,3 +54,36 @@ detached
 		})
 	}
 }
+
+func TestWithVersionBumpReminder(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{
+			name:    "append reminder when VERSION is absent",
+			message: "この修正を実装してください。",
+			want:    "この修正を実装してください。\n\n" + versionBumpReminder,
+		},
+		{
+			name:    "skip when VERSION is already mentioned",
+			message: "commit 前に VERSION を確認して更新してください。",
+			want:    "commit 前に VERSION を確認して更新してください。",
+		},
+		{
+			name:    "preserve trailing newline",
+			message: "実装してください。\n",
+			want:    "実装してください。\n" + versionBumpReminder,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withVersionBumpReminder(tc.message)
+			if got != tc.want {
+				t.Errorf("withVersionBumpReminder(%q) = %q, want %q", tc.message, got, tc.want)
+			}
+		})
+	}
+}
