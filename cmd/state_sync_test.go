@@ -202,7 +202,11 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 		LastActive:    time.Now(),
 	})
 
-	restore := mockZellijDetailed([]mux.ZellijSessionState{})
+	// Zellij returns at least one other session so the fail-safe doesn't trigger,
+	// but "a-b" is absent — session should be marked gone.
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "other-session", Exited: false},
+	})
 	defer restore()
 
 	syncRuntimeStatus(db)
@@ -216,6 +220,35 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 	}
 	if s1.Status != "dead" {
 		t.Errorf("status = %q, want %q", s1.Status, "dead")
+	}
+}
+
+func TestSyncRuntimeStatus_SkipsDeadDetectionOnEmptyZellij(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		RuntimeStatus: "running",
+		LastActive:    time.Now(),
+	})
+
+	// Zellij returns 0 sessions but DB has alive sessions — fail-safe should skip.
+	restore := mockZellijDetailed([]mux.ZellijSessionState{})
+	defer restore()
+
+	syncRuntimeStatus(db)
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if !s1.Alive {
+		t.Error("alive should remain true when zellij returns 0 sessions (fail-safe)")
+	}
+	if s1.RuntimeStatus != "running" {
+		t.Errorf("runtime_status = %q, want %q (should be unchanged)", s1.RuntimeStatus, "running")
 	}
 }
 
@@ -266,7 +299,7 @@ func TestSyncRuntimeStatus_DoesNotCreateNewFromZellij(t *testing.T) {
 	}
 }
 
-func TestSyncRuntimeStatus_NoZellijSession_MarksGone(t *testing.T) {
+func TestSyncRuntimeStatus_NoZellijSession_MarksUnknown(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -286,15 +319,16 @@ func TestSyncRuntimeStatus_NoZellijSession_MarksGone(t *testing.T) {
 
 	syncRuntimeStatus(db)
 
+	// Empty zellij_session means "location unknown", not "dead" — stay alive.
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
-	if s1.RuntimeStatus != "gone" {
-		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
+	if s1.RuntimeStatus != "unknown" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "unknown")
 	}
-	if s1.Alive {
-		t.Error("alive should be false for sessions without zellij session name")
+	if !s1.Alive {
+		t.Error("alive should remain true for sessions with no zellij_session (location unknown)")
 	}
-	if s1.Status != "dead" {
-		t.Errorf("status = %q, want %q", s1.Status, "dead")
+	if s1.Status != "active" {
+		t.Errorf("status = %q, want %q (should be unchanged)", s1.Status, "active")
 	}
 }
 
@@ -311,7 +345,11 @@ func TestSyncRuntimeStatus_GhostSessionArchivesAfterSync(t *testing.T) {
 		LastActive: time.Now(),
 	})
 
-	restore := mockZellijDetailed(nil)
+	// Return at least one other session so the fail-safe doesn't trigger,
+	// while "missing-session" is absent → ghost gets marked dead.
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "other-session", Exited: false},
+	})
 	defer restore()
 
 	syncRuntimeStatus(db)
