@@ -58,20 +58,20 @@ func (s *Server) Handler() http.Handler {
 }
 
 type sessionJSON struct {
-	ID            string `json:"id"`
-	Agent         string `json:"agent"`
-	Repository    string `json:"repository"`
-	GitBranch     string `json:"git_branch"`
-	Status        string `json:"status"`
-	Alive         bool   `json:"alive"`
-	LastMessage   string `json:"last_message"`
-	LastActive    string `json:"last_active"`
-	TaskSummary   string `json:"task_summary"`
-	Role          string `json:"role"`
-	Archived      bool   `json:"archived"`
-	PRNumber      int    `json:"pr_number,omitempty"`
-	PRURL         string `json:"pr_url,omitempty"`
-	PRState       string `json:"pr_state,omitempty"`
+	ID          string `json:"id"`
+	Agent       string `json:"agent"`
+	Repository  string `json:"repository"`
+	GitBranch   string `json:"git_branch"`
+	Status      string `json:"status"`
+	Alive       bool   `json:"alive"`
+	LastMessage string `json:"last_message"`
+	LastActive  string `json:"last_active"`
+	TaskSummary string `json:"task_summary"`
+	Role        string `json:"role"`
+	Archived    bool   `json:"archived"`
+	PRNumber    int    `json:"pr_number,omitempty"`
+	PRURL       string `json:"pr_url,omitempty"`
+	PRState     string `json:"pr_state,omitempty"`
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -168,12 +168,15 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 type actionJSON struct {
-	ID         int64  `json:"id"`
-	SessionID  string `json:"session_id"`
-	ActionType string `json:"action_type"`
-	Content    string `json:"content"`
-	Result     string `json:"result,omitempty"`
-	CreatedAt  string `json:"created_at"`
+	ID             int64  `json:"id"`
+	SessionID      string `json:"session_id"`
+	ActionType     string `json:"action_type"`
+	Content        string `json:"content"`
+	Result         string `json:"result,omitempty"`
+	RouteReason    string `json:"route_reason,omitempty"`
+	HandoffSummary string `json:"handoff_summary,omitempty"`
+	TokenBurn      int    `json:"token_burn,omitempty"`
+	CreatedAt      string `json:"created_at"`
 }
 
 func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
@@ -193,12 +196,15 @@ func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
 	out := make([]actionJSON, 0, len(actions))
 	for _, a := range actions {
 		out = append(out, actionJSON{
-			ID:         a.ID,
-			SessionID:  a.SessionID,
-			ActionType: a.ActionType,
-			Content:    a.Content,
-			Result:     a.Result,
-			CreatedAt:  a.CreatedAt.Format(time.RFC3339),
+			ID:             a.ID,
+			SessionID:      a.SessionID,
+			ActionType:     a.ActionType,
+			Content:        a.Content,
+			Result:         a.Result,
+			RouteReason:    a.RouteReason,
+			HandoffSummary: a.HandoffSummary,
+			TokenBurn:      a.TokenBurn,
+			CreatedAt:      a.CreatedAt.Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, out)
@@ -402,8 +408,6 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, messages)
 }
-
-
 
 func splitLines(s string) []string {
 	var lines []string

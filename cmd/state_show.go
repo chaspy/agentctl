@@ -44,9 +44,22 @@ type stateShowSession struct {
 	Health         []string  `json:"health,omitempty"`
 }
 
+type stateShowAction struct {
+	ID             int64     `json:"id"`
+	SessionID      string    `json:"session_id,omitempty"`
+	ActionType     string    `json:"action_type"`
+	Content        string    `json:"content"`
+	Result         string    `json:"result,omitempty"`
+	RouteReason    string    `json:"route_reason,omitempty"`
+	HandoffSummary string    `json:"handoff_summary,omitempty"`
+	TokenBurn      int       `json:"token_burn,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 type stateShowReport struct {
-	Summary  stateShowSummary   `json:"summary"`
-	Sessions []stateShowSession `json:"sessions"`
+	Summary       stateShowSummary   `json:"summary"`
+	Sessions      []stateShowSession `json:"sessions"`
+	RecentActions []stateShowAction  `json:"recent_actions,omitempty"`
 }
 
 var stateShowCmd = &cobra.Command{
@@ -149,18 +162,27 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 	if len(actions) > 0 {
 		fmt.Println("\n=== Recent Actions ===")
 		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "TIME\tTYPE\tSESSION\tCONTENT")
+		fmt.Fprintln(w, "TIME\tTYPE\tSESSION\tCONTENT\tROUTE_REASON\tHANDOFF_SUMMARY\tTOKEN_BURN")
 		for _, a := range actions {
-			content := a.Content
-			if len(content) > 80 {
-				content = content[:80] + "..."
+			content := truncateForTable(a.Content, 80)
+			routeReason := truncateForTable(a.RouteReason, 32)
+			handoffSummary := truncateForTable(a.HandoffSummary, 40)
+			tokenBurn := "-"
+			if a.TokenBurn > 0 {
+				tokenBurn = fmt.Sprintf("%d", a.TokenBurn)
 			}
 			session := a.SessionID
 			if session == "" {
 				session = "-"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-				a.CreatedAt.Format("15:04:05"), a.ActionType, session, content)
+			if routeReason == "" {
+				routeReason = "-"
+			}
+			if handoffSummary == "" {
+				handoffSummary = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				a.CreatedAt.Format("15:04:05"), a.ActionType, session, content, routeReason, handoffSummary, tokenBurn)
 		}
 		w.Flush()
 	}
@@ -259,6 +281,24 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 		})
 	}
 
+	actions, err := store.GetRecentActions(db, 10)
+	if err != nil {
+		return nil, fmt.Errorf("listing actions: %w", err)
+	}
+	for _, a := range actions {
+		report.RecentActions = append(report.RecentActions, stateShowAction{
+			ID:             a.ID,
+			SessionID:      a.SessionID,
+			ActionType:     a.ActionType,
+			Content:        a.Content,
+			Result:         a.Result,
+			RouteReason:    a.RouteReason,
+			HandoffSummary: a.HandoffSummary,
+			TokenBurn:      a.TokenBurn,
+			CreatedAt:      a.CreatedAt,
+		})
+	}
+
 	for _, count := range duplicateCounts {
 		if count > 1 {
 			report.Summary.DuplicateGroups++
@@ -266,4 +306,11 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 	}
 
 	return report, nil
+}
+
+func truncateForTable(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
 }

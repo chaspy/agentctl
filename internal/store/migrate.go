@@ -15,6 +15,7 @@ var migrations = []string{
 	migrationV10,
 	migrationV11,
 	migrationV12,
+	migrationV13,
 }
 
 // Migrate applies all pending schema migrations.
@@ -213,4 +214,10 @@ ALTER TABLE sessions_archive ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'go
 
 const migrationV12 = `
 ALTER TABLE repo_config ADD COLUMN agent TEXT NOT NULL DEFAULT 'auto';
+`
+
+const migrationV13 = `
+ALTER TABLE actions ADD COLUMN route_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE actions ADD COLUMN handoff_summary TEXT NOT NULL DEFAULT '';
+ALTER TABLE actions ADD COLUMN token_burn INTEGER NOT NULL DEFAULT 0;
 `

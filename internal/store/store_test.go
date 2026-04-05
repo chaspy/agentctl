@@ -363,7 +363,15 @@ func TestActionLog(t *testing.T) {
 	}
 	defer db.Close()
 
-	a1 := &Action{ActionType: "send", SessionID: "s1", Content: "do X", Result: "ok"}
+	a1 := &Action{
+		ActionType:     "handoff",
+		SessionID:      "s1",
+		Content:        "worker session handoff recorded",
+		Result:         "ok",
+		RouteReason:    "implementation task prefers claude",
+		HandoffSummary: "implemented state log schema changes",
+		TokenBurn:      3210,
+	}
 	a2 := &Action{ActionType: "note", Content: "rate limit approaching"}
 	if err := LogAction(db, a1); err != nil {
 		t.Fatal(err)
@@ -386,6 +394,9 @@ func TestActionLog(t *testing.T) {
 	}
 	if len(forSession) != 1 {
 		t.Errorf("expected 1 action for s1, got %d", len(forSession))
+	}
+	if got := forSession[0]; got.RouteReason != a1.RouteReason || got.HandoffSummary != a1.HandoffSummary || got.TokenBurn != a1.TokenBurn {
+		t.Fatalf("session action metadata mismatch: %+v", got)
 	}
 }
 

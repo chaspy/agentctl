@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.33] - 2026-04-06
+
+### Added
+
+- `state log handoff <session-id>` to persist `route_reason`, `handoff_summary`, and `token_burn` when a worker session ends
+- `state show` and the actions API now expose the same handoff telemetry for recent actions
+
 ## [0.2.32] - 2026-04-06
 
 ### Fixed
