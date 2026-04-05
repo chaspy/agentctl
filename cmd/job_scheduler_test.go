@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,9 +97,21 @@ func TestRunJobSchedulerOnce(t *testing.T) {
 		return "sent:" + job.Session, nil
 	}
 
-	executed, err := runJobSchedulerOnce(db, storedJob.CreatedAt.Add(2*time.Minute))
+	var logs bytes.Buffer
+	origLogger := jobSchedulerLogger
+	t.Cleanup(func() {
+		jobSchedulerLogger = origLogger
+	})
+	jobSchedulerLogger = func(format string, args ...any) {
+		_, _ = logs.WriteString(fmt.Sprintf(format, args...))
+	}
+
+	checked, executed, err := runJobSchedulerOnce(db, storedJob.CreatedAt.Add(2*time.Minute))
 	if err != nil {
 		t.Fatalf("runJobSchedulerOnce: %v", err)
+	}
+	if checked != 1 {
+		t.Fatalf("checked = %d, want 1", checked)
 	}
 	if executed != 1 {
 		t.Fatalf("executed = %d, want 1", executed)
@@ -116,5 +131,11 @@ func TestRunJobSchedulerOnce(t *testing.T) {
 	lock, err := store.GetJobLock(db, job.ID)
 	if err == nil {
 		t.Fatalf("job lock should be released, got %+v", lock)
+	}
+	if !strings.Contains(logs.String(), `executing job "scheduler-send" (action=send, target=manager)`) {
+		t.Fatalf("scheduler log missing execution line: %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), `job "scheduler-send" executed successfully`) {
+		t.Fatalf("scheduler log missing success line: %q", logs.String())
 	}
 }

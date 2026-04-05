@@ -32,6 +32,8 @@ var (
 	nowFunc          = time.Now
 )
 
+const jobTestModeEnv = "AGENTCTL_JOB_TEST_MODE"
+
 var jobCmd = &cobra.Command{
 	Use:   "job",
 	Short: "Manage scheduled jobs",
@@ -274,6 +276,11 @@ func executeStoredJob(job *store.Job) (string, error) {
 }
 
 func executeJobSpawn(job *store.Job) (string, error) {
+	if os.Getenv(jobTestModeEnv) != "" {
+		return fmt.Sprintf("[job-test-mode] spawn repo=%s branch=%s agent=%s instruction=%s",
+			job.Repo, job.Branch, job.Agent, job.Instruction), nil
+	}
+
 	origBranch := spawnBranch
 	origName := spawnName
 	origMessage := spawnMessage
@@ -305,6 +312,11 @@ func executeJobSpawn(job *store.Job) (string, error) {
 }
 
 func executeJobSend(job *store.Job) (string, error) {
+	if os.Getenv(jobTestModeEnv) != "" {
+		return fmt.Sprintf("[job-test-mode] send session=%s instruction=%s",
+			job.Session, job.Instruction), nil
+	}
+
 	origNoWait := sendNoWait
 	defer func() {
 		sendNoWait = origNoWait

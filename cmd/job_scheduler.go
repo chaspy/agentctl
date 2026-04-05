@@ -15,6 +15,9 @@ import (
 
 var (
 	jobSchedulerPollInterval = 30 * time.Second
+	jobSchedulerLogger       = func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format, args...)
+	}
 )
 
 var jobSchedulerCmd = &cobra.Command{
@@ -34,45 +37,62 @@ func runJobScheduler(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
+	logf := func(format string, args ...any) {
+		fmt.Fprintf(cmd.ErrOrStderr(), format, args...)
+	}
+
+	logf("job scheduler started (poll interval: %s)\n", jobSchedulerPollInterval)
+
 	ticker := time.NewTicker(jobSchedulerPollInterval)
 	defer ticker.Stop()
 
 	for {
-		if _, err := runJobSchedulerOnce(db, nowFunc()); err != nil {
+		checked, executed, err := runJobSchedulerOnce(db, nowFunc())
+		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "scheduler tick failed: %v\n", err)
+		} else {
+			logf("scheduler tick: checked %d jobs, executed %d\n", checked, executed)
 		}
 		<-ticker.C
 	}
 }
 
-func runJobSchedulerOnce(db *sql.DB, now time.Time) (int, error) {
+func runJobSchedulerOnce(db *sql.DB, now time.Time) (int, int, error) {
 	jobs, err := store.ListJobs(db)
 	if err != nil {
-		return 0, fmt.Errorf("listing jobs: %w", err)
+		return 0, 0, fmt.Errorf("listing jobs: %w", err)
 	}
 
+	checked := 0
 	executed := 0
 	for _, job := range jobs {
+		checked++
 		if !job.Enabled {
 			continue
 		}
 		due, err := isJobDue(db, job, now)
 		if err != nil {
-			return executed, fmt.Errorf("checking job %q: %w", job.Name, err)
+			return checked, executed, fmt.Errorf("checking job %q: %w", job.Name, err)
 		}
 		if !due {
 			continue
 		}
 		if err := runScheduledJob(db, &job); err != nil {
-			return executed, err
+			return checked, executed, err
 		}
 		executed++
 	}
 
-	return executed, nil
+	return checked, executed, nil
 }
 
 func runScheduledJob(db *sql.DB, job *store.Job) error {
+	target := job.Repo
+	if job.Action == "send" {
+		target = job.Session
+	}
+	jobSchedulerLogger("executing job %q (action=%s, target=%s)\n", job.Name, job.Action, target)
+
 	lockedBy, err := schedulerLockOwner()
 	if err != nil {
 		return err
@@ -88,6 +108,7 @@ func runScheduledJob(db *sql.DB, job *store.Job) error {
 	if _, err := runStoredJob(db, job); err != nil {
 		return err
 	}
+	jobSchedulerLogger("job %q executed successfully\n", job.Name)
 	return nil
 }
 
