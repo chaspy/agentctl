@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.32] - 2026-04-06
+
+### Fixed
+
+- `state sync` now skips dead-session detection when zellij returns 0 sessions but the DB has alive sessions, preventing mass-archive on zellij transient errors
+- Sessions with an empty `zellij_session` field are no longer marked dead; they are kept alive with `runtime_status = 'unknown'` since their location is unknown, not confirmed gone
+
 ## [0.2.30] - 2026-04-05
 
 ### Fixed

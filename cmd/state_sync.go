@@ -410,6 +410,16 @@ func syncRuntimeStatus(db *sql.DB) {
 		zellijSessions = []mux.ZellijSessionState{}
 	}
 
+	// Fail-safe: if zellij returned 0 sessions but DB has alive sessions,
+	// zellij may be in a broken state — skip dead-session detection entirely.
+	if len(zellijSessions) == 0 {
+		aliveSessions, _ := store.ListSessionsByAlive(db, true)
+		if len(aliveSessions) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: zellij returned 0 sessions but DB has %d alive sessions, skipping dead-session detection\n", len(aliveSessions))
+			return
+		}
+	}
+
 	// Build map: name(lower) -> state
 	type zellijState struct {
 		name   string
@@ -425,7 +435,8 @@ func syncRuntimeStatus(db *sql.DB) {
 	for _, s := range aliveSessions {
 		zellijName := s.ZellijSession
 		if zellijName == "" {
-			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+			// zellij_session empty means "location unknown", not "dead" — preserve alive, mark unknown.
+			db.Exec("UPDATE sessions SET runtime_status = 'unknown', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			continue
 		}
 
