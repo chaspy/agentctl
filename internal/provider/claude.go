@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/chaspy/agentctl/internal/session"
@@ -533,7 +534,12 @@ type ccusageResponse struct {
 func ccusageActiveBlock() *ccusageBlock {
 	cmd := exec.Command("npx", "ccusage@latest", "blocks", "--json")
 	cmd.Env = append(os.Environ(), "NODE_NO_WARNINGS=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	out, err := cmd.Output()
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	if err != nil {
 		return nil
 	}
