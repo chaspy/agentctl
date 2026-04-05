@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -10,14 +13,53 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type stateShowSummary struct {
+	ActiveSessions    int `json:"active_sessions"`
+	ArchivedSessions  int `json:"archived_sessions"`
+	BlockedSessions   int `json:"blocked_sessions"`
+	ErrorSessions     int `json:"error_sessions"`
+	GhostSessions     int `json:"ghost_sessions"`
+	DuplicateSessions int `json:"duplicate_sessions"`
+	DuplicateGroups   int `json:"duplicate_groups"`
+	DeadSessions      int `json:"dead_sessions"`
+}
+
+type stateShowSession struct {
+	ID             string    `json:"id"`
+	Agent          string    `json:"agent"`
+	Repository     string    `json:"repository"`
+	Branch         string    `json:"branch"`
+	Status         string    `json:"status"`
+	BlockedReason  string    `json:"blocked_reason,omitempty"`
+	Alive          bool      `json:"alive"`
+	RuntimeStatus  string    `json:"runtime_status"`
+	ZellijSession  string    `json:"zellij_session,omitempty"`
+	TaskSummary    string    `json:"task_summary,omitempty"`
+	PRURL          string    `json:"pr_url,omitempty"`
+	LastActive     time.Time `json:"last_active"`
+	Ghost          bool      `json:"ghost"`
+	Duplicate      bool      `json:"duplicate"`
+	DuplicateGroup string    `json:"duplicate_group,omitempty"`
+	DuplicateCount int       `json:"duplicate_count,omitempty"`
+	Health         []string  `json:"health,omitempty"`
+}
+
+type stateShowReport struct {
+	Summary  stateShowSummary   `json:"summary"`
+	Sessions []stateShowSession `json:"sessions"`
+}
+
 var stateShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show persisted state from database",
 	RunE:  runStateShow,
 }
 
+var stateShowJSON bool
+
 func init() {
 	stateCmd.AddCommand(stateShowCmd)
+	stateShowCmd.Flags().BoolVar(&stateShowJSON, "json", false, "Output machine-readable JSON")
 }
 
 func runStateShow(cmd *cobra.Command, args []string) error {
@@ -27,18 +69,24 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	// Sessions
-	sessions, err := store.ListSessions(db)
+	report, err := buildStateShowReport(db)
 	if err != nil {
-		return fmt.Errorf("listing sessions: %w", err)
+		return err
 	}
 
-	archiveCount, _ := store.GetArchivedSessionCount(db)
+	if stateShowJSON {
+		out, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encoding json: %w", err)
+		}
+		fmt.Println(string(out))
+		return nil
+	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived) ===\n", len(sessions), archiveCount)
+	fmt.Printf("=== Sessions (%d active, %d archived) ===\n", report.Summary.ActiveSessions, report.Summary.ArchivedSessions)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tALIVE\tLAST ACTIVE\tPR\tTASK")
-	for _, s := range sessions {
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tALIVE\tHEALTH\tLAST ACTIVE\tPR\tTASK")
+	for _, s := range report.Sessions {
 		alive := "no"
 		if s.Alive {
 			alive = "yes"
@@ -51,7 +99,7 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if task == "" {
 			task = "-"
 		}
-		branch := s.GitBranch
+		branch := s.Branch
 		if branch == "" {
 			branch = "-"
 		}
@@ -59,15 +107,22 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if s.BlockedReason != "" {
 			status = s.Status + "(" + s.BlockedReason + ")"
 		}
-		if s.IsLoop {
-			status = status + " 🔁"
+		if s.Duplicate {
+			status = status + " [dup]"
+		}
+		if s.Ghost {
+			status = status + " [ghost]"
+		}
+		health := "-"
+		if len(s.Health) > 0 {
+			health = strings.Join(s.Health, ",")
 		}
 		pr := s.PRURL
 		if pr == "" {
 			pr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			s.Agent, s.Repository, branch, status, alive, age, pr, task)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.Agent, s.Repository, branch, status, alive, health, age, pr, task)
 	}
 	w.Flush()
 
@@ -123,4 +178,92 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
+	sessions, err := store.ListSessions(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions: %w", err)
+	}
+	archiveCount, _ := store.GetArchivedSessionCount(db)
+
+	duplicateCounts := map[string]int{}
+	for _, s := range sessions {
+		if s.ZellijSession == "" {
+			continue
+		}
+		duplicateCounts[strings.ToLower(s.ZellijSession)]++
+	}
+
+	report := &stateShowReport{
+		Summary: stateShowSummary{
+			ActiveSessions:   len(sessions),
+			ArchivedSessions: archiveCount,
+		},
+	}
+
+	for _, s := range sessions {
+		dupCount := 0
+		dupGroup := ""
+		duplicate := false
+		if s.ZellijSession != "" {
+			dupGroup = strings.ToLower(s.ZellijSession)
+			dupCount = duplicateCounts[dupGroup]
+			duplicate = dupCount > 1
+		}
+		ghost := s.Alive && s.RuntimeStatus != "running"
+
+		health := []string{}
+		switch s.Status {
+		case "blocked":
+			health = append(health, "blocked")
+			report.Summary.BlockedSessions++
+		case "error":
+			health = append(health, "error")
+			report.Summary.ErrorSessions++
+		}
+		if !s.Alive {
+			report.Summary.DeadSessions++
+		}
+		if ghost {
+			report.Summary.GhostSessions++
+			health = append(health, "ghost")
+		}
+		if duplicate {
+			report.Summary.DuplicateSessions++
+			health = append(health, "duplicate")
+		}
+
+		branch := s.GitBranch
+		if branch == "" {
+			branch = "-"
+		}
+		report.Sessions = append(report.Sessions, stateShowSession{
+			ID:             s.ID,
+			Agent:          s.Agent,
+			Repository:     s.Repository,
+			Branch:         branch,
+			Status:         s.Status,
+			BlockedReason:  s.BlockedReason,
+			Alive:          s.Alive,
+			RuntimeStatus:  s.RuntimeStatus,
+			ZellijSession:  s.ZellijSession,
+			TaskSummary:    s.TaskSummary,
+			PRURL:          s.PRURL,
+			LastActive:     s.LastActive,
+			Ghost:          ghost,
+			Duplicate:      duplicate,
+			DuplicateGroup: dupGroup,
+			DuplicateCount: dupCount,
+			Health:         health,
+		})
+	}
+
+	for _, count := range duplicateCounts {
+		if count > 1 {
+			report.Summary.DuplicateGroups++
+		}
+	}
+
+	return report, nil
 }
