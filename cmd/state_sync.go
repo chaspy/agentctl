@@ -160,14 +160,14 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 
 		// UPDATE only — never creates new records
 		_ = store.UpdateSessionMetadata(db, &store.Session{
-			ID:         dbSess.ID,
-			Status:     status,
-			GitBranch:  jsonl.GitBranch,
+			ID:          dbSess.ID,
+			Status:      status,
+			GitBranch:   jsonl.GitBranch,
 			LastMessage: jsonl.LastMessage,
-			LastRole:   jsonl.LastRole,
-			LastActive: jsonl.ModTime,
-			Role:       role,
-			IsLoop:     loopCWDs[dbSess.CWD],
+			LastRole:    jsonl.LastRole,
+			LastActive:  jsonl.ModTime,
+			Role:        role,
+			IsLoop:      loopCWDs[dbSess.CWD],
 		})
 
 		// Apply task_summary
@@ -358,7 +358,7 @@ var worktreeSuffix = regexp.MustCompile(`[/-]worktree-.+$`)
 
 var knownRepoCorrections = map[string]string{
 	"chaspy/myassistant-server": "chaspy/myassistant",
-	"studiuos/jp-Studious-JP":  "studiuos-jp/Studious_JP",
+	"studiuos/jp-Studious-JP":   "studiuos-jp/Studious_JP",
 }
 
 func repoFromRepository(repository string) string {
@@ -395,7 +395,8 @@ func normalizeExistingRepoNames(db *sql.DB) {
 }
 
 // syncRuntimeStatus updates runtime_status based on zellij session state,
-// then enriches CWD/repo/branch for alive sessions with empty CWD via dump-layout.
+// cleans up gone sessions by marking them dead/alive=0, then enriches
+// running alive sessions with empty CWD via dump-layout.
 // Only updates existing alive=1 DB records. Does NOT create new records.
 func syncRuntimeStatus(db *sql.DB) {
 	zellijSessions, err := listZellijDetailed()
@@ -418,7 +419,7 @@ func syncRuntimeStatus(db *sql.DB) {
 	for _, s := range aliveSessions {
 		zellijName := s.ZellijSession
 		if zellijName == "" {
-			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+			db.Exec("UPDATE sessions SET runtime_status = 'gone', alive = 0, status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			continue
 		}
 
@@ -429,7 +430,7 @@ func syncRuntimeStatus(db *sql.DB) {
 				db.Exec("UPDATE sessions SET runtime_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			}
 		} else {
-			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+			db.Exec("UPDATE sessions SET runtime_status = 'gone', alive = 0, status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 		}
 	}
 

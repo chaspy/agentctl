@@ -192,7 +192,7 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
 		Status: "active", Alive: true, ZellijSession: "a-b",
 		RuntimeStatus: "running",
-		LastActive:     time.Now(),
+		LastActive:    time.Now(),
 	})
 
 	restore := mockZellijDetailed([]mux.ZellijSessionState{})
@@ -204,8 +204,11 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 	if s1.RuntimeStatus != "gone" {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
 	}
-	if !s1.Alive {
-		t.Error("alive should not be changed by sync (alive=intent)")
+	if s1.Alive {
+		t.Error("gone session should be marked not alive")
+	}
+	if s1.Status != "dead" {
+		t.Errorf("status = %q, want %q", s1.Status, "dead")
 	}
 }
 
@@ -280,6 +283,12 @@ func TestSyncRuntimeStatus_NoZellijSession_MarksGone(t *testing.T) {
 	if s1.RuntimeStatus != "gone" {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
 	}
+	if s1.Alive {
+		t.Error("session without zellij_session should be marked not alive")
+	}
+	if s1.Status != "dead" {
+		t.Errorf("status = %q, want %q", s1.Status, "dead")
+	}
 }
 
 func TestSyncRuntimeStatus_NoMux(t *testing.T) {
@@ -306,6 +315,39 @@ func TestSyncRuntimeStatus_NoMux(t *testing.T) {
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.RuntimeStatus != "running" {
 		t.Errorf("runtime_status should not change when mux unavailable, got %q", s1.RuntimeStatus)
+	}
+}
+
+func TestSyncRuntimeStatus_GoneClearsBlockedReason(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "blocked", BlockedReason: "awaiting_input", Alive: true, ZellijSession: "a-b",
+		RuntimeStatus: "running", LastActive: time.Now(),
+	})
+
+	restore := mockZellijDetailed([]mux.ZellijSessionState{})
+	defer restore()
+
+	syncRuntimeStatus(db)
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if s1.RuntimeStatus != "gone" {
+		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
+	}
+	if s1.Alive {
+		t.Error("gone session should be marked not alive")
+	}
+	if s1.Status != "dead" {
+		t.Errorf("status = %q, want %q", s1.Status, "dead")
+	}
+	if s1.BlockedReason != "" {
+		t.Errorf("blocked_reason = %q, want empty", s1.BlockedReason)
 	}
 }
 
@@ -457,6 +499,77 @@ func TestUpdateSessionMetadata_DoesNotCreateNew(t *testing.T) {
 	_, err = store.GetSession(db, "nonexistent-id")
 	if err == nil {
 		t.Error("UpdateSessionMetadata should not create new records")
+	}
+}
+
+func TestSyncSessionsToDB_ArchivesGoneSessions(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:gone", Agent: "claude", Repository: "a/b", SessionID: "gone",
+		Status: "active", Alive: true, ZellijSession: "missing-session",
+		RuntimeStatus: "running", LastActive: now,
+	})
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:exited", Agent: "claude", Repository: "a/b", SessionID: "exited",
+		Status: "active", Alive: true, ZellijSession: "exited-session",
+		RuntimeStatus: "running", LastActive: now,
+	})
+
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "exited-session", Exited: true},
+	})
+	defer restore()
+
+	count, err := syncSessionsToDB(db, "all", 24, false)
+	if err != nil {
+		t.Fatalf("syncSessionsToDB error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("syncSessionsToDB count = %d, want 0", count)
+	}
+
+	if _, err := store.GetSession(db, "claude:a/b:gone"); err == nil {
+		t.Fatal("gone session should be archived and removed from active table")
+	}
+
+	archived, err := store.ListArchivedSessions(db)
+	if err != nil {
+		t.Fatalf("ListArchivedSessions error = %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("archived session count = %d, want 1", len(archived))
+	}
+	if archived[0].ID != "claude:a/b:gone" {
+		t.Fatalf("archived session id = %q, want %q", archived[0].ID, "claude:a/b:gone")
+	}
+	if archived[0].RuntimeStatus != "gone" {
+		t.Errorf("archived runtime_status = %q, want %q", archived[0].RuntimeStatus, "gone")
+	}
+	if archived[0].Alive {
+		t.Error("archived gone session should not be alive")
+	}
+	if archived[0].Status != "dead" {
+		t.Errorf("archived status = %q, want %q", archived[0].Status, "dead")
+	}
+
+	exited, err := store.GetSession(db, "claude:a/b:exited")
+	if err != nil {
+		t.Fatalf("GetSession(exited) error = %v", err)
+	}
+	if exited.RuntimeStatus != "exited" {
+		t.Errorf("exited runtime_status = %q, want %q", exited.RuntimeStatus, "exited")
+	}
+	if !exited.Alive {
+		t.Error("exited session should remain alive")
+	}
+	if exited.Status != "active" {
+		t.Errorf("exited status = %q, want %q", exited.Status, "active")
 	}
 }
 
