@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.36] - 2026-04-06
+
+### Added
+
+- Add `docs/job-scheduler-design.md` describing the SQLite-backed job scheduler design, CLI surface, launchd integration, migration plan, and implementation milestones
+
 ## [0.2.33] - 2026-04-06
 
 ### Added
