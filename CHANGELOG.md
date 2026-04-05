@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.40] - 2026-04-06
+
+### Added
+
+- `AGENTS.md`: added as an exact copy of `CLAUDE.md` for OpenAI Codex and other agents that read `AGENTS.md`
+- `claude-agents-sync-check` CI workflow: enforces that `CLAUDE.md` and `AGENTS.md` remain identical on every PR/push
+
 ## [0.2.39] - 2026-04-06
 
 ### Changed
