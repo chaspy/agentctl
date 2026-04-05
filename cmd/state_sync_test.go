@@ -371,6 +371,47 @@ func TestSyncRuntimeStatus_NoMux(t *testing.T) {
 	if s1.RuntimeStatus != "running" {
 		t.Errorf("runtime_status should not change when mux unavailable, got %q", s1.RuntimeStatus)
 	}
+	if !s1.Alive {
+		t.Error("alive should remain true when mux unavailable")
+	}
+}
+
+func TestSyncRuntimeStatus_NoMux_DoesNotArchiveAliveSession(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		RuntimeStatus: "running", LastActive: time.Now(),
+	})
+
+	orig := listZellijDetailed
+	listZellijDetailed = func() ([]mux.ZellijSessionState, error) {
+		return nil, fmt.Errorf("too many open files")
+	}
+	defer func() { listZellijDetailed = orig }()
+
+	syncRuntimeStatus(db)
+
+	archived, err := store.ArchiveDeadSessions(db)
+	if err != nil {
+		t.Fatalf("ArchiveDeadSessions: %v", err)
+	}
+	if archived != 0 {
+		t.Fatalf("ArchiveDeadSessions archived %d sessions, want 0", archived)
+	}
+
+	s1, err := store.GetSession(db, "claude:a/b:s1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !s1.Alive {
+		t.Fatal("alive should remain true after mux error")
+	}
 }
 
 // --- dump-layout enrichment tests ---

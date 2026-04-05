@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.30] - 2026-04-05
+
+### Fixed
+
+- `state sync` now fails safe when zellij session enumeration fails, preserving existing alive sessions instead of letting them be bulk-archived
+- Added a regression test covering mux errors such as `too many open files` during runtime sync
+
 ## [0.2.28] - 2026-04-05
 
 ### Added

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -402,6 +403,7 @@ func normalizeExistingRepoNames(db *sql.DB) {
 func syncRuntimeStatus(db *sql.DB) {
 	zellijSessions, err := listZellijDetailed()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list zellij sessions: %v (skipping dead-session detection)\n", err)
 		return
 	}
 	if zellijSessions == nil {
