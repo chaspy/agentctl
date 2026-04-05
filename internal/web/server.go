@@ -58,20 +58,22 @@ func (s *Server) Handler() http.Handler {
 }
 
 type sessionJSON struct {
-	ID          string `json:"id"`
-	Agent       string `json:"agent"`
-	Repository  string `json:"repository"`
-	GitBranch   string `json:"git_branch"`
-	Status      string `json:"status"`
-	Alive       bool   `json:"alive"`
-	LastMessage string `json:"last_message"`
-	LastActive  string `json:"last_active"`
-	TaskSummary string `json:"task_summary"`
-	Role        string `json:"role"`
-	Archived    bool   `json:"archived"`
-	PRNumber    int    `json:"pr_number,omitempty"`
-	PRURL       string `json:"pr_url,omitempty"`
-	PRState     string `json:"pr_state,omitempty"`
+	ID            string `json:"id"`
+	Agent         string `json:"agent"`
+	Repository    string `json:"repository"`
+	GitBranch     string `json:"git_branch"`
+	Status        string `json:"status"`
+	DesiredState  string `json:"desired_state"`
+	RuntimeStatus string `json:"runtime_status"`
+	Alive         bool   `json:"alive"`
+	LastMessage   string `json:"last_message"`
+	LastActive    string `json:"last_active"`
+	TaskSummary   string `json:"task_summary"`
+	Role          string `json:"role"`
+	Archived      bool   `json:"archived"`
+	PRNumber      int    `json:"pr_number,omitempty"`
+	PRURL         string `json:"pr_url,omitempty"`
+	PRState       string `json:"pr_state,omitempty"`
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -92,20 +94,22 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	out := make([]sessionJSON, 0, len(sessions))
 	for _, sess := range sessions {
 		out = append(out, sessionJSON{
-			ID:          sess.ID,
-			Agent:       sess.Agent,
-			Repository:  sess.Repository,
-			GitBranch:   sess.GitBranch,
-			Status:      sess.Status,
-			Alive:       sess.Alive,
-			LastMessage: sess.LastMessage,
-			LastActive:  sess.LastActive.Format(time.RFC3339),
-			TaskSummary: sess.TaskSummary,
-			Role:        sess.Role,
-			Archived:    sess.Archived,
-			PRNumber:    sess.PRNumber,
-			PRURL:       sess.PRURL,
-			PRState:     sess.PRState,
+			ID:            sess.ID,
+			Agent:         sess.Agent,
+			Repository:    sess.Repository,
+			GitBranch:     sess.GitBranch,
+			Status:        sess.Status,
+			DesiredState:  sess.DesiredState,
+			RuntimeStatus: sess.RuntimeStatus,
+			Alive:         sess.WantsRunning(),
+			LastMessage:   sess.LastMessage,
+			LastActive:    sess.LastActive.Format(time.RFC3339),
+			TaskSummary:   sess.TaskSummary,
+			Role:          sess.Role,
+			Archived:      sess.Archived,
+			PRNumber:      sess.PRNumber,
+			PRURL:         sess.PRURL,
+			PRState:       sess.PRState,
 		})
 	}
 	writeJSON(w, out)

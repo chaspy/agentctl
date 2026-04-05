@@ -16,6 +16,7 @@ var migrations = []string{
 	migrationV11,
 	migrationV12,
 	migrationV13,
+	migrationV14,
 }
 
 // Migrate applies all pending schema migrations.
@@ -220,4 +221,21 @@ const migrationV13 = `
 ALTER TABLE actions ADD COLUMN route_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE actions ADD COLUMN handoff_summary TEXT NOT NULL DEFAULT '';
 ALTER TABLE actions ADD COLUMN token_burn INTEGER NOT NULL DEFAULT 0;
+`
+
+const migrationV14 = `
+ALTER TABLE sessions RENAME COLUMN alive TO desired_state;
+ALTER TABLE sessions_archive RENAME COLUMN alive TO desired_state;
+
+UPDATE sessions
+SET desired_state = CASE CAST(desired_state AS TEXT)
+	WHEN '1' THEN 'running'
+	ELSE 'stopped'
+END;
+
+UPDATE sessions_archive
+SET desired_state = CASE CAST(desired_state AS TEXT)
+	WHEN '1' THEN 'running'
+	ELSE 'stopped'
+END;
 `

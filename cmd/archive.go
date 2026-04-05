@@ -16,7 +16,7 @@ var archiveCmd = &cobra.Command{
 	Use:   "archive [project]",
 	Short: "Archive dead/error sessions to archive table",
 	Long: `Moves dead/error sessions from the active sessions table to sessions_archive.
-Without arguments, archives all sessions where alive=false and status is dead or error.
+Without arguments, archives all sessions where desired_state=stopped and runtime_status=gone.
 Use --id to archive a specific session by ID.
 Use a project name argument to archive matching sessions.`,
 	Args: cobra.MaximumNArgs(1),
@@ -72,7 +72,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 
 	var count int
 	for _, s := range sessions {
-		if s.Alive || (s.Status != "dead" && s.Status != "error") {
+		if s.WantsRunning() || s.RuntimeStatus != "gone" {
 			continue
 		}
 		if err := store.MoveToArchive(db, s.ID); err != nil {

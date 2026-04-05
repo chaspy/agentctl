@@ -186,11 +186,11 @@ func TestSyncRuntimeStatus_Exited(t *testing.T) {
 	if s1.RuntimeStatus != "exited" {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "exited")
 	}
-	if s1.Alive {
-		t.Error("alive should be false for exited zellij sessions")
+	if !s1.Alive {
+		t.Error("desired_state should remain running for exited zellij sessions")
 	}
-	if s1.Status != "dead" {
-		t.Errorf("status = %q, want %q", s1.Status, "dead")
+	if s1.Status != "active" {
+		t.Errorf("status = %q, want %q", s1.Status, "active")
 	}
 }
 
@@ -223,11 +223,11 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 	if s1.RuntimeStatus != "gone" {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
 	}
-	if s1.Alive {
-		t.Error("alive should be false when zellij session is missing")
+	if !s1.Alive {
+		t.Error("desired_state should remain running when zellij session is missing")
 	}
-	if s1.Status != "dead" {
-		t.Errorf("status = %q, want %q", s1.Status, "dead")
+	if s1.Status != "active" {
+		t.Errorf("status = %q, want %q", s1.Status, "active")
 	}
 }
 
@@ -288,7 +288,6 @@ func TestSyncRuntimeStatus_NeverChangesAlive(t *testing.T) {
 	}
 }
 
-
 func TestSyncRuntimeStatus_NoZellijSession_MarksUnknown(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -324,7 +323,7 @@ func TestSyncRuntimeStatus_NoZellijSession_MarksUnknown(t *testing.T) {
 	}
 }
 
-func TestSyncRuntimeStatus_GhostSessionArchivesAfterSync(t *testing.T) {
+func TestSyncRuntimeStatus_GhostSessionStaysActiveUntilKilled(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -349,32 +348,32 @@ func TestSyncRuntimeStatus_GhostSessionArchivesAfterSync(t *testing.T) {
 	}
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
-	if s1.Alive {
-		t.Fatal("alive should be false after sync marks ghost dead")
+	if !s1.Alive {
+		t.Fatal("desired_state should remain running after sync marks runtime gone")
 	}
-	if s1.Status != "dead" {
-		t.Fatalf("status = %q, want dead", s1.Status)
+	if s1.Status != "idle" {
+		t.Fatalf("status = %q, want idle", s1.Status)
+	}
+	if s1.RuntimeStatus != "gone" {
+		t.Fatalf("runtime_status = %q, want gone", s1.RuntimeStatus)
 	}
 
 	archived, err := store.ArchiveDeadSessions(db)
 	if err != nil {
 		t.Fatalf("ArchiveDeadSessions: %v", err)
 	}
-	if archived != 1 {
-		t.Fatalf("ArchiveDeadSessions archived %d sessions, want 1", archived)
+	if archived != 0 {
+		t.Fatalf("ArchiveDeadSessions archived %d sessions, want 0", archived)
 	}
-	if _, err := store.GetSession(db, "claude:a/b:s1"); err == nil {
-		t.Fatal("ghost session should be removed from active sessions table")
+	if _, err := store.GetSession(db, "claude:a/b:s1"); err != nil {
+		t.Fatal("ghost session should remain in active sessions table until explicitly stopped")
 	}
 	archivedSessions, err := store.ListArchivedSessions(db)
 	if err != nil {
 		t.Fatalf("ListArchivedSessions: %v", err)
 	}
-	if len(archivedSessions) != 1 {
-		t.Fatalf("expected 1 archived session, got %d", len(archivedSessions))
-	}
-	if archivedSessions[0].RuntimeStatus != "gone" {
-		t.Fatalf("archived runtime_status = %q, want gone", archivedSessions[0].RuntimeStatus)
+	if len(archivedSessions) != 0 {
+		t.Fatalf("expected 0 archived sessions, got %d", len(archivedSessions))
 	}
 }
 
