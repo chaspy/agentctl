@@ -50,8 +50,13 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	resolvedSessionName := sessionName
+	if resolved, err := adapter.ResolveSession(sessionName); err == nil {
+		resolvedSessionName = resolved
+	}
+
 	if sendNoWait {
-		if err := sendInstruction(adapter, sessionName, instruction); err != nil {
+		if err := sendInstruction(adapter, sessionName, instruction, inferSendAgent(resolvedSessionName, nil)); err != nil {
 			return err
 		}
 		fmt.Printf("Sent instruction to %s session %q\n", adapter.Name(), sessionName)
@@ -65,9 +70,11 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("could not find session for %q: %w", sessionName, err)
 	}
 
+	targetAgent := inferSendAgent(resolvedSessionName, matched)
+
 	// Mux session matched but no JSONL sessions available for monitoring — just send.
 	if len(matched) == 0 {
-		if err := sendInstruction(adapter, sessionName, instruction); err != nil {
+		if err := sendInstruction(adapter, sessionName, instruction, targetAgent); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q (no JSONL session found for monitoring)\n", adapter.Name(), sessionName)
@@ -85,7 +92,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 
 	// Send the instruction
-	if err := sendInstruction(adapter, sessionName, instruction); err != nil {
+	if err := sendInstruction(adapter, sessionName, instruction, targetAgent); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q. Waiting for response...\n", adapter.Name(), sessionName)
@@ -131,9 +138,23 @@ func runSend(cmd *cobra.Command, args []string) error {
 	return fmt.Errorf("timed out after %s waiting for response", timeout)
 }
 
-func sendInstruction(adapter mux.Adapter, sessionName, instruction string) error {
-	if err := adapter.SendKeys(sessionName, instruction); err != nil {
-		return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
+func sendInstruction(adapter mux.Adapter, sessionName, instruction string, targetAgent provider.Agent) error {
+	restarted, err := mux.EnsureSessionReady(adapter, sessionName, string(targetAgent), launchCommandForSend(targetAgent))
+	if err != nil {
+		return fmt.Errorf("pre-send session check failed for %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if restarted {
+		fmt.Fprintf(os.Stderr, "Restarted %s in %s session %q before sending.\n", targetAgentLabel(targetAgent), adapter.Name(), sessionName)
+	}
+
+	if err := adapter.TypeText(sessionName, instruction); err != nil {
+		return fmt.Errorf("typing into %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if err := mux.VerifyTypedInputVisible(adapter, sessionName, instruction); err != nil {
+		return fmt.Errorf("send routing failed for %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if err := adapter.SendEnter(sessionName); err != nil {
+		return fmt.Errorf("sending enter to %s session %q: %w", adapter.Name(), sessionName, err)
 	}
 	if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
 		return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
@@ -153,6 +174,87 @@ func sendInstruction(adapter mux.Adapter, sessionName, instruction string) error
 
 	fmt.Println("送達確認: OK")
 	return nil
+}
+
+func inferSendAgent(sessionName string, matched []provider.SessionInfo) provider.Agent {
+	if agent := inferSendAgentFromStore(sessionName); agent != "" {
+		return agent
+	}
+
+	seen := map[provider.Agent]struct{}{}
+	for _, s := range matched {
+		seen[s.Agent] = struct{}{}
+	}
+	if len(seen) != 1 {
+		return ""
+	}
+	for agent := range seen {
+		return agent
+	}
+	return ""
+}
+
+func inferSendAgentFromStore(sessionName string) provider.Agent {
+	db, err := store.Open("")
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+
+	sessions, err := store.FindSessionByZellijSession(db, sessionName)
+	if err != nil || len(sessions) == 0 {
+		return ""
+	}
+
+	if agent := uniqueSessionAgent(filterExactZellijSessions(sessions, sessionName)); agent != "" {
+		return provider.Agent(agent)
+	}
+	return provider.Agent(uniqueSessionAgent(sessions))
+}
+
+func filterExactZellijSessions(sessions []store.Session, sessionName string) []store.Session {
+	var exact []store.Session
+	for _, s := range sessions {
+		if strings.EqualFold(strings.TrimSpace(s.ZellijSession), strings.TrimSpace(sessionName)) {
+			exact = append(exact, s)
+		}
+	}
+	return exact
+}
+
+func uniqueSessionAgent(sessions []store.Session) string {
+	if len(sessions) == 0 {
+		return ""
+	}
+
+	seen := map[string]struct{}{}
+	for _, s := range sessions {
+		if s.Agent == "" {
+			continue
+		}
+		seen[s.Agent] = struct{}{}
+	}
+	if len(seen) != 1 {
+		return ""
+	}
+	for agent := range seen {
+		return agent
+	}
+	return ""
+}
+
+func launchCommandForSend(agent provider.Agent) string {
+	if agent == "" {
+		return ""
+	}
+	return agentLaunchCommand(agent)
+}
+
+func targetAgentLabel(agent provider.Agent) string {
+	if agent == "" {
+		return "agent"
+	}
+	return string(agent)
 }
 
 // sessionResolver is satisfied by mux.Adapter and allows resolving a mux session by name.

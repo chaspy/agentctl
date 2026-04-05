@@ -136,12 +136,16 @@ type mockAdapter struct {
 	enterCalls   int
 	typeCalls    int
 	clearCalls   int
+	typedTexts   []string
+	locateResult string
+	locateErr    error
 }
 
 func (m *mockAdapter) Name() string                               { return "mock" }
 func (m *mockAdapter) SendKeys(session string, text string) error { return m.sendKeysErr }
 func (m *mockAdapter) TypeText(session string, text string) error {
 	m.typeCalls++
+	m.typedTexts = append(m.typedTexts, text)
 	return m.typeTextErr
 }
 func (m *mockAdapter) ListSessions() ([]string, error)         { return nil, nil }
@@ -168,6 +172,10 @@ func (m *mockAdapter) DumpScreen(session string) (string, error) {
 	result := m.dumpResults[m.dumpIdx]
 	m.dumpIdx++
 	return result, nil
+}
+
+func (m *mockAdapter) LocateText(session string, text string) (string, error) {
+	return m.locateResult, m.locateErr
 }
 
 func TestVerifySend(t *testing.T) {
@@ -363,6 +371,113 @@ func TestVerifyDelivery(t *testing.T) {
 		}
 		if !retried {
 			t.Fatal("expected retry=true when retry path starts")
+		}
+	})
+}
+
+func TestLooksLikeShellPrompt(t *testing.T) {
+	tests := []struct {
+		name   string
+		screen string
+		want   bool
+	}{
+		{name: "dollar prompt", screen: "user@host repo $\n", want: true},
+		{name: "fish prompt", screen: "~/repo ❯\n", want: true},
+		{name: "codex prompt", screen: "OpenAI Codex\n› fix bug", want: false},
+		{name: "empty", screen: "\n\n", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := LooksLikeShellPrompt(tt.screen); got != tt.want {
+				t.Fatalf("LooksLikeShellPrompt() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyTypedInputVisible(t *testing.T) {
+	origDelay := VerifyDelay
+	VerifyDelay = 1 * time.Millisecond
+	t.Cleanup(func() { VerifyDelay = origDelay })
+
+	t.Run("visible in focused pane", func(t *testing.T) {
+		m := &mockAdapter{dumpResults: []string{"output\n> implement restart handling"}}
+		if err := VerifyTypedInputVisible(m, "test", "implement restart handling"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("found in another pane", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults:  []string{"output\nThinking..."},
+			locateResult: "zellij pane #2 from the top-left pane",
+		}
+		err := VerifyTypedInputVisible(m, "test", "implement restart handling")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if got := err.Error(); got != "typed text was not visible in the focused pane; found in zellij pane #2 from the top-left pane" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestEnsureSessionReady(t *testing.T) {
+	origVerifyDelay := VerifyDelay
+	origPoll := RestartPollInterval
+	origTimeout := RestartTimeout
+	VerifyDelay = 1 * time.Millisecond
+	RestartPollInterval = 1 * time.Millisecond
+	RestartTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		VerifyDelay = origVerifyDelay
+		RestartPollInterval = origPoll
+		RestartTimeout = origTimeout
+	})
+
+	t.Run("no restart while codex ui is visible", func(t *testing.T) {
+		m := &mockAdapter{dumpResults: []string{"OpenAI Codex\n/model to change"}}
+		restarted, err := EnsureSessionReady(m, "test", "codex", "codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if restarted {
+			t.Fatal("expected no restart")
+		}
+		if m.typeCalls != 0 || m.enterCalls != 0 {
+			t.Fatalf("unexpected restart operations: type=%d enter=%d", m.typeCalls, m.enterCalls)
+		}
+	})
+
+	t.Run("restart codex from shell prompt", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{
+				"user@host repo $",
+				"user@host repo $ codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen",
+				"OpenAI Codex\n/model to change",
+			},
+		}
+		restarted, err := EnsureSessionReady(m, "test", "codex", "codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !restarted {
+			t.Fatal("expected restart")
+		}
+		if m.typeCalls != 1 || m.enterCalls != 1 {
+			t.Fatalf("expected type/enter = 1/1, got %d/%d", m.typeCalls, m.enterCalls)
+		}
+		if len(m.typedTexts) != 1 || m.typedTexts[0] != "codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen" {
+			t.Fatalf("unexpected typed texts: %#v", m.typedTexts)
+		}
+	})
+
+	t.Run("shell prompt without restart command", func(t *testing.T) {
+		m := &mockAdapter{dumpResults: []string{"user@host repo $"}}
+		_, err := EnsureSessionReady(m, "test", "", "")
+		if err == nil {
+			t.Fatal("expected error")
 		}
 	})
 }
