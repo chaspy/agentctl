@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +21,9 @@ type stateShowSummary struct {
 	DuplicateSessions int `json:"duplicate_sessions"`
 	DuplicateGroups   int `json:"duplicate_groups"`
 	DeadSessions      int `json:"dead_sessions"`
+	ActiveTasks       int `json:"active_tasks,omitempty"`
+	RecentActions     int `json:"recent_actions,omitempty"`
+	StateEntries      int `json:"state_entries,omitempty"`
 }
 
 type stateShowSession struct {
@@ -37,11 +39,46 @@ type stateShowSession struct {
 	TaskSummary    string    `json:"task_summary,omitempty"`
 	PRURL          string    `json:"pr_url,omitempty"`
 	LastActive     time.Time `json:"last_active"`
+	LastActiveAge  string    `json:"last_active_age"`
+	LastMessage    string    `json:"last_message,omitempty"`
+	Role           string    `json:"role,omitempty"`
+	Archived       bool      `json:"archived"`
+	Loop           bool      `json:"loop"`
+	Permission     int       `json:"permission_level,omitempty"`
 	Ghost          bool      `json:"ghost"`
 	Duplicate      bool      `json:"duplicate"`
 	DuplicateGroup string    `json:"duplicate_group,omitempty"`
 	DuplicateCount int       `json:"duplicate_count,omitempty"`
 	Health         []string  `json:"health,omitempty"`
+}
+
+type stateShowTaskJSON struct {
+	ID          int64      `json:"id"`
+	SessionID   string     `json:"session_id"`
+	Description string     `json:"description"`
+	Status      string     `json:"status"`
+	Owner       string     `json:"owner,omitempty"`
+	AssignedAt  time.Time  `json:"assigned_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Result      string     `json:"result,omitempty"`
+	PRURL       string     `json:"pr_url,omitempty"`
+}
+
+type stateShowActionJSON struct {
+	ID         int64     `json:"id"`
+	SessionID  string    `json:"session_id,omitempty"`
+	ActionType string    `json:"action_type"`
+	Content    string    `json:"content"`
+	Result     string    `json:"result,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type stateShowJSONOutput struct {
+	Summary  stateShowSummary      `json:"summary"`
+	Sessions []stateShowSession    `json:"sessions"`
+	Tasks    []stateShowTaskJSON   `json:"tasks"`
+	Actions  []stateShowActionJSON `json:"actions"`
+	State    map[string]string     `json:"state"`
 }
 
 type stateShowReport struct {
@@ -74,13 +111,23 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	tasks, err := store.GetActiveTasks(db)
+	if err != nil {
+		return fmt.Errorf("listing tasks: %w", err)
+	}
+
+	actions, err := store.GetRecentActions(db, 10)
+	if err != nil {
+		return fmt.Errorf("listing actions: %w", err)
+	}
+
+	state, err := store.AllState(db)
+	if err != nil {
+		return fmt.Errorf("listing state: %w", err)
+	}
+
 	if stateShowJSON {
-		out, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
-			return fmt.Errorf("encoding json: %w", err)
-		}
-		fmt.Println(string(out))
-		return nil
+		return printJSON(buildStateShowJSON(report, tasks, actions, state))
 	}
 
 	fmt.Printf("=== Sessions (%d active, %d archived) ===\n", report.Summary.ActiveSessions, report.Summary.ArchivedSessions)
@@ -91,9 +138,9 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if s.Alive {
 			alive = "yes"
 		}
-		age := "-"
-		if !s.LastActive.IsZero() {
-			age = formatAge(time.Since(s.LastActive))
+		age := s.LastActiveAge
+		if age == "" {
+			age = "-"
 		}
 		task := s.TaskSummary
 		if task == "" {
@@ -126,11 +173,6 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 	}
 	w.Flush()
 
-	// Active tasks
-	tasks, err := store.GetActiveTasks(db)
-	if err != nil {
-		return fmt.Errorf("listing tasks: %w", err)
-	}
 	if len(tasks) > 0 {
 		fmt.Println("\n=== Active Tasks ===")
 		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -141,11 +183,6 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		w.Flush()
 	}
 
-	// Recent actions
-	actions, err := store.GetRecentActions(db, 10)
-	if err != nil {
-		return fmt.Errorf("listing actions: %w", err)
-	}
 	if len(actions) > 0 {
 		fmt.Println("\n=== Recent Actions ===")
 		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -165,11 +202,6 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		w.Flush()
 	}
 
-	// Manager state
-	state, err := store.AllState(db)
-	if err != nil {
-		return fmt.Errorf("listing state: %w", err)
-	}
 	if len(state) > 0 {
 		fmt.Println("\n=== Manager State ===")
 		for k, v := range state {
@@ -213,7 +245,7 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 		}
 		ghost := s.Alive && s.RuntimeStatus != "running"
 
-		health := []string{}
+		var health []string
 		switch s.Status {
 		case "blocked":
 			health = append(health, "blocked")
@@ -251,6 +283,12 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			TaskSummary:    s.TaskSummary,
 			PRURL:          s.PRURL,
 			LastActive:     s.LastActive,
+			LastActiveAge:  formatAge(time.Since(s.LastActive)),
+			LastMessage:    s.LastMessage,
+			Role:           s.Role,
+			Archived:       s.Archived,
+			Loop:           s.IsLoop,
+			Permission:     s.PermissionLevel,
 			Ghost:          ghost,
 			Duplicate:      duplicate,
 			DuplicateGroup: dupGroup,
@@ -266,4 +304,46 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 	}
 
 	return report, nil
+}
+
+func buildStateShowJSON(report *stateShowReport, tasks []store.Task, actions []store.Action, state map[string]string) stateShowJSONOutput {
+	summary := report.Summary
+	summary.ActiveTasks = len(tasks)
+	summary.RecentActions = len(actions)
+	summary.StateEntries = len(state)
+
+	out := stateShowJSONOutput{
+		Summary:  summary,
+		Sessions: report.Sessions,
+		Tasks:    make([]stateShowTaskJSON, 0, len(tasks)),
+		Actions:  make([]stateShowActionJSON, 0, len(actions)),
+		State:    state,
+	}
+
+	for _, t := range tasks {
+		out.Tasks = append(out.Tasks, stateShowTaskJSON{
+			ID:          t.ID,
+			SessionID:   t.SessionID,
+			Description: t.Description,
+			Status:      t.Status,
+			Owner:       t.Owner,
+			AssignedAt:  t.AssignedAt,
+			CompletedAt: t.CompletedAt,
+			Result:      t.Result,
+			PRURL:       t.PRURL,
+		})
+	}
+
+	for _, a := range actions {
+		out.Actions = append(out.Actions, stateShowActionJSON{
+			ID:         a.ID,
+			SessionID:  a.SessionID,
+			ActionType: a.ActionType,
+			Content:    a.Content,
+			Result:     a.Result,
+			CreatedAt:  a.CreatedAt,
+		})
+	}
+
+	return out
 }

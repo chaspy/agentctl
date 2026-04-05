@@ -30,6 +30,9 @@ go install github.com/chaspy/agentctl@latest
 # List all sessions
 agentctl list
 
+# List sessions as JSON
+agentctl list --json
+
 # List with SQLite sync
 agentctl list --sync
 
@@ -39,8 +42,11 @@ agentctl read <session-name>
 # Send a message and wait up to 30 seconds for response
 agentctl send <session-name> "your message"
 
-# Verify delivery 20 seconds after send and retry automatically if needed
+# Verify prompt delivery and retry automatically if needed
 agentctl send <session-name> "your message" --verify
+
+# Verify JSONL delivery after send
+agentctl send <session-name> "your message" --verify-delivery
 
 # Check rate limits
 agentctl rate
@@ -68,9 +74,9 @@ agentctl serve
 
 | Command | Description |
 |---|---|
-| `list` | List all active Claude Code / Codex sessions |
+| `list` | List all active Claude Code / Codex sessions (`--json` supported) |
 | `read <name>` | Read the latest response from a session |
-| `send <name> <msg>` | Send a message and wait up to 30 seconds for response |
+| `send <name> <msg>` | Send a message and wait up to 30 seconds for response (`--verify`, `--verify-delivery` supported) |
 | `watch <name>` | Watch a session until its response changes |
 | `monitor` | Poll all sessions and notify a target session on changes |
 | `rate` | Show rate limit status for Claude Code and Codex |
@@ -80,7 +86,7 @@ agentctl serve
 | `preview <PR>` | Preview a pull request in a temporary worktree |
 | `serve` | Start PWA dashboard (default: port 8080) |
 | `state sync` | Sync live session data to SQLite |
-| `state show` | Show saved state from SQLite |
+| `state show` | Show saved state from SQLite (`--json` supported) |
 | `state log` | Record or view action logs |
 | `state task` | Manage tasks (add, complete, list) |
 | `config` | Manage per-repository configuration |
