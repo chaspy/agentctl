@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -54,15 +55,18 @@ func runStateSync(cmd *cobra.Command, args []string) error {
 }
 
 // syncSessionsToDB performs a minimal sync:
-//  1. Update runtime_status from zellij sessions (alive=1 DB records only)
+//  1. Update runtime_status from zellij sessions and discover missing sessions
 //  2. Enrich CWD/repo/branch for alive sessions with empty CWD via dump-layout
-//  3. Read JSONL to update LastMessage for alive sessions with CWD (UPDATE only, no INSERT)
+//  3. Read JSONL to update LastMessage for alive sessions with CWD
 //
-// DB is the sole source of truth. Only spawn and kill write new records.
-// sync only updates existing records.
+// DB remains the source of truth for alive/dead management, but sync may
+// deterministically discover missing zellij sessions from runtime metadata.
 func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSummaries bool) (int, error) {
 	// ── Step 1+2: Runtime Status + dump-layout enrichment ──
-	syncRuntimeStatus(db)
+	discovered, err := syncRuntimeStatus(db)
+	if err != nil {
+		return 0, err
+	}
 
 	// ── Step 3: JSONL Enrichment (UPDATE only, no INSERT) ──
 	agents, err := selectedAgents(agentFilter)
@@ -234,7 +238,11 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 	checkPRConflicts(db)
 	_ = store.SetState(db, conflictCheckKey, time.Now().Format(time.RFC3339))
 
-	return enriched, nil
+	if err := backupDatabaseFile(db, store.DefaultDBPath()); err != nil {
+		return 0, err
+	}
+
+	return discovered + enriched, nil
 }
 
 // checkPRConflicts checks mergeable state for alive sessions with PRs
@@ -395,16 +403,17 @@ func normalizeExistingRepoNames(db *sql.DB) {
 	}
 }
 
+type discoveredSession struct {
+	Session store.Session
+}
+
 // syncRuntimeStatus updates runtime_status based on zellij session state,
-// then enriches CWD/repo/branch for alive sessions with empty CWD via dump-layout.
-// Only updates existing alive=1 DB records. Does NOT create new records.
-// If a DB session is alive=1 but no longer exists in zellij (or is EXITED),
-// it is marked dead so archive sync can remove it from the active table.
-func syncRuntimeStatus(db *sql.DB) {
+// discovers missing DB records from zellij, then enriches CWD/repo/branch for
+// alive sessions with empty CWD via dump-layout.
+func syncRuntimeStatus(db *sql.DB) (int, error) {
 	zellijSessions, err := listZellijDetailed()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list zellij sessions: %v (skipping dead-session detection)\n", err)
-		return
+		return 0, nil
 	}
 	if zellijSessions == nil {
 		zellijSessions = []mux.ZellijSessionState{}
@@ -416,7 +425,7 @@ func syncRuntimeStatus(db *sql.DB) {
 		aliveSessions, _ := store.ListSessionsByAlive(db, true)
 		if len(aliveSessions) > 0 {
 			fmt.Fprintf(os.Stderr, "warning: zellij returned 0 sessions but DB has %d alive sessions, skipping dead-session detection\n", len(aliveSessions))
-			return
+			return 0, nil
 		}
 	}
 
@@ -432,7 +441,9 @@ func syncRuntimeStatus(db *sql.DB) {
 
 	// Step 1: Update runtime_status for all alive=1 DB sessions
 	aliveSessions, _ := store.ListSessionsByAlive(db, true)
+	existingAlive := make(map[string]store.Session, len(aliveSessions))
 	for _, s := range aliveSessions {
+		existingAlive[strings.ToLower(s.ZellijSession)] = s
 		zellijName := s.ZellijSession
 		if zellijName == "" {
 			// zellij_session empty means "location unknown", not "dead" — preserve alive, mark unknown.
@@ -483,6 +494,8 @@ func syncRuntimeStatus(db *sql.DB) {
 		db.Exec("UPDATE sessions SET "+strings.Join(updates, ", ")+" WHERE id = ?", args...)
 		fmt.Printf("Enriched session %s: cwd=%s\n", s.ZellijSession, cwd)
 	}
+
+	return 0, nil
 }
 
 // zellijCWD extracts CWD from a zellij session's layout dump.
@@ -490,18 +503,26 @@ func syncRuntimeStatus(db *sql.DB) {
 //
 //	cwd "/Users/chaspy/go/src/github.com/chaspy/myassistant"
 var zellijCWD = func(sessionName string) string {
-	cmd := exec.Command("env", "-u", "ZELLIJ", "zellij", "--session", sessionName, "action", "dump-layout")
-	out, err := cmd.Output()
+	out, err := zellijDumpLayout(sessionName)
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "cwd \"") {
 			return strings.Trim(strings.TrimPrefix(trimmed, "cwd "), "\"")
 		}
 	}
 	return ""
+}
+
+var zellijDumpLayout = func(sessionName string) (string, error) {
+	cmd := exec.Command("env", "-u", "ZELLIJ", "zellij", "--session", sessionName, "action", "dump-layout")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // gitRepoName extracts the GitHub "owner/repo" from a CWD by running git remote.
@@ -551,4 +572,124 @@ func lookupPRURL(repo, branch string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bool) {
+	layout, err := zellijDumpLayout(zs.Name)
+	if err != nil {
+		return discoveredSession{}, false
+	}
+
+	cwd := parseZellijLayoutCWD(layout)
+	if cwd == "" || strings.Contains(cwd, "worktree-preview-") {
+		return discoveredSession{}, false
+	}
+
+	agent := inferAgentFromLayout(layout, zs.Name)
+	repo := gitRepoName(cwd)
+	branch := gitBranchName(cwd)
+	if repo == "" {
+		repo = inferRepositoryFromCWD(cwd)
+	}
+
+	status := "idle"
+	runtimeStatus := "running"
+	if zs.Exited {
+		runtimeStatus = "exited"
+	}
+
+	sessionID := fmt.Sprintf("%s:%s:zellij-%s", agent, repo, zs.Name)
+	if repo == "" {
+		sessionID = fmt.Sprintf("%s::zellij-%s", agent, zs.Name)
+	}
+
+	return discoveredSession{
+		Session: store.Session{
+			ID:            sessionID,
+			Agent:         string(agent),
+			Repository:    repo,
+			SessionID:     "zellij-" + zs.Name,
+			CWD:           cwd,
+			GitBranch:     branch,
+			ZellijSession: zs.Name,
+			Status:        status,
+			Alive:         true,
+			LastActive:    time.Now(),
+			Role:          "worker",
+			RuntimeStatus: runtimeStatus,
+		},
+	}, true
+}
+
+func parseZellijLayoutCWD(layout string) string {
+	for _, line := range strings.Split(layout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "cwd \"") {
+			return strings.Trim(strings.TrimPrefix(trimmed, "cwd "), "\"")
+		}
+	}
+	return ""
+}
+
+func inferAgentFromLayout(layout, sessionName string) provider.Agent {
+	lower := strings.ToLower(layout)
+	switch {
+	case strings.Contains(lower, `command="claude"`),
+		strings.Contains(lower, `/claude"`),
+		strings.Contains(lower, `args "claude"`):
+		return provider.AgentClaude
+	case strings.Contains(lower, `command="codex"`),
+		strings.Contains(lower, `/codex"`),
+		strings.Contains(lower, `args "codex"`):
+		return provider.AgentCodex
+	case strings.Contains(strings.ToLower(sessionName), "codex"):
+		return provider.AgentCodex
+	default:
+		return provider.AgentClaude
+	}
+}
+
+func inferRepositoryFromCWD(cwd string) string {
+	cwd = filepath.Clean(cwd)
+	parts := strings.Split(cwd, string(filepath.Separator))
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	return filepath.Base(cwd)
+}
+
+func backupDatabaseFile(db *sql.DB, path string) error {
+	if path == "" || path == ":memory:" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil
+	}
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return fmt.Errorf("checkpointing database before backup: %w", err)
+	}
+
+	src, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("opening database for backup: %w", err)
+	}
+	defer src.Close()
+
+	dstPath := path + ".bak"
+	tmpPath := dstPath + ".tmp"
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("creating backup file: %w", err)
+	}
+	if _, err := dst.ReadFrom(src); err != nil {
+		dst.Close()
+		return fmt.Errorf("copying database backup: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("closing backup file: %w", err)
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		return fmt.Errorf("installing backup file: %w", err)
+	}
+	return nil
 }

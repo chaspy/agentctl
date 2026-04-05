@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -145,7 +147,9 @@ func TestSyncRuntimeStatus_Running(t *testing.T) {
 	})
 	defer restore()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.RuntimeStatus != "running" {
@@ -174,7 +178,9 @@ func TestSyncRuntimeStatus_Exited(t *testing.T) {
 	})
 	defer restore()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.RuntimeStatus != "exited" {
@@ -209,7 +215,9 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 	})
 	defer restore()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.RuntimeStatus != "gone" {
@@ -270,7 +278,9 @@ func TestSyncRuntimeStatus_NeverChangesAlive(t *testing.T) {
 	})
 	defer restore()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.Alive {
@@ -278,26 +288,6 @@ func TestSyncRuntimeStatus_NeverChangesAlive(t *testing.T) {
 	}
 }
 
-func TestSyncRuntimeStatus_DoesNotCreateNewFromZellij(t *testing.T) {
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	restore := mockZellijDetailed([]mux.ZellijSessionState{
-		{Name: "new-session", Exited: false},
-		{Name: "exited-session", Exited: true},
-	})
-	defer restore()
-
-	syncRuntimeStatus(db)
-
-	all, _ := store.ListSessions(db)
-	if len(all) != 0 {
-		t.Errorf("expected 0 sessions, got %d — sync should not create new records", len(all))
-	}
-}
 
 func TestSyncRuntimeStatus_NoZellijSession_MarksUnknown(t *testing.T) {
 	db, err := store.Open(":memory:")
@@ -317,7 +307,9 @@ func TestSyncRuntimeStatus_NoZellijSession_MarksUnknown(t *testing.T) {
 	})
 	defer restore()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	// Empty zellij_session means "location unknown", not "dead" — stay alive.
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
@@ -352,7 +344,9 @@ func TestSyncRuntimeStatus_GhostSessionArchivesAfterSync(t *testing.T) {
 	})
 	defer restore()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.Alive {
@@ -403,7 +397,9 @@ func TestSyncRuntimeStatus_NoMux(t *testing.T) {
 	}
 	defer func() { listZellijDetailed = orig }()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s1, _ := store.GetSession(db, "claude:a/b:s1")
 	if s1.RuntimeStatus != "running" {
@@ -493,7 +489,9 @@ func TestSyncRuntimeStatus_EnrichesCWDViaDumpLayout(t *testing.T) {
 	}
 	defer func() { gitRepoName = origRepo; gitBranchName = origBranch }()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s, _ := store.GetSession(db, "claude::my-session")
 	if s.CWD != "/Users/test/go/src/github.com/owner/repo" {
@@ -536,7 +534,9 @@ func TestSyncRuntimeStatus_SkipsEnrichmentWhenCWDExists(t *testing.T) {
 	}
 	defer func() { zellijCWD = origCWD }()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	if cwdCalled {
 		t.Error("zellijCWD should not be called when session already has CWD")
@@ -567,7 +567,9 @@ func TestSyncRuntimeStatus_DumpLayoutReturnsEmpty(t *testing.T) {
 	restoreCWD := mockZellijCWD(map[string]string{}) // returns "" for all
 	defer restoreCWD()
 
-	syncRuntimeStatus(db)
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
 
 	s, _ := store.GetSession(db, "claude::my-session")
 	if s.CWD != "" {
@@ -815,5 +817,76 @@ func TestListAliveSessionsWithPR(t *testing.T) {
 	}
 	if sessions[0].ID != "claude:a:s1" {
 		t.Errorf("expected session a, got %s", sessions[0].ID)
+	}
+}
+
+func TestInferAgentFromLayout(t *testing.T) {
+	tests := []struct {
+		name      string
+		layout    string
+		session   string
+		wantAgent string
+	}{
+		{
+			name: "claude command",
+			layout: `layout {
+    pane command="claude"
+}`,
+			wantAgent: "claude",
+		},
+		{
+			name: "codex via node args",
+			layout: `layout {
+    pane command="node" {
+        args "/Users/test/.nvm/versions/node/v22/bin/codex" "--search"
+    }
+}`,
+			wantAgent: "codex",
+		},
+		{
+			name:      "codex from session name fallback",
+			layout:    `layout { pane command="bash" }`,
+			session:   "something-codex",
+			wantAgent: "codex",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferAgentFromLayout(tt.layout, tt.session)
+			if string(got) != tt.wantAgent {
+				t.Fatalf("inferAgentFromLayout() = %q, want %q", got, tt.wantAgent)
+			}
+		})
+	}
+}
+
+func TestBackupDatabaseFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "manager.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertSession(db, &store.Session{
+		ID: "claude:owner/repo:test", Agent: "claude", Repository: "owner/repo",
+		SessionID: "test", Status: "idle", Alive: true, LastActive: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backupDatabaseFile(db, dbPath); err != nil {
+		t.Fatal(err)
+	}
+
+	backupPath := dbPath + ".bak"
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("backup file is empty")
 	}
 }
