@@ -150,11 +150,12 @@ func sendInstruction(adapter mux.Adapter, sessionName, instruction string, targe
 	if err := adapter.TypeText(sessionName, instruction); err != nil {
 		return fmt.Errorf("typing into %s session %q: %w", adapter.Name(), sessionName, err)
 	}
-	if err := mux.VerifyTypedInputVisible(adapter, sessionName, instruction); err != nil {
-		return fmt.Errorf("send routing failed for %s session %q: %w", adapter.Name(), sessionName, err)
-	}
+	verifyErr := mux.VerifyTypedInputVisible(adapter, sessionName, instruction)
 	if err := adapter.SendEnter(sessionName); err != nil {
 		return fmt.Errorf("sending enter to %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if verifyErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: typed input not visible in %s session %q (worker may be active): %v\n", adapter.Name(), sessionName, verifyErr)
 	}
 	if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
 		return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
