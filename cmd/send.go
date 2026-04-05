@@ -15,12 +15,13 @@ import (
 )
 
 var (
-	sendMux     string
-	sendAgent   string
-	sendHours   int
-	sendTimeout int
-	sendNoWait  bool
-	sendVerify  bool
+	sendMux            string
+	sendAgent          string
+	sendHours          int
+	sendTimeout        int
+	sendNoWait         bool
+	sendVerify         bool
+	sendVerifyDelivery bool
 )
 
 var sendCmd = &cobra.Command{
@@ -39,6 +40,7 @@ func init() {
 	sendCmd.Flags().IntVar(&sendTimeout, "timeout", 30, "Timeout in seconds to wait for response")
 	sendCmd.Flags().BoolVar(&sendNoWait, "no-wait", false, "Send without waiting for a response")
 	sendCmd.Flags().BoolVar(&sendVerify, "verify", false, "Verify delivery after 20 seconds and retry if the prompt still contains the message")
+	sendCmd.Flags().BoolVar(&sendVerifyDelivery, "verify-delivery", false, "Verify JSONL delivery after send")
 }
 
 func runSend(cmd *cobra.Command, args []string) error {
@@ -55,27 +57,43 @@ func runSend(cmd *cobra.Command, args []string) error {
 		resolvedSessionName = resolved
 	}
 
-	if sendNoWait {
-		if err := sendInstruction(adapter, sessionName, instruction, inferSendAgent(resolvedSessionName, nil)); err != nil {
+	matched, err := findMatchingSessions(sessionName, adapter)
+	if err != nil {
+		return fmt.Errorf("could not find session for %q: %w", sessionName, err)
+	}
+
+	var deliveryBaselines map[string]time.Time
+	if sendVerifyDelivery {
+		deliveryBaselines, err = buildDeliveryBaselines(matched)
+		if err != nil {
 			return err
+		}
+	}
+
+	targetAgent := inferSendAgent(resolvedSessionName, matched)
+
+	if sendNoWait {
+		if err := sendInstruction(adapter, sessionName, instruction, targetAgent); err != nil {
+			return err
+		}
+		if sendVerifyDelivery {
+			if err := waitForDeliveryUpdate(deliveryBaselines, 30*time.Second, 3*time.Second); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "Verified delivery to %s session %q\n", adapter.Name(), sessionName)
 		}
 		fmt.Printf("Sent instruction to %s session %q\n", adapter.Name(), sessionName)
 		logSendAction(sessionName, instruction, "(no-wait)")
 		return nil
 	}
 
-	// Find all matching sessions and record their baseline file sizes
-	matched, err := findMatchingSessions(sessionName, adapter)
-	if err != nil {
-		return fmt.Errorf("could not find session for %q: %w", sessionName, err)
-	}
-
-	targetAgent := inferSendAgent(resolvedSessionName, matched)
-
 	// Mux session matched but no JSONL sessions available for monitoring — just send.
 	if len(matched) == 0 {
 		if err := sendInstruction(adapter, sessionName, instruction, targetAgent); err != nil {
 			return err
+		}
+		if sendVerifyDelivery {
+			return fmt.Errorf("delivery verification failed: no JSONL session found for monitoring")
 		}
 		fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q (no JSONL session found for monitoring)\n", adapter.Name(), sessionName)
 		logSendAction(sessionName, instruction, "(sent, no monitoring)")
@@ -91,13 +109,17 @@ func runSend(cmd *cobra.Command, args []string) error {
 		baselines[s.FilePath] = size
 	}
 
-	// Send the instruction
 	if err := sendInstruction(adapter, sessionName, instruction, targetAgent); err != nil {
 		return err
 	}
+	if sendVerifyDelivery {
+		if err := waitForDeliveryUpdate(deliveryBaselines, 30*time.Second, 3*time.Second); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Verified delivery to %s session %q\n", adapter.Name(), sessionName)
+	}
 	fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q. Waiting for response...\n", adapter.Name(), sessionName)
 
-	// Poll all matching sessions for a new assistant message
 	timeout := time.Duration(sendTimeout) * time.Second
 	pollInterval := 3 * time.Second
 	deadline := time.Now().Add(timeout)
@@ -116,7 +138,6 @@ func runSend(cmd *cobra.Command, args []string) error {
 				continue
 			}
 
-			// File has grown — check for a new assistant message
 			raw := &session.SessionInfo{FilePath: s.FilePath}
 			msg := session.LastAssistantMessage(raw)
 			if msg == "" {
@@ -257,7 +278,6 @@ func targetAgentLabel(agent provider.Agent) string {
 	return string(agent)
 }
 
-// sessionResolver is satisfied by mux.Adapter and allows resolving a mux session by name.
 type sessionResolver interface {
 	ResolveSession(query string) (string, error)
 }
@@ -303,21 +323,16 @@ func resolveSessionsForSend(sessions []provider.SessionInfo, query string, resol
 		return matched, nil
 	}
 
-	// No repository match — check if the query is a direct mux session name.
 	if _, err := resolver.ResolveSession(query); err != nil {
 		return nil, fmt.Errorf("no session found matching %q", query)
 	}
 
-	// Mux session found: return all scanned sessions for best-effort response monitoring.
-	// We cannot directly link a mux session name to a specific JSONL file without a
-	// CWD mapping, so we monitor all recent sessions and return the first one that responds.
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].ModTime.After(sessions[j].ModTime)
 	})
 	return sessions, nil
 }
 
-// matchByRepository returns sessions whose Repository field contains query (case-insensitive).
 func matchByRepository(sessions []provider.SessionInfo, query string) []provider.SessionInfo {
 	var matched []provider.SessionInfo
 	q := strings.ToLower(query)
@@ -329,7 +344,6 @@ func matchByRepository(sessions []provider.SessionInfo, query string) []provider
 	return matched
 }
 
-// logSendAction logs a send action to the database (fire-and-forget).
 func logSendAction(sessionName, instruction, result string) {
 	if db, err := store.Open(""); err == nil {
 		defer db.Close()
@@ -348,4 +362,52 @@ func fileSize(path string) (int64, error) {
 		return 0, err
 	}
 	return info.Size(), nil
+}
+
+func buildDeliveryBaselines(sessions []provider.SessionInfo) (map[string]time.Time, error) {
+	if len(sessions) == 0 {
+		return nil, fmt.Errorf("delivery verification failed: no JSONL session found for monitoring")
+	}
+
+	baselines := make(map[string]time.Time, len(sessions))
+	for _, s := range sessions {
+		if s.FilePath == "" {
+			continue
+		}
+		modTime, err := fileModTime(s.FilePath)
+		if err != nil {
+			return nil, fmt.Errorf("delivery verification failed: stat %s: %w", s.FilePath, err)
+		}
+		baselines[s.FilePath] = modTime
+	}
+	if len(baselines) == 0 {
+		return nil, fmt.Errorf("delivery verification failed: no JSONL session found for monitoring")
+	}
+	return baselines, nil
+}
+
+func waitForDeliveryUpdate(baselines map[string]time.Time, timeout, pollInterval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for path, baseline := range baselines {
+			modTime, err := fileModTime(path)
+			if err != nil {
+				continue
+			}
+			if modTime.After(baseline) {
+				return nil
+			}
+		}
+		time.Sleep(pollInterval)
+	}
+
+	return fmt.Errorf("delivery verification failed: timed out after %s waiting for JSONL update", timeout)
+}
+
+func fileModTime(path string) (time.Time, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
 }

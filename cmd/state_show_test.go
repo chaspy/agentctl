@@ -138,3 +138,70 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 		t.Fatalf("duplicate group mismatch: dup1=%q dup2=%q", dup1.DuplicateGroup, dup2.DuplicateGroup)
 	}
 }
+
+func TestBuildStateShowJSON(t *testing.T) {
+	now := time.Now()
+	done := now.Add(2 * time.Minute)
+	out := buildStateShowJSON(
+		&stateShowReport{
+			Summary: stateShowSummary{ActiveSessions: 1, ArchivedSessions: 2},
+			Sessions: []stateShowSession{{
+				ID:            "codex:chaspy/agentctl:s1",
+				Agent:         "codex",
+				Repository:    "chaspy/agentctl",
+				Branch:        "main",
+				Status:        "idle",
+				Alive:         true,
+				RuntimeStatus: "running",
+				LastActive:    now,
+				LastActiveAge: "0m ago",
+				PRURL:         "https://github.com/chaspy/agentctl/pull/100",
+				TaskSummary:   "phase 2 implementation",
+				ZellijSession: "agentctl-main",
+				LastMessage:   "working",
+				Role:          "director",
+				Loop:          true,
+				Permission:    4,
+			}},
+		},
+		[]store.Task{{
+			ID:          1,
+			SessionID:   "codex:chaspy/agentctl:s1",
+			Description: "implement json output",
+			Status:      "in_progress",
+			Owner:       "worker-1",
+			AssignedAt:  now,
+			CompletedAt: &done,
+			Result:      "ok",
+			PRURL:       "https://github.com/chaspy/agentctl/pull/100",
+		}},
+		[]store.Action{{
+			ID:         10,
+			SessionID:  "codex:chaspy/agentctl:s1",
+			ActionType: "send",
+			Content:    "implement phase 2",
+			Result:     "done",
+			CreatedAt:  now,
+		}},
+		map[string]string{"scheduler": "enabled"},
+	)
+
+	if out.Summary.ActiveSessions != 1 || out.Summary.ArchivedSessions != 2 {
+		t.Fatalf("unexpected summary: %+v", out.Summary)
+	}
+	if out.Summary.ActiveTasks != 1 || out.Summary.RecentActions != 1 || out.Summary.StateEntries != 1 {
+		t.Fatalf("unexpected summary counters: %+v", out.Summary)
+	}
+	if len(out.Sessions) != 1 || out.Sessions[0].Role != "director" || !out.Sessions[0].Loop {
+		t.Fatalf("unexpected sessions: %+v", out.Sessions)
+	}
+	if len(out.Tasks) != 1 || out.Tasks[0].Owner != "worker-1" {
+		t.Fatalf("unexpected tasks: %+v", out.Tasks)
+	}
+	if len(out.Actions) != 1 || out.Actions[0].ActionType != "send" {
+		t.Fatalf("unexpected actions: %+v", out.Actions)
+	}
+	if out.State["scheduler"] != "enabled" {
+		t.Fatalf("unexpected state: %+v", out.State)
+	}
+}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -20,6 +21,7 @@ var (
 	listSync  bool
 	listLive  bool
 	listAll   bool
+	listJSON  bool
 )
 
 var listCmd = &cobra.Command{
@@ -36,6 +38,7 @@ func init() {
 	listCmd.Flags().BoolVar(&listSync, "sync", false, "Scan JSONL, sync to SQLite, then display from DB")
 	listCmd.Flags().BoolVar(&listLive, "live", false, "Legacy mode: scan JSONL directly (no DB)")
 	listCmd.Flags().BoolVar(&listAll, "all", false, "Include archived sessions")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output machine-readable JSON")
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -54,6 +57,54 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	return runListFromDB()
+}
+
+type listSessionJSON struct {
+	ID            string    `json:"id,omitempty"`
+	Agent         string    `json:"agent"`
+	Repository    string    `json:"repository"`
+	Branch        string    `json:"branch,omitempty"`
+	LastActive    time.Time `json:"last_active"`
+	LastActiveAge string    `json:"last_active_age"`
+	Alive         bool      `json:"alive"`
+	Status        string    `json:"status"`
+	BlockedReason string    `json:"blocked_reason,omitempty"`
+	Role          string    `json:"role"`
+	PRURL         string    `json:"pr_url,omitempty"`
+	LastMessage   string    `json:"last_message,omitempty"`
+	Archived      bool      `json:"archived,omitempty"`
+}
+
+func buildListSessionsJSON(sessions []store.Session) []listSessionJSON {
+	rows := make([]listSessionJSON, 0, len(sessions))
+	for _, s := range sessions {
+		role := s.Role
+		if role == "" {
+			role = "worker"
+		}
+		rows = append(rows, listSessionJSON{
+			ID:            s.ID,
+			Agent:         s.Agent,
+			Repository:    s.Repository,
+			Branch:        s.GitBranch,
+			LastActive:    s.LastActive,
+			LastActiveAge: formatAge(time.Since(s.LastActive)),
+			Alive:         s.Alive,
+			Status:        s.Status,
+			BlockedReason: s.BlockedReason,
+			Role:          role,
+			PRURL:         s.PRURL,
+			LastMessage:   s.LastMessage,
+			Archived:      s.Archived,
+		})
+	}
+	return rows
+}
+
+func printJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 // runListFromDB displays sessions from SQLite.
@@ -75,6 +126,9 @@ func runListFromDB() error {
 	}
 
 	if len(sessions) == 0 {
+		if listJSON {
+			return printJSON([]listSessionJSON{})
+		}
 		fmt.Println("No sessions in database. Run 'list --sync' to scan and import sessions.")
 		return nil
 	}
@@ -97,6 +151,10 @@ func runListFromDB() error {
 			}
 		}
 		filtered = agentFiltered
+	}
+
+	if listJSON {
+		return printJSON(buildListSessionsJSON(filtered))
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -204,6 +262,33 @@ func runListLive() error {
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].ModTime.After(sessions[j].ModTime)
 	})
+
+	if listJSON {
+		rows := make([]listSessionJSON, 0, len(sessions))
+		for _, s := range sessions {
+			rows = append(rows, listSessionJSON{
+				Agent:         string(s.Agent),
+				Repository:    s.Repository,
+				Branch:        s.GitBranch,
+				LastActive:    s.ModTime,
+				LastActiveAge: formatAge(time.Since(s.ModTime)),
+				Status:        s.Status,
+				BlockedReason: s.ErrorType,
+				LastMessage:   s.LastMessage,
+			})
+		}
+		claudeProcs, _ := process.FindClaudeProcesses()
+		codexProcs, _ := process.FindCodexProcesses()
+		for i := range rows {
+			switch sessions[i].Agent {
+			case provider.AgentClaude:
+				rows[i].Alive = process.IsAliveForCWD(claudeProcs, sessions[i].CWD)
+			case provider.AgentCodex:
+				rows[i].Alive = process.IsAliveForCWD(codexProcs, sessions[i].CWD)
+			}
+		}
+		return printJSON(rows)
+	}
 
 	claudeProcs, _ := process.FindClaudeProcesses()
 	codexProcs, _ := process.FindCodexProcesses()
