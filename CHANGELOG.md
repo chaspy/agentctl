@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.28] - 2026-04-05
+
+### Added
+
+- `agentctl send --verify`: waits 20 seconds after send, checks the prompt via screen dump, and automatically retries when the message still appears pending
+- Delivery verification result is now printed to stdout as `送達確認: OK` or `送達確認: リトライ実行`
+
+### Changed
+
+- `agentctl send` now waits up to 30 seconds for a response by default (override with `--timeout` or skip with `--no-wait`)
+
 ## [0.2.26] - 2026-04-04
 
 ### Added

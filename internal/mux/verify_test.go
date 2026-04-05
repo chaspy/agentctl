@@ -129,19 +129,37 @@ type mockAdapter struct {
 	dumpResults  []string
 	dumpIdx      int
 	dumpErr      error
+	sendKeysErr  error
 	sendEnterErr error
+	typeTextErr  error
+	clearErr     error
 	enterCalls   int
+	typeCalls    int
+	clearCalls   int
+	typedTexts   []string
+	locateResult string
+	locateErr    error
 }
 
-func (m *mockAdapter) Name() string                              { return "mock" }
-func (m *mockAdapter) SendKeys(session string, text string) error { return nil }
-func (m *mockAdapter) ListSessions() ([]string, error)           { return nil, nil }
-func (m *mockAdapter) ResolveSession(q string) (string, error)   { return q, nil }
-func (m *mockAdapter) available() bool                           { return true }
+func (m *mockAdapter) Name() string                               { return "mock" }
+func (m *mockAdapter) SendKeys(session string, text string) error { return m.sendKeysErr }
+func (m *mockAdapter) TypeText(session string, text string) error {
+	m.typeCalls++
+	m.typedTexts = append(m.typedTexts, text)
+	return m.typeTextErr
+}
+func (m *mockAdapter) ListSessions() ([]string, error)         { return nil, nil }
+func (m *mockAdapter) ResolveSession(q string) (string, error) { return q, nil }
+func (m *mockAdapter) available() bool                         { return true }
 
 func (m *mockAdapter) SendEnter(session string) error {
 	m.enterCalls++
 	return m.sendEnterErr
+}
+
+func (m *mockAdapter) ClearInput(session string) error {
+	m.clearCalls++
+	return m.clearErr
 }
 
 func (m *mockAdapter) DumpScreen(session string) (string, error) {
@@ -154,6 +172,10 @@ func (m *mockAdapter) DumpScreen(session string) (string, error) {
 	result := m.dumpResults[m.dumpIdx]
 	m.dumpIdx++
 	return result, nil
+}
+
+func (m *mockAdapter) LocateText(session string, text string) (string, error) {
+	return m.locateResult, m.locateErr
 }
 
 func TestVerifySend(t *testing.T) {
@@ -177,8 +199,8 @@ func TestVerifySend(t *testing.T) {
 	t.Run("text cleared after one retry", func(t *testing.T) {
 		m := &mockAdapter{
 			dumpResults: []string{
-				"output\n\n> fix the bug",    // still pending
-				"output\n\nThinking...",       // cleared after retry
+				"output\n\n> fix the bug", // still pending
+				"output\n\nThinking...",   // cleared after retry
 			},
 		}
 		err := VerifySend(m, "test-session", "fix the bug")
@@ -193,9 +215,9 @@ func TestVerifySend(t *testing.T) {
 	t.Run("text cleared after two retries", func(t *testing.T) {
 		m := &mockAdapter{
 			dumpResults: []string{
-				"output\n\n> fix the bug",    // still pending
-				"output\n\n> fix the bug",    // still pending
-				"output\n\nThinking...",       // cleared
+				"output\n\n> fix the bug", // still pending
+				"output\n\n> fix the bug", // still pending
+				"output\n\nThinking...",   // cleared
 			},
 		}
 		err := VerifySend(m, "test-session", "fix the bug")
@@ -246,6 +268,216 @@ func TestVerifySend(t *testing.T) {
 		}
 		if m.enterCalls != 1 {
 			t.Errorf("expected 1 enter call, got %d", m.enterCalls)
+		}
+	})
+}
+
+func TestHasDeliveryPending(t *testing.T) {
+	tests := []struct {
+		name       string
+		screenDump string
+		sentText   string
+		want       bool
+	}{
+		{
+			name:       "bottom line contains prefix",
+			screenDump: "log line\n> implement delivery check now",
+			sentText:   "implement delivery check now please",
+			want:       true,
+		},
+		{
+			name:       "prefix not on last non-empty line",
+			screenDump: "> implement delivery check now\nThinking...",
+			sentText:   "implement delivery check now please",
+			want:       false,
+		},
+		{
+			name:       "blank screen",
+			screenDump: "\n\n",
+			sentText:   "implement delivery check now please",
+			want:       false,
+		},
+		{
+			name:       "empty text",
+			screenDump: "anything",
+			sentText:   "",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := HasDeliveryPending(tt.screenDump, tt.sentText)
+			if got != tt.want {
+				t.Fatalf("HasDeliveryPending() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyDelivery(t *testing.T) {
+	origVerifyDelay := VerifyDelay
+	origDeliveryDelay := DeliveryVerifyDelay
+	VerifyDelay = 1 * time.Millisecond
+	DeliveryVerifyDelay = 1 * time.Millisecond
+	t.Cleanup(func() {
+		VerifyDelay = origVerifyDelay
+		DeliveryVerifyDelay = origDeliveryDelay
+	})
+
+	t.Run("ok without retry", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{"output\nThinking..."},
+		}
+		retried, err := VerifyDelivery(m, "test-session", "implement delivery check")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if retried {
+			t.Fatal("expected no retry")
+		}
+		if m.clearCalls != 0 || m.typeCalls != 0 || m.enterCalls != 0 {
+			t.Fatalf("unexpected retry operations: clear=%d type=%d enter=%d", m.clearCalls, m.typeCalls, m.enterCalls)
+		}
+	})
+
+	t.Run("retry when prompt still shows prefix", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{
+				"output\n> implement delivery check now", // delivery verify
+				"output\nThinking...",                    // post-retry VerifySend
+			},
+		}
+		retried, err := VerifyDelivery(m, "test-session", "implement delivery check now please")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !retried {
+			t.Fatal("expected retry")
+		}
+		if m.clearCalls != 1 || m.typeCalls != 1 || m.enterCalls != 1 {
+			t.Fatalf("expected clear/type/enter = 1/1/1, got %d/%d/%d", m.clearCalls, m.typeCalls, m.enterCalls)
+		}
+	})
+
+	t.Run("clear input error", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{"output\n> implement delivery check now"},
+			clearErr:    fmt.Errorf("clear failed"),
+		}
+		retried, err := VerifyDelivery(m, "test-session", "implement delivery check now please")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !retried {
+			t.Fatal("expected retry=true when retry path starts")
+		}
+	})
+}
+
+func TestLooksLikeShellPrompt(t *testing.T) {
+	tests := []struct {
+		name   string
+		screen string
+		want   bool
+	}{
+		{name: "dollar prompt", screen: "user@host repo $\n", want: true},
+		{name: "fish prompt", screen: "~/repo ❯\n", want: true},
+		{name: "codex prompt", screen: "OpenAI Codex\n› fix bug", want: false},
+		{name: "empty", screen: "\n\n", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := LooksLikeShellPrompt(tt.screen); got != tt.want {
+				t.Fatalf("LooksLikeShellPrompt() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyTypedInputVisible(t *testing.T) {
+	origDelay := VerifyDelay
+	VerifyDelay = 1 * time.Millisecond
+	t.Cleanup(func() { VerifyDelay = origDelay })
+
+	t.Run("visible in focused pane", func(t *testing.T) {
+		m := &mockAdapter{dumpResults: []string{"output\n> implement restart handling"}}
+		if err := VerifyTypedInputVisible(m, "test", "implement restart handling"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("found in another pane", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults:  []string{"output\nThinking..."},
+			locateResult: "zellij pane #2 from the top-left pane",
+		}
+		err := VerifyTypedInputVisible(m, "test", "implement restart handling")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if got := err.Error(); got != "typed text was not visible in the focused pane; found in zellij pane #2 from the top-left pane" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestEnsureSessionReady(t *testing.T) {
+	origVerifyDelay := VerifyDelay
+	origPoll := RestartPollInterval
+	origTimeout := RestartTimeout
+	VerifyDelay = 1 * time.Millisecond
+	RestartPollInterval = 1 * time.Millisecond
+	RestartTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		VerifyDelay = origVerifyDelay
+		RestartPollInterval = origPoll
+		RestartTimeout = origTimeout
+	})
+
+	t.Run("no restart while codex ui is visible", func(t *testing.T) {
+		m := &mockAdapter{dumpResults: []string{"OpenAI Codex\n/model to change"}}
+		restarted, err := EnsureSessionReady(m, "test", "codex", "codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if restarted {
+			t.Fatal("expected no restart")
+		}
+		if m.typeCalls != 0 || m.enterCalls != 0 {
+			t.Fatalf("unexpected restart operations: type=%d enter=%d", m.typeCalls, m.enterCalls)
+		}
+	})
+
+	t.Run("restart codex from shell prompt", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{
+				"user@host repo $",
+				"user@host repo $ codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen",
+				"OpenAI Codex\n/model to change",
+			},
+		}
+		restarted, err := EnsureSessionReady(m, "test", "codex", "codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !restarted {
+			t.Fatal("expected restart")
+		}
+		if m.typeCalls != 1 || m.enterCalls != 1 {
+			t.Fatalf("expected type/enter = 1/1, got %d/%d", m.typeCalls, m.enterCalls)
+		}
+		if len(m.typedTexts) != 1 || m.typedTexts[0] != "codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen" {
+			t.Fatalf("unexpected typed texts: %#v", m.typedTexts)
+		}
+	})
+
+	t.Run("shell prompt without restart command", func(t *testing.T) {
+		m := &mockAdapter{dumpResults: []string{"user@host repo $"}}
+		_, err := EnsureSessionReady(m, "test", "", "")
+		if err == nil {
+			t.Fatal("expected error")
 		}
 	})
 }

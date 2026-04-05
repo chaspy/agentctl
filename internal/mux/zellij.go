@@ -36,15 +36,19 @@ func (z zellijAdapter) SendKeys(session string, text string) error {
 		return err
 	}
 
-	z.focusFirstPane(resolved)
-
-	writeChars := exec.Command("zellij", "--session", resolved, "action", "write-chars", text)
-	output, err := writeChars.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("zellij write-chars failed: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := z.typeTextResolved(resolved, text); err != nil {
+		return err
 	}
 
 	return z.sendEnterResolved(resolved)
+}
+
+func (z zellijAdapter) TypeText(session string, text string) error {
+	resolved, err := z.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	return z.typeTextResolved(resolved, text)
 }
 
 func (z zellijAdapter) SendEnter(session string) error {
@@ -56,11 +60,44 @@ func (z zellijAdapter) SendEnter(session string) error {
 	return z.sendEnterResolved(resolved)
 }
 
+func (z zellijAdapter) ClearInput(session string) error {
+	resolved, err := z.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	z.focusFirstPane(resolved)
+	return z.writeControlResolved(resolved, "21", "clear input")
+}
+
+func (z zellijAdapter) typeTextResolved(resolved string, text string) error {
+	z.focusFirstPane(resolved)
+
+	writeChars := exec.Command("zellij", "--session", resolved, "action", "write-chars", text)
+	output, err := writeChars.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("zellij write-chars failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (zellijAdapter) sendEnterResolved(resolved string) error {
-	writeEnter := exec.Command("zellij", "--session", resolved, "action", "write", "13")
+	return zellijAdapter{}.writeControlResolved(resolved, "13", "enter")
+}
+
+func (zellijAdapter) focusNextPaneResolved(resolved string) error {
+	cmd := exec.Command("zellij", "--session", resolved, "action", "focus-next-pane")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("zellij focus-next-pane failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func (zellijAdapter) writeControlResolved(resolved, code, name string) error {
+	writeEnter := exec.Command("zellij", "--session", resolved, "action", "write", code)
 	output, err := writeEnter.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("zellij write enter failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("zellij write %s failed: %w: %s", name, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
@@ -71,6 +108,11 @@ func (z zellijAdapter) DumpScreen(session string) (string, error) {
 		return "", err
 	}
 
+	z.focusFirstPane(resolved)
+	return z.dumpScreenResolved(resolved)
+}
+
+func (z zellijAdapter) dumpScreenResolved(resolved string) (string, error) {
 	tmpFile, err := os.CreateTemp("", "agentctl-screen-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)
@@ -78,8 +120,6 @@ func (z zellijAdapter) DumpScreen(session string) (string, error) {
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
-
-	z.focusFirstPane(resolved)
 
 	cmd := exec.Command("zellij", "--session", resolved, "action", "dump-screen", tmpPath)
 	output, err := cmd.CombinedOutput()
@@ -93,6 +133,47 @@ func (z zellijAdapter) DumpScreen(session string) (string, error) {
 	}
 
 	return string(data), nil
+}
+
+func (z zellijAdapter) LocateText(session string, text string) (string, error) {
+	resolved, err := z.ResolveSession(session)
+	if err != nil {
+		return "", err
+	}
+
+	z.focusFirstPane(resolved)
+	screen, err := z.dumpScreenResolved(resolved)
+	if err != nil {
+		return "", err
+	}
+	if HasTypedInputVisible(screen, text) {
+		return "focused pane", nil
+	}
+
+	seen := map[string]struct{}{screen: {}}
+	for i := 0; i < 8; i++ {
+		if err := z.focusNextPaneResolved(resolved); err != nil {
+			z.focusFirstPane(resolved)
+			return "", err
+		}
+
+		screen, err := z.dumpScreenResolved(resolved)
+		if err != nil {
+			z.focusFirstPane(resolved)
+			return "", err
+		}
+		if _, ok := seen[screen]; ok {
+			break
+		}
+		seen[screen] = struct{}{}
+		if HasTypedInputVisible(screen, text) {
+			z.focusFirstPane(resolved)
+			return fmt.Sprintf("zellij pane #%d from the top-left pane", i+2), nil
+		}
+	}
+
+	z.focusFirstPane(resolved)
+	return "", nil
 }
 
 func (zellijAdapter) ListSessions() ([]string, error) {
@@ -144,8 +225,10 @@ var ListZellijSessionsDetailed = func() ([]ZellijSessionState, error) {
 
 // parseZellijSessionsDetailed parses the full `zellij list-sessions` output.
 // Each line looks like:
-//   session-name [Created ...] (EXITED - attach to resurrect)   <- exited
-//   session-name [Created ...]                                    <- active
+//
+//	session-name [Created ...] (EXITED - attach to resurrect)   <- exited
+//	session-name [Created ...]                                    <- active
+//
 // ANSI color codes are stripped.
 func parseZellijSessionsDetailed(output string) []ZellijSessionState {
 	// Strip ANSI escape codes
