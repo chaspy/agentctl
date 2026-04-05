@@ -160,14 +160,14 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 
 		// UPDATE only — never creates new records
 		_ = store.UpdateSessionMetadata(db, &store.Session{
-			ID:         dbSess.ID,
-			Status:     status,
-			GitBranch:  jsonl.GitBranch,
+			ID:          dbSess.ID,
+			Status:      status,
+			GitBranch:   jsonl.GitBranch,
 			LastMessage: jsonl.LastMessage,
-			LastRole:   jsonl.LastRole,
-			LastActive: jsonl.ModTime,
-			Role:       role,
-			IsLoop:     loopCWDs[dbSess.CWD],
+			LastRole:    jsonl.LastRole,
+			LastActive:  jsonl.ModTime,
+			Role:        role,
+			IsLoop:      loopCWDs[dbSess.CWD],
 		})
 
 		// Apply task_summary
@@ -358,7 +358,7 @@ var worktreeSuffix = regexp.MustCompile(`[/-]worktree-.+$`)
 
 var knownRepoCorrections = map[string]string{
 	"chaspy/myassistant-server": "chaspy/myassistant",
-	"studiuos/jp-Studious-JP":  "studiuos-jp/Studious_JP",
+	"studiuos/jp-Studious-JP":   "studiuos-jp/Studious_JP",
 }
 
 func repoFromRepository(repository string) string {
@@ -397,10 +397,15 @@ func normalizeExistingRepoNames(db *sql.DB) {
 // syncRuntimeStatus updates runtime_status based on zellij session state,
 // then enriches CWD/repo/branch for alive sessions with empty CWD via dump-layout.
 // Only updates existing alive=1 DB records. Does NOT create new records.
+// If a DB session is alive=1 but no longer exists in zellij (or is EXITED),
+// it is marked dead so archive sync can remove it from the active table.
 func syncRuntimeStatus(db *sql.DB) {
 	zellijSessions, err := listZellijDetailed()
-	if err != nil || zellijSessions == nil {
+	if err != nil {
 		return
+	}
+	if zellijSessions == nil {
+		zellijSessions = []mux.ZellijSessionState{}
 	}
 
 	// Build map: name(lower) -> state
@@ -418,18 +423,18 @@ func syncRuntimeStatus(db *sql.DB) {
 	for _, s := range aliveSessions {
 		zellijName := s.ZellijSession
 		if zellijName == "" {
-			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			continue
 		}
 
 		if zs, found := zellijMap[strings.ToLower(zellijName)]; found {
 			if zs.exited {
-				db.Exec("UPDATE sessions SET runtime_status = 'exited', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+				db.Exec("UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', runtime_status = 'exited', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			} else {
 				db.Exec("UPDATE sessions SET runtime_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			}
 		} else {
-			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 		}
 	}
 
