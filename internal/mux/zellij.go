@@ -36,15 +36,19 @@ func (z zellijAdapter) SendKeys(session string, text string) error {
 		return err
 	}
 
-	z.focusFirstPane(resolved)
-
-	writeChars := exec.Command("zellij", "--session", resolved, "action", "write-chars", text)
-	output, err := writeChars.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("zellij write-chars failed: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := z.typeTextResolved(resolved, text); err != nil {
+		return err
 	}
 
 	return z.sendEnterResolved(resolved)
+}
+
+func (z zellijAdapter) TypeText(session string, text string) error {
+	resolved, err := z.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	return z.typeTextResolved(resolved, text)
 }
 
 func (z zellijAdapter) SendEnter(session string) error {
@@ -56,11 +60,35 @@ func (z zellijAdapter) SendEnter(session string) error {
 	return z.sendEnterResolved(resolved)
 }
 
+func (z zellijAdapter) ClearInput(session string) error {
+	resolved, err := z.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	z.focusFirstPane(resolved)
+	return z.writeControlResolved(resolved, "21", "clear input")
+}
+
+func (z zellijAdapter) typeTextResolved(resolved string, text string) error {
+	z.focusFirstPane(resolved)
+
+	writeChars := exec.Command("zellij", "--session", resolved, "action", "write-chars", text)
+	output, err := writeChars.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("zellij write-chars failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (zellijAdapter) sendEnterResolved(resolved string) error {
-	writeEnter := exec.Command("zellij", "--session", resolved, "action", "write", "13")
+	return zellijAdapter{}.writeControlResolved(resolved, "13", "enter")
+}
+
+func (zellijAdapter) writeControlResolved(resolved, code, name string) error {
+	writeEnter := exec.Command("zellij", "--session", resolved, "action", "write", code)
 	output, err := writeEnter.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("zellij write enter failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("zellij write %s failed: %w: %s", name, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
@@ -144,8 +172,10 @@ var ListZellijSessionsDetailed = func() ([]ZellijSessionState, error) {
 
 // parseZellijSessionsDetailed parses the full `zellij list-sessions` output.
 // Each line looks like:
-//   session-name [Created ...] (EXITED - attach to resurrect)   <- exited
-//   session-name [Created ...]                                    <- active
+//
+//	session-name [Created ...] (EXITED - attach to resurrect)   <- exited
+//	session-name [Created ...]                                    <- active
+//
 // ANSI color codes are stripped.
 func parseZellijSessionsDetailed(output string) []ZellijSessionState {
 	// Strip ANSI escape codes

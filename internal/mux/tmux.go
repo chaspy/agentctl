@@ -34,6 +34,19 @@ func (t tmuxAdapter) SendKeys(session string, text string) error {
 	return nil
 }
 
+func (t tmuxAdapter) TypeText(session string, text string) error {
+	resolved, err := t.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("tmux", "send-keys", "-t", resolved, text)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux type text failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (t tmuxAdapter) SendEnter(session string) error {
 	resolved, err := t.ResolveSession(session)
 	if err != nil {
@@ -43,6 +56,19 @@ func (t tmuxAdapter) SendEnter(session string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux send-enter failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func (t tmuxAdapter) ClearInput(session string) error {
+	resolved, err := t.ResolveSession(session)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("tmux", "send-keys", "-t", resolved, "C-u")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux clear input failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }

@@ -129,19 +129,33 @@ type mockAdapter struct {
 	dumpResults  []string
 	dumpIdx      int
 	dumpErr      error
+	sendKeysErr  error
 	sendEnterErr error
+	typeTextErr  error
+	clearErr     error
 	enterCalls   int
+	typeCalls    int
+	clearCalls   int
 }
 
-func (m *mockAdapter) Name() string                              { return "mock" }
-func (m *mockAdapter) SendKeys(session string, text string) error { return nil }
-func (m *mockAdapter) ListSessions() ([]string, error)           { return nil, nil }
-func (m *mockAdapter) ResolveSession(q string) (string, error)   { return q, nil }
-func (m *mockAdapter) available() bool                           { return true }
+func (m *mockAdapter) Name() string                               { return "mock" }
+func (m *mockAdapter) SendKeys(session string, text string) error { return m.sendKeysErr }
+func (m *mockAdapter) TypeText(session string, text string) error {
+	m.typeCalls++
+	return m.typeTextErr
+}
+func (m *mockAdapter) ListSessions() ([]string, error)         { return nil, nil }
+func (m *mockAdapter) ResolveSession(q string) (string, error) { return q, nil }
+func (m *mockAdapter) available() bool                         { return true }
 
 func (m *mockAdapter) SendEnter(session string) error {
 	m.enterCalls++
 	return m.sendEnterErr
+}
+
+func (m *mockAdapter) ClearInput(session string) error {
+	m.clearCalls++
+	return m.clearErr
 }
 
 func (m *mockAdapter) DumpScreen(session string) (string, error) {
@@ -177,8 +191,8 @@ func TestVerifySend(t *testing.T) {
 	t.Run("text cleared after one retry", func(t *testing.T) {
 		m := &mockAdapter{
 			dumpResults: []string{
-				"output\n\n> fix the bug",    // still pending
-				"output\n\nThinking...",       // cleared after retry
+				"output\n\n> fix the bug", // still pending
+				"output\n\nThinking...",   // cleared after retry
 			},
 		}
 		err := VerifySend(m, "test-session", "fix the bug")
@@ -193,9 +207,9 @@ func TestVerifySend(t *testing.T) {
 	t.Run("text cleared after two retries", func(t *testing.T) {
 		m := &mockAdapter{
 			dumpResults: []string{
-				"output\n\n> fix the bug",    // still pending
-				"output\n\n> fix the bug",    // still pending
-				"output\n\nThinking...",       // cleared
+				"output\n\n> fix the bug", // still pending
+				"output\n\n> fix the bug", // still pending
+				"output\n\nThinking...",   // cleared
 			},
 		}
 		err := VerifySend(m, "test-session", "fix the bug")
@@ -246,6 +260,109 @@ func TestVerifySend(t *testing.T) {
 		}
 		if m.enterCalls != 1 {
 			t.Errorf("expected 1 enter call, got %d", m.enterCalls)
+		}
+	})
+}
+
+func TestHasDeliveryPending(t *testing.T) {
+	tests := []struct {
+		name       string
+		screenDump string
+		sentText   string
+		want       bool
+	}{
+		{
+			name:       "bottom line contains prefix",
+			screenDump: "log line\n> implement delivery check now",
+			sentText:   "implement delivery check now please",
+			want:       true,
+		},
+		{
+			name:       "prefix not on last non-empty line",
+			screenDump: "> implement delivery check now\nThinking...",
+			sentText:   "implement delivery check now please",
+			want:       false,
+		},
+		{
+			name:       "blank screen",
+			screenDump: "\n\n",
+			sentText:   "implement delivery check now please",
+			want:       false,
+		},
+		{
+			name:       "empty text",
+			screenDump: "anything",
+			sentText:   "",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := HasDeliveryPending(tt.screenDump, tt.sentText)
+			if got != tt.want {
+				t.Fatalf("HasDeliveryPending() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyDelivery(t *testing.T) {
+	origVerifyDelay := VerifyDelay
+	origDeliveryDelay := DeliveryVerifyDelay
+	VerifyDelay = 1 * time.Millisecond
+	DeliveryVerifyDelay = 1 * time.Millisecond
+	t.Cleanup(func() {
+		VerifyDelay = origVerifyDelay
+		DeliveryVerifyDelay = origDeliveryDelay
+	})
+
+	t.Run("ok without retry", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{"output\nThinking..."},
+		}
+		retried, err := VerifyDelivery(m, "test-session", "implement delivery check")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if retried {
+			t.Fatal("expected no retry")
+		}
+		if m.clearCalls != 0 || m.typeCalls != 0 || m.enterCalls != 0 {
+			t.Fatalf("unexpected retry operations: clear=%d type=%d enter=%d", m.clearCalls, m.typeCalls, m.enterCalls)
+		}
+	})
+
+	t.Run("retry when prompt still shows prefix", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{
+				"output\n> implement delivery check now", // delivery verify
+				"output\nThinking...",                    // post-retry VerifySend
+			},
+		}
+		retried, err := VerifyDelivery(m, "test-session", "implement delivery check now please")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !retried {
+			t.Fatal("expected retry")
+		}
+		if m.clearCalls != 1 || m.typeCalls != 1 || m.enterCalls != 1 {
+			t.Fatalf("expected clear/type/enter = 1/1/1, got %d/%d/%d", m.clearCalls, m.typeCalls, m.enterCalls)
+		}
+	})
+
+	t.Run("clear input error", func(t *testing.T) {
+		m := &mockAdapter{
+			dumpResults: []string{"output\n> implement delivery check now"},
+			clearErr:    fmt.Errorf("clear failed"),
+		}
+		retried, err := VerifyDelivery(m, "test-session", "implement delivery check now please")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !retried {
+			t.Fatal("expected retry=true when retry path starts")
 		}
 	})
 }

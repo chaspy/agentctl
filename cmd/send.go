@@ -20,6 +20,7 @@ var (
 	sendHours   int
 	sendTimeout int
 	sendNoWait  bool
+	sendVerify  bool
 )
 
 var sendCmd = &cobra.Command{
@@ -35,8 +36,9 @@ func init() {
 	sendCmd.Flags().StringVar(&sendMux, "mux", "auto", "Mux backend: auto, tmux, zellij")
 	sendCmd.Flags().StringVar(&sendAgent, "agent", "all", "Filter by agent: all, claude, codex")
 	sendCmd.Flags().IntVar(&sendHours, "hours", 24, "Search sessions active within the last N hours")
-	sendCmd.Flags().IntVar(&sendTimeout, "timeout", 300, "Timeout in seconds to wait for response")
+	sendCmd.Flags().IntVar(&sendTimeout, "timeout", 30, "Timeout in seconds to wait for response")
 	sendCmd.Flags().BoolVar(&sendNoWait, "no-wait", false, "Send without waiting for a response")
+	sendCmd.Flags().BoolVar(&sendVerify, "verify", false, "Verify delivery after 20 seconds and retry if the prompt still contains the message")
 }
 
 func runSend(cmd *cobra.Command, args []string) error {
@@ -49,11 +51,8 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 
 	if sendNoWait {
-		if err := adapter.SendKeys(sessionName, instruction); err != nil {
-			return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
-		}
-		if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
-			return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
+		if err := sendInstruction(adapter, sessionName, instruction); err != nil {
+			return err
 		}
 		fmt.Printf("Sent instruction to %s session %q\n", adapter.Name(), sessionName)
 		logSendAction(sessionName, instruction, "(no-wait)")
@@ -68,11 +67,8 @@ func runSend(cmd *cobra.Command, args []string) error {
 
 	// Mux session matched but no JSONL sessions available for monitoring — just send.
 	if len(matched) == 0 {
-		if err := adapter.SendKeys(sessionName, instruction); err != nil {
-			return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
-		}
-		if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
-			return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
+		if err := sendInstruction(adapter, sessionName, instruction); err != nil {
+			return err
 		}
 		fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q (no JSONL session found for monitoring)\n", adapter.Name(), sessionName)
 		logSendAction(sessionName, instruction, "(sent, no monitoring)")
@@ -89,11 +85,8 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 
 	// Send the instruction
-	if err := adapter.SendKeys(sessionName, instruction); err != nil {
-		return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
-	}
-	if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
-		return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
+	if err := sendInstruction(adapter, sessionName, instruction); err != nil {
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q. Waiting for response...\n", adapter.Name(), sessionName)
 
@@ -136,6 +129,30 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 
 	return fmt.Errorf("timed out after %s waiting for response", timeout)
+}
+
+func sendInstruction(adapter mux.Adapter, sessionName, instruction string) error {
+	if err := adapter.SendKeys(sessionName, instruction); err != nil {
+		return fmt.Errorf("sending to %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
+		return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if !sendVerify {
+		return nil
+	}
+
+	retried, err := mux.VerifyDelivery(adapter, sessionName, instruction)
+	if err != nil {
+		return fmt.Errorf("delivery verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
+	}
+	if retried {
+		fmt.Println("送達確認: リトライ実行")
+		return nil
+	}
+
+	fmt.Println("送達確認: OK")
+	return nil
 }
 
 // sessionResolver is satisfied by mux.Adapter and allows resolving a mux session by name.

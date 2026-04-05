@@ -36,8 +36,11 @@ agentctl list --sync
 # Read the latest response from a session
 agentctl read <session-name>
 
-# Send a message and wait for response
+# Send a message and wait up to 30 seconds for response
 agentctl send <session-name> "your message"
+
+# Verify delivery 20 seconds after send and retry automatically if needed
+agentctl send <session-name> "your message" --verify
 
 # Check rate limits
 agentctl rate
@@ -67,7 +70,7 @@ agentctl serve
 |---|---|
 | `list` | List all active Claude Code / Codex sessions |
 | `read <name>` | Read the latest response from a session |
-| `send <name> <msg>` | Send a message and wait for response |
+| `send <name> <msg>` | Send a message and wait up to 30 seconds for response |
 | `watch <name>` | Watch a session until its response changes |
 | `monitor` | Poll all sessions and notify a target session on changes |
 | `rate` | Show rate limit status for Claude Code and Codex |

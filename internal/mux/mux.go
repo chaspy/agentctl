@@ -9,8 +9,12 @@ import (
 type Adapter interface {
 	Name() string
 	SendKeys(session string, text string) error
+	// TypeText writes text without pressing Enter.
+	TypeText(session string, text string) error
 	// SendEnter sends only an Enter key to the session.
 	SendEnter(session string) error
+	// ClearInput clears the current prompt line (for example via Ctrl+U).
+	ClearInput(session string) error
 	// DumpScreen returns the visible content of the focused pane.
 	DumpScreen(session string) (string, error)
 	ListSessions() ([]string, error)
