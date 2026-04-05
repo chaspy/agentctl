@@ -13,6 +13,8 @@
 
 - `state sync` now skips dead-session detection when zellij returns 0 sessions but the DB has alive sessions, preventing mass-archive on zellij transient errors
 - Sessions with an empty `zellij_session` field are no longer marked dead; they are kept alive with `runtime_status = 'unknown'` since their location is unknown, not confirmed gone
+- Restore zellij session discovery during `state sync`: missing DB records are now discovered from live zellij sessions
+- Add database backup on each sync to `~/.agentctl/manager.db.bak`
 
 ## [0.2.30] - 2026-04-05
 

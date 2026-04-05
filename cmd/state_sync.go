@@ -412,7 +412,7 @@ type discoveredSession struct {
 // alive sessions with empty CWD via dump-layout.
 func syncRuntimeStatus(db *sql.DB) (int, error) {
 	zellijSessions, err := listZellijDetailed()
-	if err != nil || zellijSessions == nil {
+	if err != nil {
 		return 0, nil
 	}
 	if zellijSessions == nil {
@@ -425,7 +425,7 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 		aliveSessions, _ := store.ListSessionsByAlive(db, true)
 		if len(aliveSessions) > 0 {
 			fmt.Fprintf(os.Stderr, "warning: zellij returned 0 sessions but DB has %d alive sessions, skipping dead-session detection\n", len(aliveSessions))
-			return
+			return 0, nil
 		}
 	}
 
