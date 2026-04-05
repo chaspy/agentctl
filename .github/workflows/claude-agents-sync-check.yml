@@ -1,0 +1,31 @@
+name: Check CLAUDE.md and AGENTS.md are in sync
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "CLAUDE.md"
+      - "AGENTS.md"
+      - ".github/workflows/claude-agents-sync-check.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "CLAUDE.md"
+      - "AGENTS.md"
+      - ".github/workflows/claude-agents-sync-check.yml"
+
+jobs:
+  sync-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check CLAUDE.md and AGENTS.md are identical
+        run: |
+          if ! cmp -s CLAUDE.md AGENTS.md; then
+            echo "::error::CLAUDE.md and AGENTS.md are out of sync. Keep them identical."
+            diff -u CLAUDE.md AGENTS.md || true
+            exit 1
+          fi
+          echo "CLAUDE.md and AGENTS.md are in sync."
