@@ -80,7 +80,8 @@ agentctl serve
 | `resume <name>` | Resume a stopped session |
 | `preview <PR>` | Preview a pull request in a temporary worktree |
 | `serve` | Start PWA dashboard (default: port 8080) |
-| `state sync` | Sync live session data to SQLite |
+| `state sync` | Sync live session data to SQLite and back up the DB |
+| `state import-from-zellij` | Rebuild DB session records from current zellij sessions |
 | `state show` | Show saved state from SQLite |
 | `state log` | Record or view action logs |
 | `state log handoff <session-id>` | Record route reason, handoff summary, and token burn |
@@ -102,7 +103,7 @@ agentctl detects session status by analyzing the last JSONL message and process 
 
 ## State Management
 
-agentctl uses SQLite for persistent state. The database is stored at `~/.agentctl/manager.db` by default, and can be overridden with the `AGENTCTL_DB_PATH` environment variable. On first run, if the new location doesn't exist but `.claude/manager.db` does, the old database is automatically copied over.
+agentctl uses SQLite for persistent state. The database is stored at `~/.agentctl/manager.db` by default, and can be overridden with the `AGENTCTL_DB_PATH` environment variable. On first run, if the new location doesn't exist but `.claude/manager.db` does, the old database is automatically copied over. Each successful sync also writes a backup to `~/.agentctl/manager.db.bak` (or `<AGENTCTL_DB_PATH>.bak`), and `state import-from-zellij` can rebuild missing session records from live zellij sessions.
 
 - **Sessions**: Synced from live scans, preserving status history
 - **Tasks**: Track work items per session
