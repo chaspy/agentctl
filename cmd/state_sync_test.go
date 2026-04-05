@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -179,6 +180,12 @@ func TestSyncRuntimeStatus_Exited(t *testing.T) {
 	if s1.RuntimeStatus != "exited" {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "exited")
 	}
+	if s1.Alive {
+		t.Error("alive should be false for exited zellij sessions")
+	}
+	if s1.Status != "dead" {
+		t.Errorf("status = %q, want %q", s1.Status, "dead")
+	}
 }
 
 func TestSyncRuntimeStatus_Gone(t *testing.T) {
@@ -205,7 +212,7 @@ func TestSyncRuntimeStatus_Gone(t *testing.T) {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
 	}
 	if s1.Alive {
-		t.Error("alive should be cleared when runtime_status becomes gone")
+		t.Error("alive should be false when zellij session is missing")
 	}
 	if s1.Status != "dead" {
 		t.Errorf("status = %q, want %q", s1.Status, "dead")
@@ -284,75 +291,58 @@ func TestSyncRuntimeStatus_NoZellijSession_MarksGone(t *testing.T) {
 		t.Errorf("runtime_status = %q, want %q", s1.RuntimeStatus, "gone")
 	}
 	if s1.Alive {
-		t.Error("alive should be cleared when zellij_session is missing")
+		t.Error("alive should be false for sessions without zellij session name")
 	}
 	if s1.Status != "dead" {
 		t.Errorf("status = %q, want %q", s1.Status, "dead")
 	}
 }
 
-func TestSyncRuntimeStatus_GoneClearsAliveAcrossStatuses(t *testing.T) {
+func TestSyncRuntimeStatus_GhostSessionArchivesAfterSync(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	sessions := []*store.Session{
-		{
-			ID: "claude:repo:error", Agent: "claude", Repository: "a/b", SessionID: "error",
-			Status: "error", BlockedReason: "rate_limit", Alive: true, ZellijSession: "missing-error",
-			RuntimeStatus: "running", LastActive: time.Now(),
-		},
-		{
-			ID: "claude:repo:blocked", Agent: "claude", Repository: "a/b", SessionID: "blocked",
-			Status: "blocked", BlockedReason: "awaiting_input", Alive: true, ZellijSession: "missing-blocked",
-			RuntimeStatus: "running", LastActive: time.Now(),
-		},
-		{
-			ID: "claude:repo:active", Agent: "claude", Repository: "a/b", SessionID: "active",
-			Status: "active", Alive: true, ZellijSession: "missing-active",
-			RuntimeStatus: "running", LastActive: time.Now(),
-		},
-		{
-			ID: "claude:repo:idle", Agent: "claude", Repository: "a/b", SessionID: "idle",
-			Status: "idle", Alive: true, ZellijSession: "missing-idle",
-			RuntimeStatus: "running", LastActive: time.Now(),
-		},
-	}
-	for _, sess := range sessions {
-		if err := store.UpsertSession(db, sess); err != nil {
-			t.Fatalf("UpsertSession(%s): %v", sess.ID, err)
-		}
-	}
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "idle", Alive: true, ZellijSession: "missing-session",
+		LastActive: time.Now(),
+	})
 
-	restore := mockZellijDetailed([]mux.ZellijSessionState{})
+	restore := mockZellijDetailed(nil)
 	defer restore()
 
 	syncRuntimeStatus(db)
 
-	for _, id := range []string{
-		"claude:repo:error",
-		"claude:repo:blocked",
-		"claude:repo:active",
-		"claude:repo:idle",
-	} {
-		s, err := store.GetSession(db, id)
-		if err != nil {
-			t.Fatalf("GetSession(%s): %v", id, err)
-		}
-		if s.RuntimeStatus != "gone" {
-			t.Errorf("%s runtime_status = %q, want %q", id, s.RuntimeStatus, "gone")
-		}
-		if s.Alive {
-			t.Errorf("%s alive should be false after gone sync", id)
-		}
-		if s.Status != "dead" {
-			t.Errorf("%s status = %q, want %q", id, s.Status, "dead")
-		}
-		if s.BlockedReason != "" {
-			t.Errorf("%s blocked_reason = %q, want empty", id, s.BlockedReason)
-		}
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if s1.Alive {
+		t.Fatal("alive should be false after sync marks ghost dead")
+	}
+	if s1.Status != "dead" {
+		t.Fatalf("status = %q, want dead", s1.Status)
+	}
+
+	archived, err := store.ArchiveDeadSessions(db)
+	if err != nil {
+		t.Fatalf("ArchiveDeadSessions: %v", err)
+	}
+	if archived != 1 {
+		t.Fatalf("ArchiveDeadSessions archived %d sessions, want 1", archived)
+	}
+	if _, err := store.GetSession(db, "claude:a/b:s1"); err == nil {
+		t.Fatal("ghost session should be removed from active sessions table")
+	}
+	archivedSessions, err := store.ListArchivedSessions(db)
+	if err != nil {
+		t.Fatalf("ListArchivedSessions: %v", err)
+	}
+	if len(archivedSessions) != 1 {
+		t.Fatalf("expected 1 archived session, got %d", len(archivedSessions))
+	}
+	if archivedSessions[0].RuntimeStatus != "gone" {
+		t.Fatalf("archived runtime_status = %q, want gone", archivedSessions[0].RuntimeStatus)
 	}
 }
 
@@ -371,7 +361,7 @@ func TestSyncRuntimeStatus_NoMux(t *testing.T) {
 
 	orig := listZellijDetailed
 	listZellijDetailed = func() ([]mux.ZellijSessionState, error) {
-		return nil, nil
+		return nil, fmt.Errorf("mux unavailable")
 	}
 	defer func() { listZellijDetailed = orig }()
 
