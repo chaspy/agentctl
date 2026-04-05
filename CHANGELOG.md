@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.41] - 2026-04-06
+
+### Fixed
+
+- Sync `AGENTS.md` with `CLAUDE.md` (missed `Worker Instructions` section during rebase)
+
 ## [0.2.40] - 2026-04-06
 
 ### Added
