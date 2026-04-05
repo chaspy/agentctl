@@ -49,7 +49,8 @@ type Session struct {
 	ZellijSession   string
 	Status          string
 	BlockedReason   string
-	Alive           bool
+	DesiredState    string // "running", "stopped"
+	Alive           bool   // deprecated alias for DesiredState == "running"
 	LastMessage     string
 	LastRole        string
 	LastActive      time.Time
@@ -66,6 +67,19 @@ type Session struct {
 	UpdatedAt       time.Time
 }
 
+const (
+	DesiredStateRunning = "running"
+	DesiredStateStopped = "stopped"
+)
+
+// WantsRunning reports whether the user-intent state for this session is running.
+func (s Session) WantsRunning() bool {
+	if s.DesiredState != "" {
+		return s.DesiredState == DesiredStateRunning
+	}
+	return s.Alive
+}
+
 // UpsertSession inserts or updates a session record.
 func UpsertSession(db *sql.DB, s *Session) error {
 	role := s.Role
@@ -80,9 +94,17 @@ func UpsertSession(db *sql.DB, s *Session) error {
 	if runtimeStatus == "" {
 		runtimeStatus = "gone"
 	}
+	desiredState := s.DesiredState
+	if desiredState == "" {
+		if s.Alive {
+			desiredState = DesiredStateRunning
+		} else {
+			desiredState = DesiredStateStopped
+		}
+	}
 	_, err := db.Exec(`
 		INSERT INTO sessions (id, agent, repository, session_id, cwd, git_branch,
-			zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+			zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
@@ -91,7 +113,7 @@ func UpsertSession(db *sql.DB, s *Session) error {
 			git_branch=excluded.git_branch,
 			zellij_session=CASE WHEN excluded.zellij_session != '' THEN excluded.zellij_session ELSE sessions.zellij_session END,
 			status=excluded.status, blocked_reason=excluded.blocked_reason,
-			alive=excluded.alive,
+			desired_state=excluded.desired_state,
 			last_message=excluded.last_message, last_role=excluded.last_role,
 			last_active=excluded.last_active,
 			pr_number=CASE WHEN excluded.pr_number IS NOT NULL AND excluded.pr_number != 0 THEN excluded.pr_number ELSE sessions.pr_number END,
@@ -105,7 +127,7 @@ func UpsertSession(db *sql.DB, s *Session) error {
 			runtime_status=excluded.runtime_status,
 			updated_at=CURRENT_TIMESTAMP`,
 		s.ID, s.Agent, s.Repository, s.SessionID, s.CWD, s.GitBranch,
-		s.ZellijSession, s.Status, s.BlockedReason, s.Alive, s.LastMessage, s.LastRole, s.LastActive,
+		s.ZellijSession, s.Status, s.BlockedReason, desiredState, s.LastMessage, s.LastRole, s.LastActive,
 		s.PRNumber, s.PRURL, s.PRState, s.TaskSummary, role, s.Archived, s.IsLoop, permLevel, runtimeStatus)
 	return err
 }
@@ -113,20 +135,20 @@ func UpsertSession(db *sql.DB, s *Session) error {
 // GetSession retrieves a session by ID.
 func GetSession(db *sql.DB, id string) (*Session, error) {
 	s := &Session{}
-	var alive, archived, isLoop int
+	var archived, isLoop int
 	var prNumber sql.NullInt64
 	var lastActive sql.NullTime
 	err := db.QueryRow(`SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions WHERE id = ?`, id).Scan(
 		&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
-		&s.ZellijSession, &s.Status, &s.BlockedReason, &alive, &s.LastMessage, &s.LastRole, &lastActive,
+		&s.ZellijSession, &s.Status, &s.BlockedReason, &s.DesiredState, &s.LastMessage, &s.LastRole, &lastActive,
 		&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &s.PermissionLevel, &s.RuntimeStatus, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
-	s.Alive = alive != 0
+	s.Alive = s.WantsRunning()
 	s.Archived = archived != 0
 	s.IsLoop = isLoop != 0
 	if prNumber.Valid {
@@ -141,7 +163,7 @@ func GetSession(db *sql.DB, id string) (*Session, error) {
 // ListSessions returns all sessions ordered by last_active descending.
 func ListSessions(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions ORDER BY last_active DESC`)
 }
@@ -149,7 +171,7 @@ func ListSessions(db *sql.DB) ([]Session, error) {
 // ListActiveSessions returns non-archived sessions ordered by last_active descending.
 func ListActiveSessions(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions WHERE archived = 0 ORDER BY last_active DESC`)
 }
@@ -157,29 +179,29 @@ func ListActiveSessions(db *sql.DB) ([]Session, error) {
 // ListSessionsByStatus returns sessions with the given status.
 func ListSessionsByStatus(db *sql.DB, status string) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions WHERE status = ? ORDER BY last_active DESC`, status)
 }
 
 // ListSessionsByAlive returns sessions filtered by alive status.
 func ListSessionsByAlive(db *sql.DB, alive bool) ([]Session, error) {
-	aliveInt := 0
+	desiredState := DesiredStateStopped
 	if alive {
-		aliveInt = 1
+		desiredState = DesiredStateRunning
 	}
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
-		FROM sessions WHERE alive = ? ORDER BY last_active DESC`, aliveInt)
+		FROM sessions WHERE desired_state = ? ORDER BY last_active DESC`, desiredState)
 }
 
 // ListAliveSessionsWithPR returns alive sessions that have a pr_url set.
 func ListAliveSessionsWithPR(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
-		FROM sessions WHERE alive = 1 AND pr_url != '' ORDER BY last_active DESC`)
+		FROM sessions WHERE desired_state = 'running' AND pr_url != '' ORDER BY last_active DESC`)
 }
 
 // ArchiveSession sets archived=1 for the given session ID.
@@ -197,8 +219,8 @@ func UnarchiveSession(db *sql.DB, id string) error {
 // MarkStaleSessionsDead marks sessions not in scannedIDs as dead and not alive.
 func MarkStaleSessionsDead(db *sql.DB, scannedIDs []string) error {
 	if len(scannedIDs) == 0 {
-		_, err := db.Exec(`UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP
-			WHERE archived = 0 AND alive = 1`)
+		_, err := db.Exec(`UPDATE sessions SET desired_state = 'stopped', status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP
+			WHERE archived = 0 AND desired_state = 'running'`)
 		return err
 	}
 	placeholders := ""
@@ -210,8 +232,8 @@ func MarkStaleSessionsDead(db *sql.DB, scannedIDs []string) error {
 		placeholders += "?"
 		args[i] = id
 	}
-	_, err := db.Exec(`UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP
-		WHERE archived = 0 AND alive = 1 AND id NOT IN (`+placeholders+`)`, args...)
+	_, err := db.Exec(`UPDATE sessions SET desired_state = 'stopped', status = 'dead', blocked_reason = '', updated_at = CURRENT_TIMESTAMP
+		WHERE archived = 0 AND desired_state = 'running' AND id NOT IN (`+placeholders+`)`, args...)
 	return err
 }
 
@@ -219,9 +241,9 @@ func MarkStaleSessionsDead(db *sql.DB, scannedIDs []string) error {
 // Returns the first matching alive session, or any session if no alive one exists.
 func FindSessionByCWD(db *sql.DB, cwd string) (*Session, error) {
 	sessions, err := querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
-		FROM sessions WHERE cwd = ? ORDER BY alive DESC, last_active DESC LIMIT 1`, cwd)
+		FROM sessions WHERE cwd = ? ORDER BY CASE WHEN desired_state = 'running' THEN 1 ELSE 0 END DESC, last_active DESC LIMIT 1`, cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +256,7 @@ func FindSessionByCWD(db *sql.DB, cwd string) (*Session, error) {
 // FindSessionByRepository finds sessions whose repository contains the query (case-insensitive).
 func FindSessionByRepository(db *sql.DB, query string) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions WHERE repository LIKE '%' || ? || '%' ORDER BY last_active DESC`, query)
 }
@@ -242,7 +264,7 @@ func FindSessionByRepository(db *sql.DB, query string) ([]Session, error) {
 // FindSessionByZellijSession finds sessions whose zellij_session contains the query (case-insensitive).
 func FindSessionByZellijSession(db *sql.DB, query string) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions WHERE LOWER(zellij_session) LIKE '%' || LOWER(?) || '%' ORDER BY last_active DESC`, query)
 }
@@ -302,10 +324,10 @@ func MoveToArchive(db *sql.DB, id string) error {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(`INSERT OR REPLACE INTO sessions_archive (id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at, archived_at)
 		SELECT id, agent, repository, session_id, cwd, git_branch,
-			zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+			zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at, CURRENT_TIMESTAMP
 		FROM sessions WHERE id = ?`, id)
 	if err != nil {
@@ -320,7 +342,7 @@ func MoveToArchive(db *sql.DB, id string) error {
 	return tx.Commit()
 }
 
-// ArchiveDeadSessions moves all sessions with alive=0 from sessions to sessions_archive.
+// ArchiveDeadSessions moves stopped sessions that are confirmed gone to sessions_archive.
 // Returns the number of sessions archived.
 func ArchiveDeadSessions(db *sql.DB) (int, error) {
 	tx, err := db.Begin()
@@ -330,19 +352,19 @@ func ArchiveDeadSessions(db *sql.DB) (int, error) {
 	defer tx.Rollback()
 
 	result, err := tx.Exec(`INSERT OR REPLACE INTO sessions_archive (id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at, archived_at)
 		SELECT id, agent, repository, session_id, cwd, git_branch,
-			zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+			zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at, CURRENT_TIMESTAMP
-		FROM sessions WHERE alive = 0`)
+		FROM sessions WHERE desired_state = 'stopped' AND runtime_status = 'gone'`)
 	if err != nil {
 		return 0, err
 	}
 
 	count, _ := result.RowsAffected()
 
-	_, err = tx.Exec("DELETE FROM sessions WHERE alive = 0")
+	_, err = tx.Exec("DELETE FROM sessions WHERE desired_state = 'stopped' AND runtime_status = 'gone'")
 	if err != nil {
 		return 0, err
 	}
@@ -353,7 +375,7 @@ func ArchiveDeadSessions(db *sql.DB) (int, error) {
 // ListArchivedSessions returns all sessions from the archive table.
 func ListArchivedSessions(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions_archive ORDER BY last_active DESC`)
 }
@@ -361,12 +383,12 @@ func ListArchivedSessions(db *sql.DB) ([]Session, error) {
 // ListAllSessionsWithArchive returns sessions from both tables via UNION ALL.
 func ListAllSessionsWithArchive(db *sql.DB) ([]Session, error) {
 	return querySessions(db, `SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions
 		UNION ALL
 		SELECT id, agent, repository, session_id, cwd, git_branch,
-		zellij_session, status, blocked_reason, alive, last_message, last_role, last_active,
+		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, permission_level, runtime_status, created_at, updated_at
 		FROM sessions_archive
 		ORDER BY last_active DESC`)
@@ -389,17 +411,17 @@ func querySessions(db *sql.DB, query string, args ...any) ([]Session, error) {
 	var sessions []Session
 	for rows.Next() {
 		var s Session
-		var alive, archived, isLoop int
+		var archived, isLoop int
 		var prNumber sql.NullInt64
 		var lastActive sql.NullTime
 		if err := rows.Scan(
 			&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
-			&s.ZellijSession, &s.Status, &s.BlockedReason, &alive, &s.LastMessage, &s.LastRole, &lastActive,
+			&s.ZellijSession, &s.Status, &s.BlockedReason, &s.DesiredState, &s.LastMessage, &s.LastRole, &lastActive,
 			&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &s.PermissionLevel, &s.RuntimeStatus, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
-		s.Alive = alive != 0
+		s.Alive = s.WantsRunning()
 		s.Archived = archived != 0
 		s.IsLoop = isLoop != 0
 		if prNumber.Valid {

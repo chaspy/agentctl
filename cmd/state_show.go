@@ -31,6 +31,7 @@ type stateShowSession struct {
 	Branch         string    `json:"branch"`
 	Status         string    `json:"status"`
 	BlockedReason  string    `json:"blocked_reason,omitempty"`
+	DesiredState   string    `json:"desired_state"`
 	Alive          bool      `json:"alive"`
 	RuntimeStatus  string    `json:"runtime_status"`
 	ZellijSession  string    `json:"zellij_session,omitempty"`
@@ -98,12 +99,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("=== Sessions (%d active, %d archived) ===\n", report.Summary.ActiveSessions, report.Summary.ArchivedSessions)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tALIVE\tHEALTH\tLAST ACTIVE\tPR\tTASK")
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
-		alive := "no"
-		if s.Alive {
-			alive = "yes"
-		}
 		age := "-"
 		if !s.LastActive.IsZero() {
 			age = formatAge(time.Since(s.LastActive))
@@ -134,8 +131,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if pr == "" {
 			pr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			s.Agent, s.Repository, branch, status, alive, health, age, pr, task)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.Agent, s.Repository, branch, status, s.DesiredState, s.RuntimeStatus, health, age, pr, task)
 	}
 	w.Flush()
 
@@ -233,7 +230,7 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			dupCount = duplicateCounts[dupGroup]
 			duplicate = dupCount > 1
 		}
-		ghost := s.Alive && s.RuntimeStatus != "running"
+		ghost := s.WantsRunning() && s.RuntimeStatus != "running"
 
 		health := []string{}
 		switch s.Status {
@@ -244,7 +241,7 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			health = append(health, "error")
 			report.Summary.ErrorSessions++
 		}
-		if !s.Alive {
+		if !s.WantsRunning() {
 			report.Summary.DeadSessions++
 		}
 		if ghost {
@@ -267,7 +264,8 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			Branch:         branch,
 			Status:         s.Status,
 			BlockedReason:  s.BlockedReason,
-			Alive:          s.Alive,
+			DesiredState:   s.DesiredState,
+			Alive:          s.WantsRunning(),
 			RuntimeStatus:  s.RuntimeStatus,
 			ZellijSession:  s.ZellijSession,
 			TaskSummary:    s.TaskSummary,

@@ -199,7 +199,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			GitBranch:     spawnBranch,
 			ZellijSession: sessionName,
 			Status:        "active",
-			Alive:         true,
+			DesiredState:  store.DesiredStateRunning,
 			Role:          "worker",
 			IsLoop:        spawnLoop,
 		})

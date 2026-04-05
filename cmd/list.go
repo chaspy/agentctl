@@ -100,7 +100,7 @@ func runListFromDB() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST ACTIVE\tALIVE\tSTATUS\tROLE\tPR\tLAST MESSAGE")
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST ACTIVE\tDESIRED\tRUNTIME\tSTATUS\tROLE\tPR\tLAST MESSAGE")
 
 	for _, s := range filtered {
 		age := formatAge(time.Since(s.LastActive))
@@ -112,9 +112,9 @@ func runListFromDB() error {
 		if branch == "" {
 			branch = "-"
 		}
-		alive := "no"
-		if s.Alive {
-			alive = "yes"
+		desiredState := s.DesiredState
+		if desiredState == "" {
+			desiredState = store.DesiredStateStopped
 		}
 		role := s.Role
 		if role == "" {
@@ -132,12 +132,13 @@ func runListFromDB() error {
 			pr = "-"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent,
 			s.Repository,
 			branch,
 			age,
-			alive,
+			desiredState,
+			s.RuntimeStatus,
 			status,
 			role,
 			pr,

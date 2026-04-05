@@ -204,7 +204,7 @@ func logKillAction(sessionName string) {
 	if db, err := store.Open(""); err == nil {
 		defer db.Close()
 		_, _ = db.Exec(
-			"UPDATE sessions SET alive = 0, runtime_status = 'gone', status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE zellij_session = ?",
+			"UPDATE sessions SET desired_state = 'stopped', runtime_status = 'gone', status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE zellij_session = ?",
 			sessionName,
 		)
 		_ = store.LogAction(db, &store.Action{

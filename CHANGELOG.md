@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.38] - 2026-04-06
+
+### Changed
+
+- `sessions` / `sessions_archive` の `alive` を `desired_state` (`running` / `stopped`) に移行し、spawn / kill の意思と `runtime_status` の観測結果を分離
+- `state sync` は `runtime_status` のみ更新するように変更し、zellij 未検出だけでセッションを dead 扱いしないよう修正
+- `ArchiveDeadSessions` は `desired_state='stopped'` かつ `runtime_status='gone'` のセッションだけを退避するように変更
+- `list` と `state show` は `desired_state` と `runtime_status` を別列で表示するように更新
+
 ## [0.2.36] - 2026-04-06
 
 ### Added

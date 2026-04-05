@@ -153,7 +153,7 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		if statusMsg == "" {
 			statusMsg = jsonl.LastMessage
 		}
-		status := session.DetectStatus(statusMsg, jsonl.LastRole, dbSess.Alive, jsonl.ErrorType, jsonl.IsAPIError)
+		status := session.DetectStatus(statusMsg, jsonl.LastRole, dbSess.WantsRunning(), jsonl.ErrorType, jsonl.IsAPIError)
 
 		role := dbSess.Role
 		if role == "" {
@@ -439,26 +439,26 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 		zellijMap[strings.ToLower(zs.Name)] = zellijState{name: zs.Name, exited: zs.Exited}
 	}
 
-	// Step 1: Update runtime_status for all alive=1 DB sessions
+	// Step 1: Update runtime_status for all desired_state=running DB sessions
 	aliveSessions, _ := store.ListSessionsByAlive(db, true)
 	existingAlive := make(map[string]store.Session, len(aliveSessions))
 	for _, s := range aliveSessions {
 		existingAlive[strings.ToLower(s.ZellijSession)] = s
 		zellijName := s.ZellijSession
 		if zellijName == "" {
-			// zellij_session empty means "location unknown", not "dead" — preserve alive, mark unknown.
+			// zellij_session empty means "location unknown", not "dead" — preserve desired_state, mark unknown.
 			db.Exec("UPDATE sessions SET runtime_status = 'unknown', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			continue
 		}
 
 		if zs, found := zellijMap[strings.ToLower(zellijName)]; found {
 			if zs.exited {
-				db.Exec("UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', runtime_status = 'exited', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+				db.Exec("UPDATE sessions SET runtime_status = 'exited', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			} else {
 				db.Exec("UPDATE sessions SET runtime_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			}
 		} else {
-			db.Exec("UPDATE sessions SET alive = 0, status = 'dead', blocked_reason = '', runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 		}
 	}
 
@@ -613,7 +613,7 @@ func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bo
 			GitBranch:     branch,
 			ZellijSession: zs.Name,
 			Status:        status,
-			Alive:         true,
+			DesiredState:  store.DesiredStateRunning,
 			LastActive:    time.Now(),
 			Role:          "worker",
 			RuntimeStatus: runtimeStatus,
