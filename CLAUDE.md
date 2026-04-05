@@ -108,6 +108,10 @@ After creating or updating a PR, you **must** verify the following before report
 PRs that include code changes must bump `VERSION` (patch increment) and add an entry to `CHANGELOG.md`.
 PRs that only modify workflow files (`.github/workflows/`) do not require a bump — `validate-version.yml` skips automatically.
 
+#### Worker Instructions
+
+commit & push する前に必ず `VERSION` ファイルを上げること。上げていない場合 CI の `check-version-bump` が fail する。現在のバージョンを `cat VERSION` で確認し、パッチバージョン（`x.y.Z`）を `+1` してから commit すること。
+
 ### DB Location
 
 SQLite database is stored at `~/.agentctl/manager.db` (override with `AGENTCTL_DB_PATH` env var).

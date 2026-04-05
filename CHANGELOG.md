@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.39] - 2026-04-06
+
+### Changed
+
+- Document the worker-side `VERSION` bump rule in `CLAUDE.md`
+- `agentctl spawn --message` now appends a `VERSION` bump reminder unless the message already mentions `VERSION`
+
 ## [0.2.38] - 2026-04-06
 
 ### Changed
