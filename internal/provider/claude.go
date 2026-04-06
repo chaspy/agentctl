@@ -58,7 +58,7 @@ func ScanClaudeSessions(maxAge time.Duration) ([]SessionInfo, error) {
 		_ = session.EnrichSession(&rawSessions[i])
 		sessions = append(sessions, SessionInfo{
 			Agent:           AgentClaude,
-			Repository:     rawSessions[i].Repository,
+			Repository:      rawSessions[i].Repository,
 			ModTime:         rawSessions[i].ModTime,
 			SessionID:       rawSessions[i].SessionID,
 			CWD:             rawSessions[i].CWD,
@@ -530,8 +530,30 @@ type ccusageResponse struct {
 	Blocks []ccusageBlock `json:"blocks"`
 }
 
-// ccusageActiveBlock runs ccusage and returns the active billing block, or nil on error.
+type ccusageCache struct {
+	Block    *ccusageBlock `json:"block"`
+	CachedAt int64         `json:"cached_at"`
+}
+
+const ccusageCacheTTL = 5 * time.Minute
+
+// ccusageActiveBlock returns the cached active billing block when it is fresh,
+// otherwise it refreshes the cache from ccusage. Errors preserve the previous nil fallback.
 func ccusageActiveBlock() *ccusageBlock {
+	if block, ok := readCCUsageCache(); ok {
+		return block
+	}
+
+	block, ok := fetchCCUsageActiveBlock()
+	if !ok {
+		return nil
+	}
+
+	writeCCUsageCache(block)
+	return block
+}
+
+func fetchCCUsageActiveBlock() (*ccusageBlock, bool) {
 	cmd := exec.Command("npx", "ccusage@latest", "blocks", "--json")
 	cmd.Env = append(os.Environ(), "NODE_NO_WARNINGS=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -541,18 +563,73 @@ func ccusageActiveBlock() *ccusageBlock {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	var resp ccusageResponse
 	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil
+		return nil, false
 	}
 
 	for i := range resp.Blocks {
 		if resp.Blocks[i].IsActive {
-			return &resp.Blocks[i]
+			return &resp.Blocks[i], true
 		}
 	}
-	return nil
+	return nil, true
+}
+
+func readCCUsageCache() (*ccusageBlock, bool) {
+	path, err := ccusageCachePath()
+	if err != nil {
+		return nil, false
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+
+	var cache ccusageCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, false
+	}
+	if cache.CachedAt <= 0 {
+		return nil, false
+	}
+
+	cachedAt := time.Unix(cache.CachedAt, 0)
+	if time.Since(cachedAt) > ccusageCacheTTL {
+		return nil, false
+	}
+
+	return cache.Block, true
+}
+
+func writeCCUsageCache(block *ccusageBlock) {
+	path, err := ccusageCachePath()
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+
+	payload, err := json.Marshal(ccusageCache{
+		Block:    block,
+		CachedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		return
+	}
+
+	_ = os.WriteFile(path, payload, 0o644)
+}
+
+func ccusageCachePath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".agentctl", "ccusage-cache.json"), nil
 }
