@@ -139,6 +139,27 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Pre-register session with lifecycle_state='spawning' so syncRuntimeStatus
+	// does not flag it as dead before zellij has started.
+	sessionID := fmt.Sprintf("%s:%s:zellij-%s", selectedAgent, repo.ShortName, sessionName)
+	if db, err := store.Open(""); err == nil {
+		_ = store.UpsertSession(db, &store.Session{
+			ID:             sessionID,
+			Agent:          string(selectedAgent),
+			Repository:     repo.ShortName,
+			SessionID:      "zellij-" + sessionName,
+			CWD:            workDir,
+			GitBranch:      spawnBranch,
+			ZellijSession:  sessionName,
+			Status:         "active",
+			DesiredState:   store.DesiredStateRunning,
+			LifecycleState: store.LifecycleStateSpawning,
+			Role:           "worker",
+			IsLoop:         spawnLoop,
+		})
+		db.Close()
+	}
+
 	// Create a new zellij session in the background.
 	// Uses `script` to allocate a PTY (zellij requires one) and
 	// `env -u ZELLIJ` to avoid "already inside zellij" errors.
@@ -190,20 +211,20 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			Content:    fmt.Sprintf("Spawned %s in %s (branch: %s)", sessionName, workDir, spawnBranch),
 		})
 
-		// Register session in DB so sync can find it by zellij_session
-		sessionID := fmt.Sprintf("%s:%s:zellij-%s", selectedAgent, repo.ShortName, sessionName)
+		// Update session to lifecycle_state='running' now that zellij session is up.
 		_ = store.UpsertSession(db, &store.Session{
-			ID:            sessionID,
-			Agent:         string(selectedAgent),
-			Repository:    repo.ShortName,
-			SessionID:     "zellij-" + sessionName,
-			CWD:           workDir,
-			GitBranch:     spawnBranch,
-			ZellijSession: sessionName,
-			Status:        "active",
-			DesiredState:  store.DesiredStateRunning,
-			Role:          "worker",
-			IsLoop:        spawnLoop,
+			ID:             sessionID,
+			Agent:          string(selectedAgent),
+			Repository:     repo.ShortName,
+			SessionID:      "zellij-" + sessionName,
+			CWD:            workDir,
+			GitBranch:      spawnBranch,
+			ZellijSession:  sessionName,
+			Status:         "active",
+			DesiredState:   store.DesiredStateRunning,
+			LifecycleState: store.LifecycleStateRunning,
+			Role:           "worker",
+			IsLoop:         spawnLoop,
 		})
 
 		if spawnLoop {
