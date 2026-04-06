@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.42] - 2026-04-06
+
+### Fixed
+
+- Bump VERSION to 0.2.42 after rebase on main (0.2.41)
+
 ## [0.2.41] - 2026-04-06
 
 ### Fixed
