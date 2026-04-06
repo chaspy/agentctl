@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.43] - 2026-04-06
+
+### Added
+
+- `job add --action command`: run arbitrary shell commands as scheduled jobs
+- `job add --cwd`: working directory for command jobs
+- `job add --timeout`: timeout in seconds for command jobs (default: 600)
+- DB migration V16: adds `cwd` and `timeout` columns to `jobs` table, expands `action` CHECK constraint to include `command`
+
 ## [0.2.42] - 2026-04-06
 
 ### Fixed

@@ -88,8 +88,11 @@ func runJobSchedulerOnce(db *sql.DB, now time.Time) (int, int, error) {
 
 func runScheduledJob(db *sql.DB, job *store.Job) error {
 	target := job.Repo
-	if job.Action == "send" {
+	switch job.Action {
+	case "send":
 		target = job.Session
+	case "command":
+		target = job.Instruction
 	}
 	jobSchedulerLogger("executing job %q (action=%s, target=%s)\n", job.Name, job.Action, target)
 

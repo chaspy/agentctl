@@ -18,6 +18,7 @@ var migrations = []string{
 	migrationV13,
 	migrationV14,
 	migrationV15,
+	migrationV16,
 }
 
 // Migrate applies all pending schema migrations.
@@ -277,4 +278,28 @@ CREATE TABLE IF NOT EXISTS job_locks (
 	locked_by   TEXT NOT NULL,
 	FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
 );
+`
+
+const migrationV16 = `
+ALTER TABLE jobs RENAME TO jobs_v15;
+CREATE TABLE IF NOT EXISTS jobs (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	name        TEXT NOT NULL UNIQUE,
+	schedule    TEXT NOT NULL,
+	action      TEXT NOT NULL CHECK(action IN ('spawn', 'send', 'command')),
+	repo        TEXT NOT NULL DEFAULT '',
+	session     TEXT NOT NULL DEFAULT '',
+	branch      TEXT NOT NULL DEFAULT '',
+	agent       TEXT NOT NULL DEFAULT '',
+	instruction TEXT NOT NULL,
+	cwd         TEXT NOT NULL DEFAULT '',
+	timeout     INTEGER NOT NULL DEFAULT 600,
+	enabled     INTEGER NOT NULL DEFAULT 1,
+	created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO jobs (id, name, schedule, action, repo, session, branch, agent, instruction, cwd, timeout, enabled, created_at, updated_at)
+	SELECT id, name, schedule, action, repo, session, branch, agent, instruction, '', 600, enabled, created_at, updated_at FROM jobs_v15;
+DROP TABLE jobs_v15;
+CREATE INDEX IF NOT EXISTS idx_jobs_enabled_created_at ON jobs(enabled, created_at);
 `
