@@ -444,6 +444,14 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 	existingAlive := make(map[string]store.Session, len(aliveSessions))
 	for _, s := range aliveSessions {
 		existingAlive[strings.ToLower(s.ZellijSession)] = s
+
+		// Skip dead-detection for sessions that are in transition: spawning (zellij not yet
+		// started) or killing (zellij session being torn down). Marking these as 'gone'
+		// would be a false positive.
+		if s.LifecycleState == store.LifecycleStateSpawning || s.LifecycleState == store.LifecycleStateKilling {
+			continue
+		}
+
 		zellijName := s.ZellijSession
 		if zellijName == "" {
 			// zellij_session empty means "location unknown", not "dead" — preserve desired_state, mark unknown.

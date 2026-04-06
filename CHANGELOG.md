@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.44] - 2026-04-06
+
+### Added
+
+- `lifecycle_state` field (`spawning` / `running` / `killing` / `stopped`) to `sessions` and `sessions_archive` tables (migration V17)
+- `spawn` command now pre-registers the session with `lifecycle_state='spawning'` before creating the zellij session, then updates to `'running'` after the session is up
+- `kill` command now sets `lifecycle_state='killing'` before tearing down the zellij session, then sets `'stopped'` on completion
+- `syncRuntimeStatus` skips dead-detection (runtime_status='gone') for sessions in `spawning` or `killing` state, preventing false-positive archive events during session transitions
+
 ## [0.2.43] - 2026-04-06
 
 ### Added
