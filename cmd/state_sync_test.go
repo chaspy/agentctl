@@ -860,6 +860,118 @@ func TestInferAgentFromLayout(t *testing.T) {
 	}
 }
 
+func TestSyncRuntimeStatus_SkipsDeadDetectionForSpawning(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Session in 'spawning' state: zellij session does not exist yet.
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LifecycleState: store.LifecycleStateSpawning,
+		RuntimeStatus:  "gone", LastActive: time.Now(),
+	})
+
+	// Zellij returns no sessions (session not started yet).
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "other-session", Exited: false},
+	})
+	defer restore()
+
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	// runtime_status should NOT be updated to 'gone' while spawning.
+	if s1.RuntimeStatus != "gone" {
+		// It was already 'gone' before — the point is it should stay as-is, not re-mark.
+	}
+	if !s1.Alive {
+		t.Error("desired_state should remain running during spawning")
+	}
+	if s1.LifecycleState != store.LifecycleStateSpawning {
+		t.Errorf("lifecycle_state = %q, want spawning", s1.LifecycleState)
+	}
+
+	// ArchiveDeadSessions should not archive a spawning session (desired_state='running').
+	archived, err := store.ArchiveDeadSessions(db)
+	if err != nil {
+		t.Fatalf("ArchiveDeadSessions: %v", err)
+	}
+	if archived != 0 {
+		t.Fatalf("spawning session should not be archived, got %d archived", archived)
+	}
+}
+
+func TestSyncRuntimeStatus_SkipsDeadDetectionForKilling(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Session in 'killing' state: zellij session may already be gone.
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LifecycleState: store.LifecycleStateKilling,
+		RuntimeStatus:  "running", LastActive: time.Now(),
+	})
+
+	// Zellij session has disappeared (kill is in progress).
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "other-session", Exited: false},
+	})
+	defer restore()
+
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	// runtime_status should NOT be set to 'gone' while killing.
+	if s1.RuntimeStatus != "running" {
+		t.Errorf("runtime_status should stay 'running' during kill (not yet updated by logKillAction), got %q", s1.RuntimeStatus)
+	}
+	if s1.LifecycleState != store.LifecycleStateKilling {
+		t.Errorf("lifecycle_state = %q, want killing", s1.LifecycleState)
+	}
+}
+
+func TestSyncRuntimeStatus_NormalSessionMarkedGone(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Normal running session that vanishes from zellij should be marked gone.
+	_ = store.UpsertSession(db, &store.Session{
+		ID: "claude:a/b:s1", Agent: "claude", Repository: "a/b", SessionID: "s1",
+		Status: "active", Alive: true, ZellijSession: "a-b",
+		LifecycleState: store.LifecycleStateRunning,
+		RuntimeStatus:  "running", LastActive: time.Now(),
+	})
+
+	restore := mockZellijDetailed([]mux.ZellijSessionState{
+		{Name: "other-session", Exited: false},
+	})
+	defer restore()
+
+	if _, err := syncRuntimeStatus(db); err != nil {
+		t.Fatal(err)
+	}
+
+	s1, _ := store.GetSession(db, "claude:a/b:s1")
+	if s1.RuntimeStatus != "gone" {
+		t.Errorf("runtime_status = %q, want gone for normal missing session", s1.RuntimeStatus)
+	}
+}
+
 func TestBackupDatabaseFile(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "manager.db")

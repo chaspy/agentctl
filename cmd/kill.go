@@ -65,6 +65,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 	// Exact match first
 	for _, s := range sessions {
 		if s == query {
+			markSessionKilling(s)
 			if err := killSessionAndWorktree(s); err != nil {
 				return err
 			}
@@ -89,6 +90,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("ambiguous query %q, matches: %s", query, strings.Join(candidates, ", "))
 	}
 
+	markSessionKilling(candidates[0])
 	if err := killSessionAndWorktree(candidates[0]); err != nil {
 		return err
 	}
@@ -199,12 +201,23 @@ func killSessionAndWorktree(name string) error {
 	return nil
 }
 
+// markSessionKilling sets lifecycle_state='killing' in the DB before the kill starts.
+func markSessionKilling(sessionName string) {
+	if db, err := store.Open(""); err == nil {
+		defer db.Close()
+		_, _ = db.Exec(
+			"UPDATE sessions SET lifecycle_state = 'killing', updated_at = CURRENT_TIMESTAMP WHERE zellij_session = ?",
+			sessionName,
+		)
+	}
+}
+
 // logKillAction logs a kill action to the database (fire-and-forget).
 func logKillAction(sessionName string) {
 	if db, err := store.Open(""); err == nil {
 		defer db.Close()
 		_, _ = db.Exec(
-			"UPDATE sessions SET desired_state = 'stopped', runtime_status = 'gone', status = 'dead', updated_at = CURRENT_TIMESTAMP WHERE zellij_session = ?",
+			"UPDATE sessions SET desired_state = 'stopped', runtime_status = 'gone', status = 'dead', lifecycle_state = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE zellij_session = ?",
 			sessionName,
 		)
 		_ = store.LogAction(db, &store.Action{

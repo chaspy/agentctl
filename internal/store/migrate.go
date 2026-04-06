@@ -19,6 +19,7 @@ var migrations = []string{
 	migrationV14,
 	migrationV15,
 	migrationV16,
+	migrationV17,
 }
 
 // Migrate applies all pending schema migrations.
@@ -302,4 +303,12 @@ INSERT INTO jobs (id, name, schedule, action, repo, session, branch, agent, inst
 	SELECT id, name, schedule, action, repo, session, branch, agent, instruction, '', 600, enabled, created_at, updated_at FROM jobs_v15;
 DROP TABLE jobs_v15;
 CREATE INDEX IF NOT EXISTS idx_jobs_enabled_created_at ON jobs(enabled, created_at);
+`
+
+const migrationV17 = `
+ALTER TABLE sessions ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'running';
+ALTER TABLE sessions_archive ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'running';
+
+UPDATE sessions SET lifecycle_state = 'stopped' WHERE desired_state = 'stopped';
+UPDATE sessions_archive SET lifecycle_state = 'stopped' WHERE desired_state = 'stopped';
 `
