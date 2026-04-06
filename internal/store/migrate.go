@@ -17,6 +17,7 @@ var migrations = []string{
 	migrationV12,
 	migrationV13,
 	migrationV14,
+	migrationV15,
 }
 
 // Migrate applies all pending schema migrations.
@@ -238,4 +239,42 @@ SET desired_state = CASE CAST(desired_state AS TEXT)
 	WHEN '1' THEN 'running'
 	ELSE 'stopped'
 END;
+`
+
+const migrationV15 = `
+CREATE TABLE IF NOT EXISTS jobs (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	name        TEXT NOT NULL UNIQUE,
+	schedule    TEXT NOT NULL,
+	action      TEXT NOT NULL CHECK(action IN ('spawn', 'send')),
+	repo        TEXT NOT NULL DEFAULT '',
+	session     TEXT NOT NULL DEFAULT '',
+	branch      TEXT NOT NULL DEFAULT '',
+	agent       TEXT NOT NULL DEFAULT '',
+	instruction TEXT NOT NULL,
+	enabled     INTEGER NOT NULL DEFAULT 1,
+	created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_enabled_created_at ON jobs(enabled, created_at);
+
+CREATE TABLE IF NOT EXISTS job_runs (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	job_id       INTEGER NOT NULL,
+	started_at   TIMESTAMP NOT NULL,
+	finished_at  TIMESTAMP,
+	status       TEXT NOT NULL,
+	output       TEXT NOT NULL DEFAULT '',
+	FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_runs_job_started_at ON job_runs(job_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS job_locks (
+	job_id      INTEGER PRIMARY KEY,
+	locked_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	locked_by   TEXT NOT NULL,
+	FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
 `
