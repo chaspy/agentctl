@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.44] - 2026-04-06
+
+### Fixed
+
+- Cache `ccusageActiveBlock()` results for 5 minutes in `~/.agentctl/ccusage-cache.json` to avoid spawning `npx ccusage@latest` on every `agentctl rate` poll
+
 ## [0.2.43] - 2026-04-06
 
 ### Added
