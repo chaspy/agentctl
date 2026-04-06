@@ -537,20 +537,22 @@ type ccusageCache struct {
 
 const ccusageCacheTTL = 5 * time.Minute
 
-// ccusageActiveBlock returns the cached active billing block when it is fresh,
-// otherwise it refreshes the cache from ccusage. Errors preserve the previous nil fallback.
+// ccusageActiveBlock returns cached ccusage data and asks the background watcher
+// to refresh it when needed. It never shells out to ccusage directly from rate callers.
 func ccusageActiveBlock() *ccusageBlock {
 	if block, ok := readCCUsageCache(); ok {
+		ensureCCUsageWatcher()
 		return block
 	}
 
-	block, ok := fetchCCUsageActiveBlock()
-	if !ok {
-		return nil
+	ensureCCUsageWatcher()
+	if block, ok := waitForFreshCCUsageCache(ccusageWatcherStartupWait); ok {
+		return block
 	}
-
-	writeCCUsageCache(block)
-	return block
+	if block, ok := readCCUsageCacheWithMaxAge(ccusageCacheStaleMaxAge); ok {
+		return block
+	}
+	return nil
 }
 
 func fetchCCUsageActiveBlock() (*ccusageBlock, bool) {
@@ -580,6 +582,10 @@ func fetchCCUsageActiveBlock() (*ccusageBlock, bool) {
 }
 
 func readCCUsageCache() (*ccusageBlock, bool) {
+	return readCCUsageCacheWithMaxAge(ccusageCacheTTL)
+}
+
+func readCCUsageCacheWithMaxAge(maxAge time.Duration) (*ccusageBlock, bool) {
 	path, err := ccusageCachePath()
 	if err != nil {
 		return nil, false
@@ -599,7 +605,7 @@ func readCCUsageCache() (*ccusageBlock, bool) {
 	}
 
 	cachedAt := time.Unix(cache.CachedAt, 0)
-	if time.Since(cachedAt) > ccusageCacheTTL {
+	if time.Since(cachedAt) > maxAge {
 		return nil, false
 	}
 
