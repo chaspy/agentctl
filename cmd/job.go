@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -23,13 +26,16 @@ var (
 	jobAddBranch      string
 	jobAddAgent       string
 	jobAddInstruction string
+	jobAddCwd         string
+	jobAddTimeout     int
 	jobLogsLimit      int
 )
 
 var (
-	jobSpawnExecutor = executeJobSpawn
-	jobSendExecutor  = executeJobSend
-	nowFunc          = time.Now
+	jobSpawnExecutor   = executeJobSpawn
+	jobSendExecutor    = executeJobSend
+	jobCommandExecutor = executeJobCommand
+	nowFunc            = time.Now
 )
 
 const jobTestModeEnv = "AGENTCTL_JOB_TEST_MODE"
@@ -78,12 +84,14 @@ func init() {
 
 	jobAddCmd.Flags().StringVar(&jobAddName, "name", "", "Job name")
 	jobAddCmd.Flags().StringVar(&jobAddSchedule, "schedule", "", "Cron schedule")
-	jobAddCmd.Flags().StringVar(&jobAddAction, "action", "", "Job action: spawn or send")
+	jobAddCmd.Flags().StringVar(&jobAddAction, "action", "", "Job action: spawn, send, or command")
 	jobAddCmd.Flags().StringVar(&jobAddRepo, "repo", "", "Target repo for spawn jobs")
 	jobAddCmd.Flags().StringVar(&jobAddSession, "session", "", "Target session for send jobs")
 	jobAddCmd.Flags().StringVar(&jobAddBranch, "branch", "", "Branch for spawn jobs")
 	jobAddCmd.Flags().StringVar(&jobAddAgent, "agent", "", "Agent for spawn jobs")
 	jobAddCmd.Flags().StringVar(&jobAddInstruction, "instruction", "", "Instruction to execute")
+	jobAddCmd.Flags().StringVar(&jobAddCwd, "cwd", "", "Working directory for command jobs")
+	jobAddCmd.Flags().IntVar(&jobAddTimeout, "timeout", 600, "Timeout in seconds for command jobs")
 	jobAddCmd.MarkFlagRequired("name")
 	jobAddCmd.MarkFlagRequired("schedule")
 	jobAddCmd.MarkFlagRequired("action")
@@ -102,6 +110,8 @@ func runJobAdd(cmd *cobra.Command, args []string) error {
 		Branch:      strings.TrimSpace(jobAddBranch),
 		Agent:       strings.TrimSpace(jobAddAgent),
 		Instruction: strings.TrimSpace(jobAddInstruction),
+		Cwd:         strings.TrimSpace(jobAddCwd),
+		Timeout:     jobAddTimeout,
 		Enabled:     true,
 	}
 	if err := validateJob(job); err != nil {
@@ -142,8 +152,11 @@ func runJobList(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(w, "ID\tNAME\tSCHEDULE\tACTION\tTARGET\tENABLED")
 	for _, job := range jobs {
 		target := job.Repo
-		if job.Action == "send" {
+		switch job.Action {
+		case "send":
 			target = job.Session
+		case "command":
+			target = job.Instruction
 		}
 		enabled := "no"
 		if job.Enabled {
@@ -270,6 +283,8 @@ func executeStoredJob(job *store.Job) (string, error) {
 		return jobSpawnExecutor(job)
 	case "send":
 		return jobSendExecutor(job)
+	case "command":
+		return jobCommandExecutor(job)
 	default:
 		return "", fmt.Errorf("unsupported job action %q", job.Action)
 	}
@@ -326,6 +341,35 @@ func executeJobSend(job *store.Job) (string, error) {
 	return captureStdout(func() error {
 		return runSend(sendCmd, []string{job.Session, job.Instruction})
 	})
+}
+
+func executeJobCommand(job *store.Job) (string, error) {
+	if os.Getenv(jobTestModeEnv) != "" {
+		return fmt.Sprintf("[job-test-mode] command=%s cwd=%s timeout=%d",
+			job.Instruction, job.Cwd, job.Timeout), nil
+	}
+
+	timeout := time.Duration(job.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 600 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", job.Instruction)
+	if job.Cwd != "" {
+		cmd.Dir = job.Cwd
+	}
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Run(); err != nil {
+		return buf.String(), fmt.Errorf("command failed: %w", err)
+	}
+	return buf.String(), nil
 }
 
 func captureStdout(fn func() error) (string, error) {
@@ -389,8 +433,10 @@ func validateJob(job *store.Job) error {
 		if job.Session == "" {
 			return fmt.Errorf("--session is required for action=send")
 		}
+	case "command":
+		// instruction is already required globally
 	default:
-		return fmt.Errorf("--action must be spawn or send")
+		return fmt.Errorf("--action must be spawn, send, or command")
 	}
 
 	return nil

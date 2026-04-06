@@ -15,6 +15,8 @@ type Job struct {
 	Branch      string
 	Agent       string
 	Instruction string
+	Cwd         string
+	Timeout     int
 	Enabled     bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
@@ -40,9 +42,12 @@ func CreateJob(db *sql.DB, job *Job) error {
 	if job.Enabled {
 		enabled = 1
 	}
-	res, err := db.Exec(`INSERT INTO jobs (name, schedule, action, repo, session, branch, agent, instruction, enabled)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		job.Name, job.Schedule, job.Action, job.Repo, job.Session, job.Branch, job.Agent, job.Instruction, enabled)
+	if job.Timeout <= 0 {
+		job.Timeout = 600
+	}
+	res, err := db.Exec(`INSERT INTO jobs (name, schedule, action, repo, session, branch, agent, instruction, cwd, timeout, enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.Name, job.Schedule, job.Action, job.Repo, job.Session, job.Branch, job.Agent, job.Instruction, job.Cwd, job.Timeout, enabled)
 	if err != nil {
 		return err
 	}
@@ -51,12 +56,12 @@ func CreateJob(db *sql.DB, job *Job) error {
 }
 
 func ListJobs(db *sql.DB) ([]Job, error) {
-	return queryJobs(db, `SELECT id, name, schedule, action, repo, session, branch, agent, instruction, enabled, created_at, updated_at
+	return queryJobs(db, `SELECT id, name, schedule, action, repo, session, branch, agent, instruction, cwd, timeout, enabled, created_at, updated_at
 		FROM jobs ORDER BY id ASC`)
 }
 
 func GetJobByID(db *sql.DB, id int64) (*Job, error) {
-	jobs, err := queryJobs(db, `SELECT id, name, schedule, action, repo, session, branch, agent, instruction, enabled, created_at, updated_at
+	jobs, err := queryJobs(db, `SELECT id, name, schedule, action, repo, session, branch, agent, instruction, cwd, timeout, enabled, created_at, updated_at
 		FROM jobs WHERE id = ?`, id)
 	if err != nil {
 		return nil, err
@@ -68,7 +73,7 @@ func GetJobByID(db *sql.DB, id int64) (*Job, error) {
 }
 
 func GetJobByName(db *sql.DB, name string) (*Job, error) {
-	jobs, err := queryJobs(db, `SELECT id, name, schedule, action, repo, session, branch, agent, instruction, enabled, created_at, updated_at
+	jobs, err := queryJobs(db, `SELECT id, name, schedule, action, repo, session, branch, agent, instruction, cwd, timeout, enabled, created_at, updated_at
 		FROM jobs WHERE name = ?`, name)
 	if err != nil {
 		return nil, err
@@ -150,7 +155,7 @@ func queryJobs(db *sql.DB, query string, args ...any) ([]Job, error) {
 		var job Job
 		var enabled int
 		if err := rows.Scan(&job.ID, &job.Name, &job.Schedule, &job.Action, &job.Repo, &job.Session,
-			&job.Branch, &job.Agent, &job.Instruction, &enabled, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			&job.Branch, &job.Agent, &job.Instruction, &job.Cwd, &job.Timeout, &enabled, &job.CreatedAt, &job.UpdatedAt); err != nil {
 			return nil, err
 		}
 		job.Enabled = enabled != 0
