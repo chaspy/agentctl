@@ -356,6 +356,81 @@ func TestPermissionLevel(t *testing.T) {
 	}
 }
 
+func TestProtectedFlagPreservedAcrossUpsertAndArchive(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	s := &Session{
+		ID:            "codex:test:session-1",
+		Agent:         "codex",
+		Repository:    "test",
+		SessionID:     "codex-session-1",
+		CWD:           "/tmp/test",
+		GitBranch:     "main",
+		Status:        "active",
+		Alive:         true,
+		LastActive:    time.Now(),
+		IsProtected:   true,
+		RuntimeStatus: "running",
+	}
+	if err := UpsertSession(db, s); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	got, err := GetSession(db, s.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !got.IsProtected {
+		t.Fatalf("expected protected session after insert")
+	}
+
+	// Upsert without the flag should preserve the existing protected bit.
+	if err := UpsertSession(db, &Session{
+		ID:         s.ID,
+		Agent:      "codex",
+		Repository: "test",
+		SessionID:  "codex-session-1",
+		Status:     "idle",
+		Alive:      true,
+		LastActive: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertSession(update): %v", err)
+	}
+	got, err = GetSession(db, s.ID)
+	if err != nil {
+		t.Fatalf("GetSession(update): %v", err)
+	}
+	if !got.IsProtected {
+		t.Fatalf("expected protected bit to be preserved on upsert")
+	}
+
+	if err := MoveToArchive(db, s.ID); err != nil {
+		t.Fatalf("MoveToArchive: %v", err)
+	}
+	archived, err := ListArchivedSessions(db)
+	if err != nil {
+		t.Fatalf("ListArchivedSessions: %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("expected 1 archived session, got %d", len(archived))
+	}
+	if !archived[0].IsProtected {
+		t.Fatalf("expected protected bit to survive archive move")
+	}
+
+	bySessionID, err := GetSessionBySessionID(db, "codex-session-1")
+	if err != nil {
+		t.Fatalf("GetSessionBySessionID: %v", err)
+	}
+	if !bySessionID.IsProtected {
+		t.Fatalf("expected protected bit to survive session_id lookup")
+	}
+}
+
 func TestActionLog(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

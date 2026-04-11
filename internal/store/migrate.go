@@ -20,6 +20,7 @@ var migrations = []string{
 	migrationV15,
 	migrationV16,
 	migrationV17,
+	migrationV18,
 }
 
 // Migrate applies all pending schema migrations.
@@ -311,4 +312,9 @@ ALTER TABLE sessions_archive ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'r
 
 UPDATE sessions SET lifecycle_state = 'stopped' WHERE desired_state = 'stopped';
 UPDATE sessions_archive SET lifecycle_state = 'stopped' WHERE desired_state = 'stopped';
+`
+
+const migrationV18 = `
+ALTER TABLE sessions ADD COLUMN is_protected INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions_archive ADD COLUMN is_protected INTEGER NOT NULL DEFAULT 0;
 `
