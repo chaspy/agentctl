@@ -176,3 +176,44 @@ func TestBuildStateShowReportIncludesRecentActionMetadata(t *testing.T) {
 		t.Fatalf("token_burn = %d", action.TokenBurn)
 	}
 }
+
+func TestBuildStateShowReportIncludesQueuedAdoptions(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := store.CreateSessionAdoption(db, &store.SessionAdoption{
+		Agent:                 "codex",
+		Mux:                   "zellij",
+		ZellijSession:         "atama-codex-1733",
+		Repository:            "chaspy/agentctl",
+		CWD:                   "/tmp/atama-agentctl",
+		GitBranch:             "feat/protected-codex-adopt",
+		Strategy:              store.AdoptionStrategyProtected,
+		TargetPermissionLevel: store.PermissionSuggest,
+		Note:                  "protect before apply",
+	}); err != nil {
+		t.Fatalf("CreateSessionAdoption: %v", err)
+	}
+
+	report, err := buildStateShowReport(db)
+	if err != nil {
+		t.Fatalf("buildStateShowReport: %v", err)
+	}
+	if report.Summary.QueuedAdoptions != 1 {
+		t.Fatalf("queued_adoptions = %d, want 1", report.Summary.QueuedAdoptions)
+	}
+	if len(report.AdoptionQueue) != 1 {
+		t.Fatalf("adoption_queue len = %d, want 1", len(report.AdoptionQueue))
+	}
+
+	adoption := report.AdoptionQueue[0]
+	if adoption.ZellijSession != "atama-codex-1733" {
+		t.Fatalf("zellij_session = %q", adoption.ZellijSession)
+	}
+	if adoption.TargetPermission != "1 (suggest)" {
+		t.Fatalf("target_permission = %q", adoption.TargetPermission)
+	}
+}

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.47] - 2026-04-11
+
+### Added
+
+- `state adopt <zellij-session>` to queue a protected adoption plan for unmanaged Codex sessions without importing the live session
+- `session_adoptions` table (migration V19) to persist protected adoption metadata separately from active sessions
+- `state show` now reports queued adoption plans alongside active and archived sessions
+- `docs/protected-codex-adoption.md` describing the current protected-adoption workflow and its non-goals
+
 ## [0.2.45] - 2026-04-06
 
 ### Fixed
