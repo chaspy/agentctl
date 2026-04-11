@@ -16,6 +16,7 @@ import (
 type stateShowSummary struct {
 	ActiveSessions    int `json:"active_sessions"`
 	ArchivedSessions  int `json:"archived_sessions"`
+	QueuedAdoptions   int `json:"queued_adoptions"`
 	BlockedSessions   int `json:"blocked_sessions"`
 	ErrorSessions     int `json:"error_sessions"`
 	GhostSessions     int `json:"ghost_sessions"`
@@ -57,10 +58,27 @@ type stateShowAction struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type stateShowAdoption struct {
+	ID               int64     `json:"id"`
+	Agent            string    `json:"agent"`
+	Mux              string    `json:"mux"`
+	ZellijSession    string    `json:"zellij_session"`
+	ExternalSession  string    `json:"external_session_id,omitempty"`
+	Repository       string    `json:"repository,omitempty"`
+	Branch           string    `json:"branch,omitempty"`
+	CWD              string    `json:"cwd,omitempty"`
+	Strategy         string    `json:"strategy"`
+	TargetPermission string    `json:"target_permission"`
+	Status           string    `json:"status"`
+	Note             string    `json:"note,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
 type stateShowReport struct {
-	Summary       stateShowSummary   `json:"summary"`
-	Sessions      []stateShowSession `json:"sessions"`
-	RecentActions []stateShowAction  `json:"recent_actions,omitempty"`
+	Summary       stateShowSummary    `json:"summary"`
+	Sessions      []stateShowSession  `json:"sessions"`
+	AdoptionQueue []stateShowAdoption `json:"adoption_queue,omitempty"`
+	RecentActions []stateShowAction   `json:"recent_actions,omitempty"`
 }
 
 var stateShowCmd = &cobra.Command{
@@ -97,7 +115,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived) ===\n", report.Summary.ActiveSessions, report.Summary.ArchivedSessions)
+	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions) ===\n",
+		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
@@ -135,6 +154,29 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 			s.Agent, s.Repository, branch, status, s.DesiredState, s.RuntimeStatus, health, age, pr, task)
 	}
 	w.Flush()
+
+	if len(report.AdoptionQueue) > 0 {
+		fmt.Println("\n=== Queued Adoptions ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tAGENT\tMUX\tSESSION\tREPOSITORY\tBRANCH\tSTRATEGY\tPERMISSION\tNOTE")
+		for _, a := range report.AdoptionQueue {
+			repository := a.Repository
+			if repository == "" {
+				repository = "-"
+			}
+			branch := a.Branch
+			if branch == "" {
+				branch = "-"
+			}
+			note := a.Note
+			if note == "" {
+				note = "-"
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				a.ID, a.Agent, a.Mux, a.ZellijSession, repository, branch, a.Strategy, a.TargetPermission, note)
+		}
+		w.Flush()
+	}
 
 	// Active tasks
 	tasks, err := store.GetActiveTasks(db)
@@ -301,6 +343,29 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 		if count > 1 {
 			report.Summary.DuplicateGroups++
 		}
+	}
+
+	queuedAdoptions, err := store.ListQueuedSessionAdoptions(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing queued adoptions: %w", err)
+	}
+	report.Summary.QueuedAdoptions = len(queuedAdoptions)
+	for _, adoption := range queuedAdoptions {
+		report.AdoptionQueue = append(report.AdoptionQueue, stateShowAdoption{
+			ID:               adoption.ID,
+			Agent:            adoption.Agent,
+			Mux:              adoption.Mux,
+			ZellijSession:    adoption.ZellijSession,
+			ExternalSession:  adoption.ExternalSessionID,
+			Repository:       adoption.Repository,
+			Branch:           adoption.GitBranch,
+			CWD:              adoption.CWD,
+			Strategy:         adoption.Strategy,
+			TargetPermission: fmt.Sprintf("%d (%s)", adoption.TargetPermissionLevel, store.PermissionLabel(adoption.TargetPermissionLevel)),
+			Status:           adoption.Status,
+			Note:             adoption.Note,
+			CreatedAt:        adoption.CreatedAt,
+		})
 	}
 
 	return report, nil

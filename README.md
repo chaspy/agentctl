@@ -10,6 +10,7 @@ A CLI tool for managing multiple coding agent sessions (Claude Code, Codex CLI) 
 - **Monitoring** - Watch for session changes, auto-notify on new assistant responses
 - **Rate limit tracking** - Check Claude Code and Codex CLI rate limit status
 - **State persistence** - SQLite-backed state with session sync, task tracking, and action logging
+- **Protected adoption queue** - Stage unmanaged Codex sessions for later safe adoption without touching the live session immediately
 - **Handoff telemetry** - Persist route reason, handoff summary, and token burn for completed worker sessions
 - **PWA dashboard** - Web-based dashboard for mobile monitoring
 
@@ -81,6 +82,7 @@ agentctl serve
 | `preview <PR>` | Preview a pull request in a temporary worktree |
 | `serve` | Start PWA dashboard (default: port 8080) |
 | `state sync` | Sync live session data to SQLite and back up the DB |
+| `state adopt <zellij-session>` | Queue a protected adoption plan for an unmanaged Codex session |
 | `state import-from-zellij` | Rebuild DB session records from current zellij sessions |
 | `state show` | Show saved state from SQLite |
 | `state log` | Record or view action logs |
@@ -103,13 +105,16 @@ agentctl detects session status by analyzing the last JSONL message and process 
 
 ## State Management
 
-agentctl uses SQLite for persistent state. The database is stored at `~/.agentctl/manager.db` by default, and can be overridden with the `AGENTCTL_DB_PATH` environment variable. On first run, if the new location doesn't exist but `.claude/manager.db` does, the old database is automatically copied over. Each successful sync also writes a backup to `~/.agentctl/manager.db.bak` (or `<AGENTCTL_DB_PATH>.bak`), and `state import-from-zellij` can rebuild missing session records from live zellij sessions.
+agentctl uses SQLite for persistent state. The database is stored at `~/.agentctl/manager.db` by default, and can be overridden with the `AGENTCTL_DB_PATH` environment variable. On first run, if the new location doesn't exist but `.claude/manager.db` does, the old database is automatically copied over. Each successful sync also writes a backup to `~/.agentctl/manager.db.bak` (or `<AGENTCTL_DB_PATH>.bak`).
 
 - **Sessions**: Synced from live scans, preserving status history
+- **Queued adoptions**: Record protected adoption plans for unmanaged Codex sessions before any live import is attempted
 - **Tasks**: Track work items per session
 - **Actions**: Log decisions and events for auditability
 - **Handoffs**: Persist worker route reason, completion summary, and token burn in the action log
 - **Repo configs**: Per-repository settings (branching mode, preferred agent, descriptions)
+
+See [docs/protected-codex-adoption.md](docs/protected-codex-adoption.md) for the current protected-adoption workflow and its non-goals.
 
 ## Architecture
 

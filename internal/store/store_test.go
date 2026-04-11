@@ -475,6 +475,58 @@ func TestActionLog(t *testing.T) {
 	}
 }
 
+func TestSessionAdoptionCRUD(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	adoption := &SessionAdoption{
+		Agent:         "codex",
+		Mux:           "zellij",
+		ZellijSession: "atama-codex-1733",
+		Repository:    "chaspy/agentctl",
+		CWD:           "/tmp/atama-agentctl",
+		GitBranch:     "feat/protected-codex-adopt",
+		Note:          "protect before apply",
+	}
+	if err := CreateSessionAdoption(db, adoption); err != nil {
+		t.Fatalf("CreateSessionAdoption: %v", err)
+	}
+	if adoption.ID == 0 {
+		t.Fatal("CreateSessionAdoption should assign an ID")
+	}
+	if adoption.TargetPermissionLevel != PermissionSuggest {
+		t.Fatalf("default permission = %d, want %d", adoption.TargetPermissionLevel, PermissionSuggest)
+	}
+	if adoption.Strategy != AdoptionStrategyProtected {
+		t.Fatalf("default strategy = %q", adoption.Strategy)
+	}
+	if adoption.Status != AdoptionStatusQueued {
+		t.Fatalf("default status = %q", adoption.Status)
+	}
+
+	queued, err := ListQueuedSessionAdoptions(db)
+	if err != nil {
+		t.Fatalf("ListQueuedSessionAdoptions: %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued adoptions = %d, want 1", len(queued))
+	}
+	if queued[0].ZellijSession != adoption.ZellijSession {
+		t.Fatalf("zellij_session = %q", queued[0].ZellijSession)
+	}
+
+	found, err := GetQueuedSessionAdoptionByZellijSession(db, "zellij", "ATAMA-CODEX-1733")
+	if err != nil {
+		t.Fatalf("GetQueuedSessionAdoptionByZellijSession: %v", err)
+	}
+	if found.ID != adoption.ID {
+		t.Fatalf("adoption id = %d, want %d", found.ID, adoption.ID)
+	}
+}
+
 func TestListActiveSessions(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

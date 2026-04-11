@@ -21,6 +21,7 @@ var migrations = []string{
 	migrationV16,
 	migrationV17,
 	migrationV18,
+	migrationV19,
 }
 
 // Migrate applies all pending schema migrations.
@@ -317,4 +318,27 @@ UPDATE sessions_archive SET lifecycle_state = 'stopped' WHERE desired_state = 's
 const migrationV18 = `
 ALTER TABLE sessions ADD COLUMN is_protected INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions_archive ADD COLUMN is_protected INTEGER NOT NULL DEFAULT 0;
+`
+
+const migrationV19 = `
+CREATE TABLE IF NOT EXISTS session_adoptions (
+	id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent                   TEXT NOT NULL,
+	mux                     TEXT NOT NULL DEFAULT 'zellij' CHECK(mux IN ('zellij', 'tmux')),
+	zellij_session          TEXT NOT NULL DEFAULT '',
+	external_session_id     TEXT NOT NULL DEFAULT '',
+	repository              TEXT NOT NULL DEFAULT '',
+	cwd                     TEXT NOT NULL DEFAULT '',
+	git_branch              TEXT NOT NULL DEFAULT '',
+	strategy                TEXT NOT NULL DEFAULT 'protected' CHECK(strategy IN ('protected')),
+	target_permission_level INTEGER NOT NULL DEFAULT 1 CHECK(target_permission_level BETWEEN 1 AND 5),
+	status                  TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'applied', 'cancelled')),
+	managed_session_id      TEXT NOT NULL DEFAULT '',
+	note                    TEXT NOT NULL DEFAULT '',
+	created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_adoptions_status_created_at ON session_adoptions(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_adoptions_zellij_session ON session_adoptions(zellij_session);
 `
