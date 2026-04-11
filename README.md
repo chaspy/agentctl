@@ -76,6 +76,7 @@ agentctl serve
 | `monitor` | Poll all sessions and notify a target session on changes |
 | `rate` | Show rate limit status for Claude Code and Codex |
 | `spawn <repo>` | Create a new zellij session with optional worktree |
+| `adopt-zellij <session>` | Register an existing zellij session in SQLite without restarting it |
 | `kill <name>` | Terminate a session and clean up its worktree |
 | `resume <name>` | Resume a stopped session |
 | `preview <PR>` | Preview a pull request in a temporary worktree |

@@ -34,7 +34,11 @@ func TestIsJobDue(t *testing.T) {
 		t.Fatalf("GetJobByID: %v", err)
 	}
 
-	due, err := isJobDue(db, *storedJob, storedJob.CreatedAt.Add(6*time.Minute))
+	// Fix the base time so the test does not become flaky around cron boundaries.
+	baseTime := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
+	storedJob.CreatedAt = baseTime
+
+	due, err := isJobDue(db, *storedJob, baseTime.Add(6*time.Minute))
 	if err != nil {
 		t.Fatalf("isJobDue: %v", err)
 	}
@@ -42,7 +46,7 @@ func TestIsJobDue(t *testing.T) {
 		t.Fatal("job should be due after 6 minutes")
 	}
 
-	startedAt := storedJob.CreatedAt.Add(6 * time.Minute)
+	startedAt := baseTime.Add(6 * time.Minute)
 	run := &store.JobRun{
 		JobID:     job.ID,
 		StartedAt: startedAt,
