@@ -39,6 +39,22 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReplaceTaskProposalSnapshots: %v", err)
 	}
+	if err := store.CreateTaskProposalAdoption(db, &store.TaskProposalAdoption{
+		ProposalSnapshotID: "myassistant-create-repo-contract",
+		Source:             "reconcile",
+		ReportMode:         "read-only",
+		RepoRef:            "myassistant",
+		Repository:         "chaspy/myassistant",
+		Category:           "create_repo_contract",
+		Title:              "Create repo contract",
+		Objective:          "Add .agent/repo.yaml",
+		TaskType:           "docs",
+		Risk:               "low",
+		ApprovalStatus:     "not_required",
+		OperatorNote:       "carry forward after review",
+	}); err != nil {
+		t.Fatalf("CreateTaskProposalAdoption: %v", err)
+	}
 	_ = store.UpsertSession(db, &store.Session{
 		ID:            "claude:a/b:blocked",
 		Agent:         "claude",
@@ -110,6 +126,9 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	if report.Summary.TaskProposals != 1 {
 		t.Fatalf("task_proposals = %d, want 1", report.Summary.TaskProposals)
 	}
+	if report.Summary.QueuedProposalAdoptions != 1 {
+		t.Fatalf("queued_proposal_adoptions = %d, want 1", report.Summary.QueuedProposalAdoptions)
+	}
 	if report.Summary.BlockedSessions != 2 {
 		t.Fatalf("blocked_sessions = %d, want 2", report.Summary.BlockedSessions)
 	}
@@ -166,6 +185,12 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}
 	if dup1.DuplicateGroup != "dup-session" || dup2.DuplicateGroup != "dup-session" {
 		t.Fatalf("duplicate group mismatch: dup1=%q dup2=%q", dup1.DuplicateGroup, dup2.DuplicateGroup)
+	}
+	if len(report.ProposalAdoptionQueue) != 1 {
+		t.Fatalf("proposal_adoption_queue len = %d, want 1", len(report.ProposalAdoptionQueue))
+	}
+	if report.ProposalAdoptionQueue[0].ProposalSnapshot != "myassistant-create-repo-contract" {
+		t.Fatalf("proposal_snapshot_id = %q", report.ProposalAdoptionQueue[0].ProposalSnapshot)
 	}
 }
 

@@ -14,17 +14,18 @@ import (
 )
 
 type stateShowSummary struct {
-	ActiveSessions    int `json:"active_sessions"`
-	ArchivedSessions  int `json:"archived_sessions"`
-	QueuedAdoptions   int `json:"queued_adoptions"`
-	ManagedRepos      int `json:"managed_repos"`
-	TaskProposals     int `json:"task_proposals"`
-	BlockedSessions   int `json:"blocked_sessions"`
-	ErrorSessions     int `json:"error_sessions"`
-	GhostSessions     int `json:"ghost_sessions"`
-	DuplicateSessions int `json:"duplicate_sessions"`
-	DuplicateGroups   int `json:"duplicate_groups"`
-	DeadSessions      int `json:"dead_sessions"`
+	ActiveSessions          int `json:"active_sessions"`
+	ArchivedSessions        int `json:"archived_sessions"`
+	QueuedAdoptions         int `json:"queued_adoptions"`
+	ManagedRepos            int `json:"managed_repos"`
+	TaskProposals           int `json:"task_proposals"`
+	QueuedProposalAdoptions int `json:"queued_proposal_adoptions"`
+	BlockedSessions         int `json:"blocked_sessions"`
+	ErrorSessions           int `json:"error_sessions"`
+	GhostSessions           int `json:"ghost_sessions"`
+	DuplicateSessions       int `json:"duplicate_sessions"`
+	DuplicateGroups         int `json:"duplicate_groups"`
+	DeadSessions            int `json:"dead_sessions"`
 }
 
 type stateShowSession struct {
@@ -76,11 +77,27 @@ type stateShowAdoption struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+type stateShowProposalAdoption struct {
+	ID               int64    `json:"id"`
+	ProposalSnapshot string   `json:"proposal_snapshot_id"`
+	RepoRef          string   `json:"repo_ref"`
+	Repository       string   `json:"repository"`
+	Category         string   `json:"category"`
+	TaskType         string   `json:"task_type"`
+	Risk             string   `json:"risk"`
+	Status           string   `json:"status"`
+	ApprovalStatus   string   `json:"approval_status"`
+	OperatorNote     string   `json:"operator_note,omitempty"`
+	DesiredOutcome   []string `json:"desired_outcome,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+}
+
 type stateShowReport struct {
-	Summary       stateShowSummary    `json:"summary"`
-	Sessions      []stateShowSession  `json:"sessions"`
-	AdoptionQueue []stateShowAdoption `json:"adoption_queue,omitempty"`
-	RecentActions []stateShowAction   `json:"recent_actions,omitempty"`
+	Summary               stateShowSummary            `json:"summary"`
+	Sessions              []stateShowSession          `json:"sessions"`
+	AdoptionQueue         []stateShowAdoption         `json:"adoption_queue,omitempty"`
+	ProposalAdoptionQueue []stateShowProposalAdoption `json:"proposal_adoption_queue,omitempty"`
+	RecentActions         []stateShowAction           `json:"recent_actions,omitempty"`
 }
 
 var stateShowCmd = &cobra.Command{
@@ -117,8 +134,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d task proposals) ===\n",
-		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.TaskProposals)
+	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d task proposals, %d queued proposal adoptions) ===\n",
+		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
@@ -176,6 +193,21 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				a.ID, a.Agent, a.Mux, a.ZellijSession, repository, branch, a.Strategy, a.TargetPermission, note)
+		}
+		w.Flush()
+	}
+
+	if len(report.ProposalAdoptionQueue) > 0 {
+		fmt.Println("\n=== Queued Proposal Adoptions ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tSNAPSHOT\tREPO\tCATEGORY\tTASK_TYPE\tRISK\tAPPROVAL\tNOTE")
+		for _, a := range report.ProposalAdoptionQueue {
+			note := a.OperatorNote
+			if note == "" {
+				note = "-"
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				a.ID, a.ProposalSnapshot, a.RepoRef, a.Category, a.TaskType, a.Risk, a.ApprovalStatus, note)
 		}
 		w.Flush()
 	}
@@ -366,6 +398,28 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			TargetPermission: fmt.Sprintf("%d (%s)", adoption.TargetPermissionLevel, store.PermissionLabel(adoption.TargetPermissionLevel)),
 			Status:           adoption.Status,
 			Note:             adoption.Note,
+			CreatedAt:        adoption.CreatedAt,
+		})
+	}
+
+	queuedProposalAdoptions, err := store.ListQueuedTaskProposalAdoptions(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing queued task proposal adoptions: %w", err)
+	}
+	report.Summary.QueuedProposalAdoptions = len(queuedProposalAdoptions)
+	for _, adoption := range queuedProposalAdoptions {
+		report.ProposalAdoptionQueue = append(report.ProposalAdoptionQueue, stateShowProposalAdoption{
+			ID:               adoption.ID,
+			ProposalSnapshot: adoption.ProposalSnapshotID,
+			RepoRef:          adoption.RepoRef,
+			Repository:       adoption.Repository,
+			Category:         adoption.Category,
+			TaskType:         adoption.TaskType,
+			Risk:             adoption.Risk,
+			Status:           adoption.Status,
+			ApprovalStatus:   adoption.ApprovalStatus,
+			OperatorNote:     adoption.OperatorNote,
+			DesiredOutcome:   adoption.DesiredOutcome,
 			CreatedAt:        adoption.CreatedAt,
 		})
 	}

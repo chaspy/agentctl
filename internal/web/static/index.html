@@ -937,13 +937,14 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state, reconcile, proposals] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
     fetchJSON('/api/state'),
     fetchJSON('/api/reconcile'),
     fetchJSON('/api/proposals'),
+    fetchJSON('/api/proposal-adoptions'),
   ]);
 
   let html = '';
@@ -1072,6 +1073,26 @@ async function loadDatabase() {
         <td>${escapeHTML(proposal.risk || '')}</td>
         <td title="${escapeHTML(proposal.approvalReason || '')}">${escapeHTML(proposal.approvalStatus || 'unknown')}</td>
         <td>${escapeHTML(proposal.updatedAt || '-')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (proposalAdoptions && proposalAdoptions.length > 0) {
+    html += `<div class="db-section-title">Proposal Adoptions <span class="db-count">(${proposalAdoptions.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Snapshot</th><th>Repo</th><th>Category</th><th>Task Type</th><th>Risk</th><th>Status</th><th>Note</th><th>Created</th></tr></thead><tbody>';
+    for (const adoption of proposalAdoptions) {
+      html += `<tr>
+        <td>#${escapeHTML(String(adoption.id || ''))}</td>
+        <td>${escapeHTML(adoption.proposalSnapshotId || '')}</td>
+        <td>${escapeHTML(adoption.repoRef || '')}</td>
+        <td>${escapeHTML(adoption.category || '')}</td>
+        <td>${escapeHTML(adoption.taskType || '')}</td>
+        <td>${escapeHTML(adoption.risk || '')}</td>
+        <td title="${escapeHTML(adoption.approvalReason || '')}">${escapeHTML(adoption.status || 'queued')}</td>
+        <td>${escapeHTML(adoption.operatorNote || '-')}</td>
+        <td>${escapeHTML(adoption.createdAt || '-')}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';

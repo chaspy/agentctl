@@ -49,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/reconcile", s.handleReconcile)
 	mux.HandleFunc("/api/proposals", s.handleProposals)
+	mux.HandleFunc("/api/proposal-adoptions", s.handleProposalAdoptions)
 	mux.HandleFunc("/api/sync", s.handleSync)
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/sessions/messages", s.handleSessionMessages)
@@ -275,6 +276,31 @@ type proposalJSON struct {
 	UpdatedAt         string   `json:"updatedAt,omitempty"`
 }
 
+type proposalAdoptionJSON struct {
+	ID                 int64    `json:"id"`
+	ProposalSnapshotID string   `json:"proposalSnapshotId"`
+	Source             string   `json:"source"`
+	ReportMode         string   `json:"reportMode"`
+	RepoRef            string   `json:"repoRef"`
+	Repository         string   `json:"repository"`
+	Tier               string   `json:"tier,omitempty"`
+	Category           string   `json:"category"`
+	Title              string   `json:"title"`
+	Objective          string   `json:"objective"`
+	TaskType           string   `json:"taskType"`
+	Risk               string   `json:"risk"`
+	ReviewPolicyRef    string   `json:"reviewPolicyRef,omitempty"`
+	ApprovalPolicyRef  string   `json:"approvalPolicyRef,omitempty"`
+	ApprovalStatus     string   `json:"approvalStatus"`
+	ApprovalReason     string   `json:"approvalReason,omitempty"`
+	DesiredOutcome     []string `json:"desiredOutcome,omitempty"`
+	TriggerIssues      []string `json:"triggerIssues,omitempty"`
+	Status             string   `json:"status"`
+	OperatorNote       string   `json:"operatorNote,omitempty"`
+	CreatedAt          string   `json:"createdAt,omitempty"`
+	UpdatedAt          string   `json:"updatedAt,omitempty"`
+}
+
 func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -308,6 +334,48 @@ func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
 			DesiredOutcome:    proposal.DesiredOutcome,
 			TriggerIssues:     proposal.TriggerIssues,
 			UpdatedAt:         proposal.UpdatedAt,
+		})
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleProposalAdoptions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	adoptions, err := store.ListTaskProposalAdoptions(s.db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	out := make([]proposalAdoptionJSON, 0, len(adoptions))
+	for _, adoption := range adoptions {
+		out = append(out, proposalAdoptionJSON{
+			ID:                 adoption.ID,
+			ProposalSnapshotID: adoption.ProposalSnapshotID,
+			Source:             adoption.Source,
+			ReportMode:         adoption.ReportMode,
+			RepoRef:            adoption.RepoRef,
+			Repository:         adoption.Repository,
+			Tier:               adoption.Tier,
+			Category:           adoption.Category,
+			Title:              adoption.Title,
+			Objective:          adoption.Objective,
+			TaskType:           adoption.TaskType,
+			Risk:               adoption.Risk,
+			ReviewPolicyRef:    adoption.ReviewPolicyRef,
+			ApprovalPolicyRef:  adoption.ApprovalPolicyRef,
+			ApprovalStatus:     adoption.ApprovalStatus,
+			ApprovalReason:     adoption.ApprovalReason,
+			DesiredOutcome:     adoption.DesiredOutcome,
+			TriggerIssues:      adoption.TriggerIssues,
+			Status:             adoption.Status,
+			OperatorNote:       adoption.OperatorNote,
+			CreatedAt:          adoption.CreatedAt,
+			UpdatedAt:          adoption.UpdatedAt,
 		})
 	}
 	writeJSON(w, out)

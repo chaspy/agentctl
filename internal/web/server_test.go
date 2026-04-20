@@ -104,3 +104,59 @@ func TestHandleReconcileReturnsObservedManagedRepoState(t *testing.T) {
 		t.Fatalf("expected no proposals: %+v", payload.Proposals)
 	}
 }
+
+func TestHandleProposalAdoptionsReturnsQueuedItems(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.CreateTaskProposalAdoption(db, &store.TaskProposalAdoption{
+		ProposalSnapshotID: "agentctl-create-repo-contract",
+		Source:             "reconcile",
+		ReportMode:         "read-only",
+		RepoRef:            "agentctl",
+		Repository:         "chaspy/agentctl",
+		Category:           "create_repo_contract",
+		Title:              "Create repo contract",
+		Objective:          "Add .agent/repo.yaml",
+		TaskType:           "docs",
+		Risk:               "low",
+		ApprovalStatus:     "not_required",
+		Status:             store.TaskProposalAdoptionStatusQueued,
+		OperatorNote:       "carry forward",
+	}); err != nil {
+		t.Fatalf("CreateTaskProposalAdoption: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/proposal-adoptions", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		ProposalSnapshotID string `json:"proposalSnapshotId"`
+		Status             string `json:"status"`
+		OperatorNote       string `json:"operatorNote"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].ProposalSnapshotID != "agentctl-create-repo-contract" {
+		t.Fatalf("proposalSnapshotId = %q", payload[0].ProposalSnapshotID)
+	}
+	if payload[0].Status != "queued" {
+		t.Fatalf("status = %q, want queued", payload[0].Status)
+	}
+	if payload[0].OperatorNote != "carry forward" {
+		t.Fatalf("operatorNote = %q", payload[0].OperatorNote)
+	}
+}

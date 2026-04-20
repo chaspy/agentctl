@@ -24,6 +24,7 @@ var migrations = []string{
 	migrationV19,
 	migrationV20,
 	migrationV21,
+	migrationV22,
 }
 
 // Migrate applies all pending schema migrations.
@@ -395,4 +396,36 @@ CREATE TABLE IF NOT EXISTS task_proposal_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_task_proposal_snapshots_source_updated_at ON task_proposal_snapshots(source, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_proposal_snapshots_repo_ref ON task_proposal_snapshots(repo_ref);
+`
+
+const migrationV22 = `
+CREATE TABLE IF NOT EXISTS task_proposal_adoptions (
+	id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+	proposal_snapshot_id TEXT NOT NULL,
+	source               TEXT NOT NULL DEFAULT 'reconcile',
+	report_mode          TEXT NOT NULL DEFAULT 'read-only',
+	repo_ref             TEXT NOT NULL,
+	repository           TEXT NOT NULL,
+	tier                 TEXT NOT NULL DEFAULT '',
+	category             TEXT NOT NULL,
+	title                TEXT NOT NULL,
+	objective            TEXT NOT NULL,
+	task_type            TEXT NOT NULL,
+	risk                 TEXT NOT NULL,
+	review_policy_ref    TEXT NOT NULL DEFAULT '',
+	approval_policy_ref  TEXT NOT NULL DEFAULT '',
+	approval_status      TEXT NOT NULL DEFAULT 'unknown',
+	approval_reason      TEXT NOT NULL DEFAULT '',
+	desired_outcome_json TEXT NOT NULL DEFAULT '[]',
+	trigger_issues_json  TEXT NOT NULL DEFAULT '[]',
+	status               TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'materialized', 'cancelled')),
+	operator_note        TEXT NOT NULL DEFAULT '',
+	raw_proposal_json    TEXT NOT NULL DEFAULT '',
+	created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_proposal_adoptions_status_created_at ON task_proposal_adoptions(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_proposal_adoptions_snapshot ON task_proposal_adoptions(proposal_snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_task_proposal_adoptions_repo_ref ON task_proposal_adoptions(repo_ref);
 `
