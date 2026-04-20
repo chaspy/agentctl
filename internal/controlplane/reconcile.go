@@ -1,13 +1,16 @@
 package controlplane
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/chaspy/agentctl/internal/store"
 )
@@ -45,29 +48,46 @@ type ManagedRepoView struct {
 }
 
 type ReconcileSummary struct {
-	ManagedRepos       int `json:"managedRepos"`
-	LocalClonesFound   int `json:"localClonesFound"`
-	RepoContractsFound int `json:"repoContractsFound"`
-	NeedsAttention     int `json:"needsAttention"`
+	ManagedRepos                  int `json:"managedRepos"`
+	LocalClonesFound              int `json:"localClonesFound"`
+	RepoContractsFound            int `json:"repoContractsFound"`
+	RemoteURLsResolved            int `json:"remoteURLsResolved"`
+	RemoteReachable               int `json:"remoteReachable"`
+	RemoteDefaultBranchesResolved int `json:"remoteDefaultBranchesResolved"`
+	NeedsAttention                int `json:"needsAttention"`
 }
 
 type ReconcileManagedRepoStatus struct {
-	Name             string   `json:"name"`
-	Repository       string   `json:"repository"`
-	Tier             string   `json:"tier,omitempty"`
-	Role             string   `json:"role,omitempty"`
-	LocalPath        string   `json:"localPath,omitempty"`
-	LocalCloneFound  bool     `json:"localCloneFound"`
-	RepoContractPath string   `json:"repoContractPath,omitempty"`
-	HasRepoContract  bool     `json:"hasRepoContract"`
-	NeedsAttention   bool     `json:"needsAttention"`
-	Issues           []string `json:"issues,omitempty"`
+	Name                string   `json:"name"`
+	Repository          string   `json:"repository"`
+	Tier                string   `json:"tier,omitempty"`
+	Role                string   `json:"role,omitempty"`
+	LocalPath           string   `json:"localPath,omitempty"`
+	LocalCloneFound     bool     `json:"localCloneFound"`
+	RemoteSource        string   `json:"remoteSource,omitempty"`
+	RemoteURL           string   `json:"remoteURL,omitempty"`
+	ObservedRemoteRepo  string   `json:"observedRemoteRepository,omitempty"`
+	RemoteReachable     bool     `json:"remoteReachable"`
+	RemoteDefaultBranch string   `json:"remoteDefaultBranch,omitempty"`
+	RepoContractPath    string   `json:"repoContractPath,omitempty"`
+	HasRepoContract     bool     `json:"hasRepoContract"`
+	NeedsAttention      bool     `json:"needsAttention"`
+	Issues              []string `json:"issues,omitempty"`
 }
 
 type ReconcileReport struct {
 	Mode    string                       `json:"mode"`
 	Summary ReconcileSummary             `json:"summary"`
 	Repos   []ReconcileManagedRepoStatus `json:"repos"`
+}
+
+type remoteObservation struct {
+	source        string
+	url           string
+	repository    string
+	reachable     bool
+	defaultBranch string
+	issues        []string
 }
 
 type managedRepoSpecSnapshot struct {
@@ -176,6 +196,15 @@ func BuildReconcileReport(db *sql.DB) (*ReconcileReport, error) {
 		if status.LocalCloneFound {
 			report.Summary.LocalClonesFound++
 		}
+		if status.RemoteURL != "" {
+			report.Summary.RemoteURLsResolved++
+		}
+		if status.RemoteReachable {
+			report.Summary.RemoteReachable++
+		}
+		if status.RemoteDefaultBranch != "" {
+			report.Summary.RemoteDefaultBranchesResolved++
+		}
 		if status.HasRepoContract {
 			report.Summary.RepoContractsFound++
 		}
@@ -206,33 +235,146 @@ func observeManagedRepo(repo store.ManagedRepo) ReconcileManagedRepoStatus {
 		status.LocalPath = entry.fullPath
 	}
 
+	remote := observeRemoteState(view.Repository, status.LocalPath)
+	status.RemoteSource = remote.source
+	status.RemoteURL = remote.url
+	status.ObservedRemoteRepo = remote.repository
+	status.RemoteReachable = remote.reachable
+	status.RemoteDefaultBranch = remote.defaultBranch
+	status.Issues = append(status.Issues, remote.issues...)
+
 	contractPath := strings.TrimSpace(view.RepoContractPath)
 	if contractPath == "" {
 		status.Issues = append(status.Issues, "repoContractPath is not configured")
-		status.NeedsAttention = true
-		return status
-	}
-
-	if !status.LocalCloneFound {
-		status.NeedsAttention = true
-		return status
-	}
-
-	observedContract := filepath.Join(status.LocalPath, filepath.FromSlash(contractPath))
-	info, err := os.Stat(observedContract)
-	switch {
-	case err == nil && !info.IsDir():
-		status.HasRepoContract = true
-	case err == nil && info.IsDir():
-		status.Issues = append(status.Issues, fmt.Sprintf("repo contract path is a directory: %s", contractPath))
-	case os.IsNotExist(err):
-		status.Issues = append(status.Issues, fmt.Sprintf("repo contract not found: %s", contractPath))
-	default:
-		status.Issues = append(status.Issues, fmt.Sprintf("repo contract check failed: %v", err))
+	} else if status.LocalCloneFound {
+		observedContract := filepath.Join(status.LocalPath, filepath.FromSlash(contractPath))
+		info, err := os.Stat(observedContract)
+		switch {
+		case err == nil && !info.IsDir():
+			status.HasRepoContract = true
+		case err == nil && info.IsDir():
+			status.Issues = append(status.Issues, fmt.Sprintf("repo contract path is a directory: %s", contractPath))
+		case os.IsNotExist(err):
+			status.Issues = append(status.Issues, fmt.Sprintf("repo contract not found: %s", contractPath))
+		default:
+			status.Issues = append(status.Issues, fmt.Sprintf("repo contract check failed: %v", err))
+		}
 	}
 
 	status.NeedsAttention = len(status.Issues) > 0
 	return status
+}
+
+func observeRemoteState(expectedRepo, localPath string) remoteObservation {
+	if strings.TrimSpace(localPath) == "" || !isGitRepository(localPath) {
+		return remoteObservation{}
+	}
+
+	remoteURL, err := gitRemoteURL(localPath, "origin")
+	if err != nil {
+		return remoteObservation{
+			issues: []string{fmt.Sprintf("origin remote check failed: %v", err)},
+		}
+	}
+
+	observation := remoteObservation{
+		source: "origin",
+		url:    remoteURL,
+	}
+
+	if observedRepo := parseGitHubRepoFromRemoteURL(remoteURL); observedRepo != "" {
+		observation.repository = observedRepo
+		if expectedRepo != "" && observedRepo != expectedRepo {
+			observation.issues = append(observation.issues,
+				fmt.Sprintf("origin remote points to %s, expected %s", observedRepo, expectedRepo))
+		}
+	}
+
+	defaultBranch, err := probeRemoteDefaultBranch(remoteURL)
+	if err != nil {
+		observation.issues = append(observation.issues,
+			fmt.Sprintf("remote reachability check failed: %v", err))
+		return observation
+	}
+
+	observation.reachable = true
+	observation.defaultBranch = defaultBranch
+	return observation
+}
+
+func isGitRepository(localPath string) bool {
+	out, err := runGitCommand(localPath, 2*time.Second, "rev-parse", "--is-inside-work-tree")
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+func gitRemoteURL(localPath, remoteName string) (string, error) {
+	out, err := runGitCommand(localPath, 3*time.Second, "remote", "get-url", remoteName)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func probeRemoteDefaultBranch(remoteURL string) (string, error) {
+	out, err := runGitCommand("", 5*time.Second, "ls-remote", "--symref", remoteURL, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ref: refs/heads/") && strings.HasSuffix(line, "\tHEAD") {
+			branch := strings.TrimPrefix(line, "ref: refs/heads/")
+			branch = strings.TrimSuffix(branch, "\tHEAD")
+			return branch, nil
+		}
+	}
+	return "", nil
+}
+
+func runGitCommand(dir string, timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("timed out after %s", timeout)
+	}
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	return out, nil
+}
+
+func parseGitHubRepoFromRemoteURL(remoteURL string) string {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(remoteURL), ".git")
+	switch {
+	case strings.HasPrefix(trimmed, "git@github.com:"):
+		trimmed = strings.TrimPrefix(trimmed, "git@github.com:")
+	case strings.HasPrefix(trimmed, "ssh://git@github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "ssh://git@github.com/")
+	case strings.HasPrefix(trimmed, "https://github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "https://github.com/")
+	case strings.HasPrefix(trimmed, "http://github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "http://github.com/")
+	default:
+		return ""
+	}
+
+	segments := strings.Split(strings.Trim(trimmed, "/"), "/")
+	if len(segments) < 2 {
+		return ""
+	}
+	return segments[len(segments)-2] + "/" + segments[len(segments)-1]
 }
 
 type repoEntry struct {

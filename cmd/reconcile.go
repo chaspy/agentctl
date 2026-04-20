@@ -32,7 +32,8 @@ var reconcileOnceCmd = &cobra.Command{
 	Long: `Run one reconcile pass against applied desired state.
 
 Today only read-only observation is supported. agentctl reads ManagedRepo
-resources from the local DB, checks whether local clones are present, and
+resources from the local DB, checks whether local clones are present,
+observes origin remote reachability/default branch when available, and
 verifies whether the configured repo contract file exists.`,
 	Args: cobra.NoArgs,
 	RunE: runReconcileOnce,
@@ -71,10 +72,13 @@ func runReconcileOnce(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "=== Reconcile Once (%s) ===\n", report.Mode)
-	fmt.Fprintf(cmd.OutOrStdout(), "ManagedRepos=%d LocalClonesFound=%d RepoContractsFound=%d NeedsAttention=%d\n",
+	fmt.Fprintf(cmd.OutOrStdout(), "ManagedRepos=%d LocalClonesFound=%d RepoContractsFound=%d RemoteURLsResolved=%d RemoteReachable=%d RemoteDefaultBranchesResolved=%d NeedsAttention=%d\n",
 		report.Summary.ManagedRepos,
 		report.Summary.LocalClonesFound,
 		report.Summary.RepoContractsFound,
+		report.Summary.RemoteURLsResolved,
+		report.Summary.RemoteReachable,
+		report.Summary.RemoteDefaultBranchesResolved,
 		report.Summary.NeedsAttention,
 	)
 	if len(report.Repos) == 0 {
@@ -83,18 +87,22 @@ func runReconcileOnce(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tREPOSITORY\tTIER\tLOCAL\tCONTRACT\tATTENTION\tISSUES")
+	fmt.Fprintln(w, "NAME\tREPOSITORY\tTIER\tLOCAL\tREMOTE\tDEFAULT_BRANCH\tCONTRACT\tATTENTION\tISSUES")
 	for _, repo := range report.Repos {
 		tier := repo.Tier
 		if tier == "" {
 			tier = "-"
 		}
+		defaultBranch := repo.RemoteDefaultBranch
+		if defaultBranch == "" {
+			defaultBranch = "-"
+		}
 		issues := "-"
 		if len(repo.Issues) > 0 {
 			issues = strings.Join(repo.Issues, "; ")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%t\t%t\t%s\n",
-			repo.Name, repo.Repository, tier, repo.LocalCloneFound, repo.HasRepoContract, repo.NeedsAttention, issues)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%t\t%s\t%t\t%t\t%s\n",
+			repo.Name, repo.Repository, tier, repo.LocalCloneFound, repo.RemoteReachable, defaultBranch, repo.HasRepoContract, repo.NeedsAttention, issues)
 	}
 	return w.Flush()
 }

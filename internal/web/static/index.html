@@ -579,6 +579,9 @@ function renderControlPlane(report) {
     <div class="metric-card"><div class="metric-label">Managed Repos</div><div class="metric-value">${summary.managedRepos ?? 0}</div></div>
     <div class="metric-card"><div class="metric-label">Local Clones</div><div class="metric-value">${summary.localClonesFound ?? 0}</div></div>
     <div class="metric-card"><div class="metric-label">Repo Contracts</div><div class="metric-value">${summary.repoContractsFound ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Remote URLs</div><div class="metric-value">${summary.remoteURLsResolved ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Remote Reachable</div><div class="metric-value">${summary.remoteReachable ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Default Branches</div><div class="metric-value">${summary.remoteDefaultBranchesResolved ?? 0}</div></div>
     <div class="metric-card"><div class="metric-label">Needs Attention</div><div class="metric-value">${summary.needsAttention ?? 0}</div></div>
   </div>`;
 
@@ -593,6 +596,10 @@ function renderControlPlane(report) {
     const issues = repo.issues || [];
     const tier = repo.tier || '-';
     const localPath = repo.localPath || '-';
+    const remoteSource = repo.remoteSource || '-';
+    const remoteURL = repo.remoteURL || '-';
+    const remoteRepo = repo.observedRemoteRepository || '-';
+    const defaultBranch = repo.remoteDefaultBranch || '-';
     const contractPath = repo.repoContractPath || '-';
     return `
       <div class="card ${repo.needsAttention ? 'blocked' : 'idle'}">
@@ -604,10 +611,15 @@ function renderControlPlane(report) {
           <strong>${escapeHTML(repo.repository || '')}</strong><br>
           tier: ${escapeHTML(tier)}<br>
           localPath: ${escapeHTML(localPath)}<br>
+          remoteSource: ${escapeHTML(remoteSource)}<br>
+          remoteURL: ${escapeHTML(remoteURL)}<br>
+          observedRemoteRepository: ${escapeHTML(remoteRepo)}<br>
+          remoteDefaultBranch: ${escapeHTML(defaultBranch)}<br>
           repoContractPath: ${escapeHTML(contractPath)}
         </div>
         <div class="status-row">
           <span class="status-chip ${repo.localCloneFound ? 'ok' : 'warn'}">local clone: ${repo.localCloneFound ? 'found' : 'missing'}</span>
+          <span class="status-chip ${repo.remoteReachable ? 'ok' : 'warn'}">remote: ${repo.remoteReachable ? 'reachable' : 'unknown/unreachable'}</span>
           <span class="status-chip ${repo.hasRepoContract ? 'ok' : 'warn'}">repo contract: ${repo.hasRepoContract ? 'found' : 'missing'}</span>
         </div>
         ${issues.length > 0 ? `<ul class="repo-issues">${issues.map(issue => `<li>${escapeHTML(issue)}</li>`).join('')}</ul>` : ''}
@@ -969,7 +981,7 @@ async function loadDatabase() {
   if (reconcile && reconcile.repos && reconcile.repos.length > 0) {
     html += `<div class="db-section-title">Managed Repos / Reconcile <span class="db-count">(${reconcile.repos.length})</span></div>`;
     html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
-    html += '<th>Name</th><th>Repository</th><th>Tier</th><th>Local Clone</th><th>Repo Contract</th><th>Attention</th><th>Issues</th>';
+    html += '<th>Name</th><th>Repository</th><th>Tier</th><th>Local Clone</th><th>Remote</th><th>Default Branch</th><th>Repo Contract</th><th>Attention</th><th>Issues</th>';
     html += '</tr></thead><tbody>';
     for (const repo of reconcile.repos) {
       html += `<tr>
@@ -977,6 +989,8 @@ async function loadDatabase() {
         <td>${escapeHTML(repo.repository || '')}</td>
         <td>${escapeHTML(repo.tier || '-')}</td>
         <td>${repo.localCloneFound ? 'yes' : 'no'}</td>
+        <td>${repo.remoteReachable ? 'yes' : 'no'}</td>
+        <td>${escapeHTML(repo.remoteDefaultBranch || '-')}</td>
         <td>${repo.hasRepoContract ? 'yes' : 'no'}</td>
         <td>${repo.needsAttention ? 'yes' : 'no'}</td>
         <td title="${escapeHTML((repo.issues || []).join('; '))}">${truncate((repo.issues || []).join('; '), 60)}</td>
