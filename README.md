@@ -59,6 +59,9 @@ agentctl config set owner/repo --agent codex
 # Import a ManagedRepo manifest into the local DB
 agentctl apply -f ~/go/src/github.com/chaspy/myassistant/ops/repos/book-assistant.yaml
 
+# Validate a self-hosting spec in read-only mode
+agentctl validate -f ~/go/src/github.com/chaspy/myassistant/ops/system/ecosystem.yaml --json
+
 # Kill a session (with safety checks)
 agentctl kill <session-name>
 
@@ -93,6 +96,7 @@ agentctl serve
 | `state task` | Manage tasks (add, complete, list) |
 | `config` | Manage per-repository configuration |
 | `apply` | Import a desired-state manifest into the local control-plane DB |
+| `validate` | Validate desired-state manifests without mutating runtime state |
 | `repos <query>` | Search for repositories on disk |
 
 ## Session Status Detection

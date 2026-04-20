@@ -16,31 +16,7 @@ import (
 )
 
 var applyFile string
-
-type applyHeader struct {
-	Kind string `yaml:"kind"`
-}
-
-type managedRepoManifest struct {
-	APIVersion string `yaml:"apiVersion"`
-	Kind       string `yaml:"kind"`
-	Metadata   struct {
-		Name string `yaml:"name"`
-	} `yaml:"metadata"`
-	Spec managedRepoSpec `yaml:"spec"`
-}
-
-type managedRepoSpec struct {
-	Repo                      string `yaml:"repo" json:"repo"`
-	Role                      string `yaml:"role" json:"role"`
-	Visibility                string `yaml:"visibility" json:"visibility"`
-	RepoContractPath          string `yaml:"repoContractPath" json:"repoContractPath,omitempty"`
-	DefaultRoutingPolicyRef   string `yaml:"defaultRoutingPolicyRef" json:"defaultRoutingPolicyRef,omitempty"`
-	DefaultReviewPolicyRef    string `yaml:"defaultReviewPolicyRef" json:"defaultReviewPolicyRef,omitempty"`
-	DefaultApprovalPolicyRef  string `yaml:"defaultApprovalPolicyRef" json:"defaultApprovalPolicyRef,omitempty"`
-	DefaultBenchmarkPolicyRef string `yaml:"defaultBenchmarkPolicyRef" json:"defaultBenchmarkPolicyRef,omitempty"`
-	Notes                     string `yaml:"notes" json:"notes,omitempty"`
-}
+var applyDryRun bool
 
 var applyCmd = &cobra.Command{
 	Use:   "apply -f <manifest>",
@@ -58,6 +34,7 @@ Examples:
 func init() {
 	rootCmd.AddCommand(applyCmd)
 	applyCmd.Flags().StringVarP(&applyFile, "file", "f", "", "Manifest file to apply")
+	applyCmd.Flags().BoolVar(&applyDryRun, "dry-run", false, "Parse and validate the manifest without writing to the database")
 	_ = applyCmd.MarkFlagRequired("file")
 }
 
@@ -67,16 +44,16 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read manifest: %w", err)
 	}
 
-	var header applyHeader
-	if err := yaml.Unmarshal(content, &header); err != nil {
-		return fmt.Errorf("parse manifest header: %w", err)
+	validation := validateManifestContent(content)
+	if !validation.Valid {
+		return fmt.Errorf("manifest validation failed: %s", strings.Join(validation.Errors, "; "))
 	}
 
-	switch strings.TrimSpace(header.Kind) {
-	case "ManagedRepo":
+	switch validation.Kind {
+	case resourceKindManagedRepo:
 		return applyManagedRepo(content)
 	default:
-		return fmt.Errorf("unsupported kind %q: only ManagedRepo is supported today", header.Kind)
+		return fmt.Errorf("unsupported kind %q for apply: only ManagedRepo is supported today", validation.Kind)
 	}
 }
 
@@ -108,12 +85,6 @@ func applyManagedRepo(content []byte) error {
 		return fmt.Errorf("resolve manifest path: %w", err)
 	}
 
-	db, err := store.Open("")
-	if err != nil {
-		return fmt.Errorf("open database: %w", err)
-	}
-	defer db.Close()
-
 	row := &store.ManagedRepo{
 		Name:                      manifest.Metadata.Name,
 		Repository:                repository,
@@ -131,6 +102,20 @@ func applyManagedRepo(content []byte) error {
 		SpecHash:                  sha256Hex(content),
 		RawSpecJSON:               string(specJSON),
 	}
+
+	if applyDryRun {
+		fmt.Printf("Validated ManagedRepo %s -> %s (dry-run)\n", row.Name, row.Repository)
+		if row.SourceCommit != "" {
+			fmt.Printf("Source commit: %s\n", row.SourceCommit)
+		}
+		return nil
+	}
+
+	db, err := store.Open("")
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
 
 	if err := store.UpsertManagedRepo(db, row); err != nil {
 		return fmt.Errorf("upsert managed repo: %w", err)
