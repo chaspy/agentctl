@@ -23,6 +23,7 @@ type stateShowSummary struct {
 	AgentTasks              int `json:"agent_tasks"`
 	AgentTaskDecisions      int `json:"agent_task_decisions"`
 	AgentTaskAttempts       int `json:"agent_task_attempts"`
+	AgentTaskOutcomes       int `json:"agent_task_outcomes"`
 	BlockedSessions         int `json:"blocked_sessions"`
 	ErrorSessions           int `json:"error_sessions"`
 	GhostSessions           int `json:"ghost_sessions"`
@@ -140,6 +141,29 @@ type stateShowAgentTaskAttempt struct {
 	CreatedAt        string `json:"created_at"`
 }
 
+type stateShowAgentTaskOutcome struct {
+	ID               int64  `json:"id"`
+	AttemptID        int64  `json:"attempt_id"`
+	DecisionID       int64  `json:"decision_id"`
+	AgentTaskName    string `json:"agent_task_name"`
+	RepoRef          string `json:"repo_ref"`
+	Repository       string `json:"repository"`
+	TaskType         string `json:"task_type"`
+	Risk             string `json:"risk"`
+	Agent            string `json:"agent"`
+	Branch           string `json:"branch"`
+	SessionName      string `json:"session_name"`
+	ManagedSessionID string `json:"managed_session_id"`
+	Status           string `json:"status"`
+	ResultSummary    string `json:"result_summary,omitempty"`
+	PRURL            string `json:"pr_url,omitempty"`
+	CommitSHA        string `json:"commit_sha,omitempty"`
+	FailureCategory  string `json:"failure_category,omitempty"`
+	FailureReason    string `json:"failure_reason,omitempty"`
+	Source           string `json:"source,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
 type stateShowReport struct {
 	Summary               stateShowSummary             `json:"summary"`
 	Sessions              []stateShowSession           `json:"sessions"`
@@ -148,6 +172,7 @@ type stateShowReport struct {
 	AgentTasks            []stateShowAgentTask         `json:"agent_tasks,omitempty"`
 	AgentTaskDecisions    []stateShowAgentTaskDecision `json:"agent_task_decisions,omitempty"`
 	AgentTaskAttempts     []stateShowAgentTaskAttempt  `json:"agent_task_attempts,omitempty"`
+	AgentTaskOutcomes     []stateShowAgentTaskOutcome  `json:"agent_task_outcomes,omitempty"`
 	RecentActions         []stateShowAction            `json:"recent_actions,omitempty"`
 }
 
@@ -185,8 +210,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d task proposals, %d queued proposal adoptions, %d agent tasks, %d decisions, %d attempts) ===\n",
-		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions, report.Summary.AgentTasks, report.Summary.AgentTaskDecisions, report.Summary.AgentTaskAttempts)
+	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d task proposals, %d queued proposal adoptions, %d agent tasks, %d decisions, %d attempts, %d outcomes) ===\n",
+		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions, report.Summary.AgentTasks, report.Summary.AgentTaskDecisions, report.Summary.AgentTaskAttempts, report.Summary.AgentTaskOutcomes)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
@@ -305,6 +330,22 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 				attempt.RepoMode,
 				attempt.Status,
 				dashIfEmpty(attempt.SessionName))
+		}
+		w.Flush()
+	}
+
+	if len(report.AgentTaskOutcomes) > 0 {
+		fmt.Println("\n=== Agent Task Outcomes ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tATTEMPT\tAGENT_TASK\tSTATUS\tPR\tSOURCE")
+		for _, outcome := range report.AgentTaskOutcomes {
+			fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\t%s\n",
+				outcome.ID,
+				outcome.AttemptID,
+				outcome.AgentTaskName,
+				outcome.Status,
+				dashIfEmpty(outcome.PRURL),
+				dashIfEmpty(outcome.Source))
 		}
 		w.Flush()
 	}
@@ -596,6 +637,36 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			Status:           attempt.Status,
 			FailureReason:    attempt.FailureReason,
 			CreatedAt:        attempt.CreatedAt,
+		})
+	}
+
+	outcomes, err := store.ListAgentTaskOutcomes(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent task outcomes: %w", err)
+	}
+	report.Summary.AgentTaskOutcomes = len(outcomes)
+	for _, outcome := range outcomes {
+		report.AgentTaskOutcomes = append(report.AgentTaskOutcomes, stateShowAgentTaskOutcome{
+			ID:               outcome.ID,
+			AttemptID:        outcome.AttemptID,
+			DecisionID:       outcome.DecisionID,
+			AgentTaskName:    outcome.AgentTaskName,
+			RepoRef:          outcome.RepoRef,
+			Repository:       outcome.Repository,
+			TaskType:         outcome.TaskType,
+			Risk:             outcome.Risk,
+			Agent:            outcome.Agent,
+			Branch:           outcome.Branch,
+			SessionName:      outcome.SessionName,
+			ManagedSessionID: outcome.ManagedSessionID,
+			Status:           outcome.Status,
+			ResultSummary:    outcome.ResultSummary,
+			PRURL:            outcome.PRURL,
+			CommitSHA:        outcome.CommitSHA,
+			FailureCategory:  outcome.FailureCategory,
+			FailureReason:    outcome.FailureReason,
+			Source:           outcome.Source,
+			CreatedAt:        outcome.CreatedAt,
 		})
 	}
 

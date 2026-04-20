@@ -28,6 +28,9 @@ var migrations = []string{
 	migrationV23,
 	migrationV24,
 	migrationV25,
+	migrationV26,
+	migrationV27,
+	migrationV28,
 }
 
 // Migrate applies all pending schema migrations.
@@ -517,4 +520,193 @@ CREATE TABLE IF NOT EXISTS agent_task_attempts (
 CREATE INDEX IF NOT EXISTS idx_agent_task_attempts_decision_created_at ON agent_task_attempts(decision_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_task_attempts_task_created_at ON agent_task_attempts(agent_task_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_task_attempts_status_created_at ON agent_task_attempts(status, created_at DESC);
+`
+
+const migrationV26 = `
+CREATE TABLE IF NOT EXISTS agent_task_outcomes (
+	id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+	attempt_id          INTEGER NOT NULL UNIQUE,
+	decision_id         INTEGER NOT NULL,
+	agent_task_name     TEXT NOT NULL,
+	repo_ref            TEXT NOT NULL,
+	repository          TEXT NOT NULL DEFAULT '',
+	task_type           TEXT NOT NULL,
+	risk                TEXT NOT NULL,
+	agent               TEXT NOT NULL,
+	branch              TEXT NOT NULL DEFAULT '',
+	session_name        TEXT NOT NULL DEFAULT '',
+	managed_session_id  TEXT NOT NULL DEFAULT '',
+	status              TEXT NOT NULL CHECK(status IN ('completed', 'failed', 'cancelled')),
+	result_summary      TEXT NOT NULL DEFAULT '',
+	pr_number           INTEGER NOT NULL DEFAULT 0,
+	pr_url              TEXT NOT NULL DEFAULT '',
+	pr_state            TEXT NOT NULL DEFAULT '',
+	commit_sha          TEXT NOT NULL DEFAULT '',
+	failure_category    TEXT NOT NULL DEFAULT '',
+	failure_reason      TEXT NOT NULL DEFAULT '',
+	source              TEXT NOT NULL DEFAULT 'manual',
+	created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_task_outcomes_attempt ON agent_task_outcomes(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_agent_task_outcomes_task_created_at ON agent_task_outcomes(agent_task_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_task_outcomes_status_created_at ON agent_task_outcomes(status, created_at DESC);
+`
+
+const migrationV27 = `
+ALTER TABLE agent_task_decisions RENAME TO agent_task_decisions_v24;
+
+CREATE TABLE IF NOT EXISTS agent_task_decisions (
+	id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent_task_name       TEXT NOT NULL,
+	repo_ref              TEXT NOT NULL,
+	repository            TEXT NOT NULL DEFAULT '',
+	task_type             TEXT NOT NULL,
+	risk                  TEXT NOT NULL,
+	routing_policy_ref    TEXT NOT NULL DEFAULT '',
+	policy_version        TEXT NOT NULL DEFAULT '',
+	selection_mode        TEXT NOT NULL DEFAULT '',
+	selected_agent        TEXT NOT NULL,
+	selected_repo_mode    TEXT NOT NULL DEFAULT '',
+	repo_profile_source   TEXT NOT NULL DEFAULT '',
+	mode_source           TEXT NOT NULL DEFAULT '',
+	agent_source          TEXT NOT NULL DEFAULT '',
+	eligible_agents_json  TEXT NOT NULL DEFAULT '[]',
+	candidate_scores_json TEXT NOT NULL DEFAULT '[]',
+	route_reason          TEXT NOT NULL DEFAULT '',
+	status                TEXT NOT NULL DEFAULT 'recorded' CHECK(status IN ('recorded', 'superseded', 'applied', 'completed', 'failed', 'cancelled')),
+	created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO agent_task_decisions (
+	id,
+	agent_task_name,
+	repo_ref,
+	repository,
+	task_type,
+	risk,
+	routing_policy_ref,
+	policy_version,
+	selection_mode,
+	selected_agent,
+	selected_repo_mode,
+	repo_profile_source,
+	mode_source,
+	agent_source,
+	eligible_agents_json,
+	candidate_scores_json,
+	route_reason,
+	status,
+	created_at,
+	updated_at
+)
+SELECT
+	id,
+	agent_task_name,
+	repo_ref,
+	repository,
+	task_type,
+	risk,
+	routing_policy_ref,
+	policy_version,
+	selection_mode,
+	selected_agent,
+	selected_repo_mode,
+	repo_profile_source,
+	mode_source,
+	agent_source,
+	eligible_agents_json,
+	candidate_scores_json,
+	route_reason,
+	status,
+	created_at,
+	updated_at
+FROM agent_task_decisions_v24;
+
+DROP TABLE agent_task_decisions_v24;
+
+CREATE INDEX IF NOT EXISTS idx_agent_task_decisions_task_created_at ON agent_task_decisions(agent_task_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_task_decisions_status_created_at ON agent_task_decisions(status, created_at DESC);
+`
+
+const migrationV28 = `
+ALTER TABLE agent_tasks RENAME TO agent_tasks_v23;
+
+CREATE TABLE IF NOT EXISTS agent_tasks (
+	name                           TEXT PRIMARY KEY,
+	repo_ref                       TEXT NOT NULL,
+	repository                     TEXT NOT NULL DEFAULT '',
+	objective                      TEXT NOT NULL,
+	task_type                      TEXT NOT NULL,
+	risk                           TEXT NOT NULL,
+	context_refs_json              TEXT NOT NULL DEFAULT '[]',
+	desired_outcome_json           TEXT NOT NULL DEFAULT '[]',
+	routing_policy_ref             TEXT NOT NULL DEFAULT '',
+	review_policy_ref              TEXT NOT NULL DEFAULT '',
+	approval_policy_ref            TEXT NOT NULL DEFAULT '',
+	approval_required_before_merge INTEGER NOT NULL DEFAULT 0,
+	source_kind                    TEXT NOT NULL DEFAULT 'manifest' CHECK(source_kind IN ('manifest', 'proposal_adoption')),
+	source_ref                     TEXT NOT NULL DEFAULT '',
+	status                         TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned', 'ready', 'routed', 'spawned', 'completed', 'failed', 'cancelled')),
+	source_path                    TEXT NOT NULL DEFAULT '',
+	source_commit                  TEXT NOT NULL DEFAULT '',
+	spec_hash                      TEXT NOT NULL DEFAULT '',
+	raw_spec_json                  TEXT NOT NULL DEFAULT '',
+	created_at                     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at                     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO agent_tasks (
+	name,
+	repo_ref,
+	repository,
+	objective,
+	task_type,
+	risk,
+	context_refs_json,
+	desired_outcome_json,
+	routing_policy_ref,
+	review_policy_ref,
+	approval_policy_ref,
+	approval_required_before_merge,
+	source_kind,
+	source_ref,
+	status,
+	source_path,
+	source_commit,
+	spec_hash,
+	raw_spec_json,
+	created_at,
+	updated_at
+)
+SELECT
+	name,
+	repo_ref,
+	repository,
+	objective,
+	task_type,
+	risk,
+	context_refs_json,
+	desired_outcome_json,
+	routing_policy_ref,
+	review_policy_ref,
+	approval_policy_ref,
+	approval_required_before_merge,
+	source_kind,
+	source_ref,
+	status,
+	source_path,
+	source_commit,
+	spec_hash,
+	raw_spec_json,
+	created_at,
+	updated_at
+FROM agent_tasks_v23;
+
+DROP TABLE agent_tasks_v23;
+
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo_ref ON agent_tasks(repo_ref);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated_at ON agent_tasks(status, updated_at DESC);
 `

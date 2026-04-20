@@ -937,7 +937,7 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks, agentTaskDecisions, agentTaskAttempts] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks, agentTaskDecisions, agentTaskAttempts, agentTaskOutcomes] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
@@ -948,6 +948,7 @@ async function loadDatabase() {
     fetchJSON('/api/agent-tasks'),
     fetchJSON('/api/agent-task-decisions'),
     fetchJSON('/api/agent-task-attempts'),
+    fetchJSON('/api/agent-task-outcomes'),
   ]);
 
   let html = '';
@@ -1153,6 +1154,25 @@ async function loadDatabase() {
         <td>${escapeHTML(attempt.status || '')}</td>
         <td>${escapeHTML(attempt.sessionName || '-')}</td>
         <td title="${escapeHTML(attempt.failureReason || '')}">${truncate(attempt.failureReason, 60)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTaskOutcomes && agentTaskOutcomes.length > 0) {
+    html += `<div class="db-section-title">Agent Task Outcomes <span class="db-count">(${agentTaskOutcomes.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Attempt</th><th>Agent Task</th><th>Status</th><th>PR</th><th>Commit</th><th>Failure</th><th>Source</th></tr></thead><tbody>';
+    for (const outcome of agentTaskOutcomes) {
+      html += `<tr>
+        <td>#${escapeHTML(String(outcome.id || ''))}</td>
+        <td>#${escapeHTML(String(outcome.attemptId || ''))}</td>
+        <td>${escapeHTML(outcome.agentTaskName || '')}</td>
+        <td>${escapeHTML(outcome.status || '')}</td>
+        <td title="${escapeHTML(outcome.prUrl || '')}">${truncate(outcome.prUrl, 60)}</td>
+        <td>${escapeHTML(outcome.commitSha || '-')}</td>
+        <td title="${escapeHTML(outcome.failureReason || '')}">${truncate(outcome.failureReason || outcome.failureCategory, 60)}</td>
+        <td>${escapeHTML(outcome.source || '-')}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';

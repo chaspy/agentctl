@@ -101,6 +101,23 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateAgentTaskAttempt: %v", err)
 	}
+	if err := store.CreateAgentTaskOutcome(db, &store.AgentTaskOutcome{
+		AttemptID:        1,
+		DecisionID:       1,
+		AgentTaskName:    "myassistant-create-repo-contract-adoption-1",
+		RepoRef:          "myassistant",
+		Repository:       "chaspy/myassistant",
+		TaskType:         "docs",
+		Risk:             "low",
+		Agent:            "codex",
+		SessionName:      "myassistant-myassistant-create-repo-contract",
+		ManagedSessionID: "codex:chaspy/myassistant:zellij-myassistant-myassistant-create-repo-contract",
+		Status:           "completed",
+		PRURL:            "https://github.com/chaspy/myassistant/pull/12",
+		Source:           "session",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskOutcome: %v", err)
+	}
 	_ = store.UpsertSession(db, &store.Session{
 		ID:            "claude:a/b:blocked",
 		Agent:         "claude",
@@ -184,6 +201,9 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	if report.Summary.AgentTaskAttempts != 1 {
 		t.Fatalf("agent_task_attempts = %d, want 1", report.Summary.AgentTaskAttempts)
 	}
+	if report.Summary.AgentTaskOutcomes != 1 {
+		t.Fatalf("agent_task_outcomes = %d, want 1", report.Summary.AgentTaskOutcomes)
+	}
 	if report.Summary.BlockedSessions != 2 {
 		t.Fatalf("blocked_sessions = %d, want 2", report.Summary.BlockedSessions)
 	}
@@ -264,6 +284,12 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}
 	if report.AgentTaskAttempts[0].SessionName != "myassistant-myassistant-create-repo-contract" {
 		t.Fatalf("attempt session_name = %q", report.AgentTaskAttempts[0].SessionName)
+	}
+	if len(report.AgentTaskOutcomes) != 1 {
+		t.Fatalf("agent_task_outcomes len = %d, want 1", len(report.AgentTaskOutcomes))
+	}
+	if report.AgentTaskOutcomes[0].PRURL != "https://github.com/chaspy/myassistant/pull/12" {
+		t.Fatalf("outcome pr_url = %q", report.AgentTaskOutcomes[0].PRURL)
 	}
 }
 

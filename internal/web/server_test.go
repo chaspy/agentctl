@@ -342,3 +342,67 @@ func TestHandleAgentTaskAttemptsReturnsSpawnedItems(t *testing.T) {
 		t.Fatalf("status = %q", payload[0].Status)
 	}
 }
+
+func TestHandleAgentTaskOutcomesReturnsCompletedItems(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.CreateAgentTaskOutcome(db, &store.AgentTaskOutcome{
+		AttemptID:        1,
+		DecisionID:       2,
+		AgentTaskName:    "agentctl-create-repo-contract",
+		RepoRef:          "agentctl",
+		Repository:       "chaspy/agentctl",
+		TaskType:         "docs",
+		Risk:             "low",
+		Agent:            "codex",
+		SessionName:      "agentctl-agentctl-create-repo-contract",
+		ManagedSessionID: "codex:chaspy/agentctl:zellij-agentctl-agentctl-create-repo-contract",
+		Status:           "completed",
+		PRURL:            "https://github.com/chaspy/agentctl/pull/42",
+		Source:           "session",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskOutcome: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-task-outcomes", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		AttemptID     int64  `json:"attemptId"`
+		AgentTaskName string `json:"agentTaskName"`
+		Status        string `json:"status"`
+		PRURL         string `json:"prUrl"`
+		Source        string `json:"source"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].AttemptID != 1 {
+		t.Fatalf("attemptId = %d", payload[0].AttemptID)
+	}
+	if payload[0].AgentTaskName != "agentctl-create-repo-contract" {
+		t.Fatalf("agentTaskName = %q", payload[0].AgentTaskName)
+	}
+	if payload[0].Status != "completed" {
+		t.Fatalf("status = %q", payload[0].Status)
+	}
+	if payload[0].PRURL != "https://github.com/chaspy/agentctl/pull/42" {
+		t.Fatalf("prUrl = %q", payload[0].PRURL)
+	}
+	if payload[0].Source != "session" {
+		t.Fatalf("source = %q", payload[0].Source)
+	}
+}
