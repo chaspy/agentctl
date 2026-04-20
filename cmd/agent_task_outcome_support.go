@@ -3,6 +3,8 @@ package cmd
 import (
 	"database/sql"
 	"fmt"
+	"os/exec"
+	"strings"
 
 	"github.com/chaspy/agentctl/internal/store"
 )
@@ -16,6 +18,17 @@ var allowedAgentTaskOutcomeStatuses = map[string]bool{
 type agentTaskOutcomePlan struct {
 	Outcome *store.AgentTaskOutcome
 	Session *store.Session
+}
+
+var gitHeadForWorktreePath = func(path string) string {
+	if path == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func buildAgentTaskOutcomePlan(
@@ -87,6 +100,14 @@ func buildAgentTaskOutcomePlan(
 		prState = prStateOverride
 	}
 
+	commitSHA := commitOverride
+	if commitSHA == "" && session != nil && session.CWD != "" {
+		commitSHA = gitHeadForWorktreePath(session.CWD)
+	}
+	if commitSHA == "" && attempt.WorkDir != "" {
+		commitSHA = gitHeadForWorktreePath(attempt.WorkDir)
+	}
+
 	failureCategory := failureCategoryOverride
 	failureReason := failureReasonOverride
 	if failureReason == "" && status == "failed" {
@@ -124,7 +145,7 @@ func buildAgentTaskOutcomePlan(
 			PRNumber:         prNumber,
 			PRURL:            prURL,
 			PRState:          prState,
-			CommitSHA:        commitOverride,
+			CommitSHA:        commitSHA,
 			FailureCategory:  failureCategory,
 			FailureReason:    failureReason,
 			Source:           source,
@@ -137,7 +158,7 @@ func resolveAgentTaskAttemptSession(db *sql.DB, attempt *store.AgentTaskAttempt)
 	if attempt.ManagedSessionID == "" {
 		return nil, nil
 	}
-	session, err := store.GetSession(db, attempt.ManagedSessionID)
+	session, err := store.GetSessionAny(db, attempt.ManagedSessionID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

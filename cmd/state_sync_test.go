@@ -819,6 +819,262 @@ func TestListAliveSessionsWithPR(t *testing.T) {
 	}
 }
 
+func TestSyncSessionPRMetadataUpdatesSessionState(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	sessionID := "codex:owner/repo:zellij-owner-repo"
+	_ = store.UpsertSession(db, &store.Session{
+		ID:            sessionID,
+		Agent:         "codex",
+		Repository:    "owner/repo",
+		SessionID:     "zellij-owner-repo",
+		GitBranch:     "feat/test",
+		Status:        "active",
+		Alive:         true,
+		RuntimeStatus: "running",
+		LastActive:    time.Now(),
+	})
+
+	origLookupPRURL := lookupPRURL
+	origLookupPRMetadata := lookupPRMetadata
+	defer func() {
+		lookupPRURL = origLookupPRURL
+		lookupPRMetadata = origLookupPRMetadata
+	}()
+
+	lookupPRURL = func(repo, branch string) string {
+		if repo != "owner/repo" || branch != "feat/test" {
+			t.Fatalf("unexpected lookupPRURL args repo=%q branch=%q", repo, branch)
+		}
+		return "https://github.com/owner/repo/pull/42"
+	}
+	lookupPRMetadata = func(repo, prNumber string) prMetadata {
+		if repo != "owner/repo" || prNumber != "42" {
+			t.Fatalf("unexpected lookupPRMetadata args repo=%q prNumber=%q", repo, prNumber)
+		}
+		return prMetadata{
+			URL:        "https://github.com/owner/repo/pull/42",
+			State:      "OPEN",
+			HeadRefOID: "abc123",
+		}
+	}
+
+	metadataBySessionID, err := syncSessionPRMetadata(db)
+	if err != nil {
+		t.Fatalf("syncSessionPRMetadata: %v", err)
+	}
+
+	s, err := store.GetSession(db, sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if s.PRNumber != 42 {
+		t.Fatalf("PRNumber = %d, want 42", s.PRNumber)
+	}
+	if s.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %q", s.PRURL)
+	}
+	if s.PRState != "OPEN" {
+		t.Fatalf("PRState = %q", s.PRState)
+	}
+	if metadataBySessionID[sessionID].HeadRefOID != "abc123" {
+		t.Fatalf("HeadRefOID = %q", metadataBySessionID[sessionID].HeadRefOID)
+	}
+}
+
+func TestSyncAgentTaskOutcomesAutoCompletesArchivedAttemptWithPR(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	sessionID := "codex:owner/repo:zellij-owner-repo"
+	if err := store.UpsertAgentTask(db, &store.AgentTask{
+		Name:       "owner-repo-task",
+		RepoRef:    "owner-repo",
+		Repository: "owner/repo",
+		Objective:  "Open PR",
+		TaskType:   "docs",
+		Risk:       "low",
+		Status:     "spawned",
+		SourceKind: "manifest",
+	}); err != nil {
+		t.Fatalf("UpsertAgentTask: %v", err)
+	}
+	if err := store.CreateAgentTaskDecision(db, &store.AgentTaskDecision{
+		AgentTaskName:    "owner-repo-task",
+		RepoRef:          "owner-repo",
+		Repository:       "owner/repo",
+		TaskType:         "docs",
+		Risk:             "low",
+		SelectedAgent:    "codex",
+		SelectedRepoMode: "branch",
+		Status:           "applied",
+		RouteReason:      "docs task",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskDecision: %v", err)
+	}
+	if err := store.CreateAgentTaskAttempt(db, &store.AgentTaskAttempt{
+		DecisionID:       1,
+		AgentTaskName:    "owner-repo-task",
+		RepoRef:          "owner-repo",
+		Repository:       "owner/repo",
+		TaskType:         "docs",
+		Risk:             "low",
+		Agent:            "codex",
+		RepoMode:         "branch",
+		Branch:           "feat/test",
+		SessionName:      "owner-repo",
+		ManagedSessionID: sessionID,
+		Summary:          "Open PR for docs update",
+		Status:           "spawned",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskAttempt: %v", err)
+	}
+	if err := store.UpsertSession(db, &store.Session{
+		ID:            sessionID,
+		Agent:         "codex",
+		Repository:    "owner/repo",
+		SessionID:     "zellij-owner-repo",
+		CWD:           "/tmp/owner-repo",
+		GitBranch:     "feat/test",
+		ZellijSession: "owner-repo",
+		Status:        "dead",
+		DesiredState:  store.DesiredStateStopped,
+		RuntimeStatus: "gone",
+		PRNumber:      42,
+		PRURL:         "https://github.com/owner/repo/pull/42",
+		PRState:       "OPEN",
+		TaskSummary:   "Open PR for docs update",
+		LastActive:    time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	if err := store.MoveToArchive(db, sessionID); err != nil {
+		t.Fatalf("MoveToArchive: %v", err)
+	}
+
+	origGitHead := gitHeadForWorktreePath
+	defer func() { gitHeadForWorktreePath = origGitHead }()
+	gitHeadForWorktreePath = func(path string) string { return "" }
+
+	if err := syncAgentTaskOutcomes(db, map[string]prMetadata{
+		sessionID: {HeadRefOID: "abc123"},
+	}); err != nil {
+		t.Fatalf("syncAgentTaskOutcomes: %v", err)
+	}
+
+	outcome, err := store.GetAgentTaskOutcomeByAttemptID(db, 1)
+	if err != nil {
+		t.Fatalf("GetAgentTaskOutcomeByAttemptID: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected outcome to be created")
+	}
+	if outcome.Status != "completed" {
+		t.Fatalf("status = %q, want completed", outcome.Status)
+	}
+	if outcome.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %q", outcome.PRURL)
+	}
+	if outcome.CommitSHA != "abc123" {
+		t.Fatalf("CommitSHA = %q", outcome.CommitSHA)
+	}
+	if outcome.Source != "sync" {
+		t.Fatalf("Source = %q", outcome.Source)
+	}
+
+	task, err := store.GetAgentTask(db, "owner-repo-task")
+	if err != nil {
+		t.Fatalf("GetAgentTask: %v", err)
+	}
+	if task.Status != "completed" {
+		t.Fatalf("task status = %q", task.Status)
+	}
+
+	decision, err := store.GetAgentTaskDecision(db, 1)
+	if err != nil {
+		t.Fatalf("GetAgentTaskDecision: %v", err)
+	}
+	if decision.Status != "completed" {
+		t.Fatalf("decision status = %q", decision.Status)
+	}
+}
+
+func TestSyncAgentTaskOutcomesAutoFailsSpawnFailure(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertAgentTask(db, &store.AgentTask{
+		Name:       "owner-repo-task",
+		RepoRef:    "owner-repo",
+		Repository: "owner/repo",
+		Objective:  "Open PR",
+		TaskType:   "docs",
+		Risk:       "low",
+		Status:     "spawned",
+		SourceKind: "manifest",
+	}); err != nil {
+		t.Fatalf("UpsertAgentTask: %v", err)
+	}
+	if err := store.CreateAgentTaskDecision(db, &store.AgentTaskDecision{
+		AgentTaskName:    "owner-repo-task",
+		RepoRef:          "owner-repo",
+		Repository:       "owner/repo",
+		TaskType:         "docs",
+		Risk:             "low",
+		SelectedAgent:    "codex",
+		SelectedRepoMode: "branch",
+		Status:           "applied",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskDecision: %v", err)
+	}
+	if err := store.CreateAgentTaskAttempt(db, &store.AgentTaskAttempt{
+		DecisionID:    1,
+		AgentTaskName: "owner-repo-task",
+		RepoRef:       "owner-repo",
+		Repository:    "owner/repo",
+		TaskType:      "docs",
+		Risk:          "low",
+		Agent:         "codex",
+		RepoMode:      "branch",
+		Branch:        "feat/test",
+		Status:        "failed",
+		FailureReason: "spawn command failed",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskAttempt: %v", err)
+	}
+
+	if err := syncAgentTaskOutcomes(db, nil); err != nil {
+		t.Fatalf("syncAgentTaskOutcomes: %v", err)
+	}
+
+	outcome, err := store.GetAgentTaskOutcomeByAttemptID(db, 1)
+	if err != nil {
+		t.Fatalf("GetAgentTaskOutcomeByAttemptID: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected outcome to be created")
+	}
+	if outcome.Status != "failed" {
+		t.Fatalf("status = %q, want failed", outcome.Status)
+	}
+	if outcome.FailureCategory != "spawn_failed" {
+		t.Fatalf("FailureCategory = %q", outcome.FailureCategory)
+	}
+	if outcome.FailureReason != "spawn command failed" {
+		t.Fatalf("FailureReason = %q", outcome.FailureReason)
+	}
+}
+
 func TestInferAgentFromLayout(t *testing.T) {
 	tests := []struct {
 		name      string

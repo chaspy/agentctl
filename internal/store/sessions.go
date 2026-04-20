@@ -180,6 +180,25 @@ func GetSession(db *sql.DB, id string) (*Session, error) {
 	return s, nil
 }
 
+// GetSessionAny retrieves a session by ID from either the active or archive table.
+func GetSessionAny(db *sql.DB, id string) (*Session, error) {
+	s, err := GetSession(db, id)
+	if err == nil {
+		return s, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, err
+	}
+	sessions, err := querySessions(db, sessionSelectFromArchive+` WHERE id = ? LIMIT 1`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &sessions[0], nil
+}
+
 // GetSessionBySessionID retrieves the most recent session with the given provider session ID.
 func GetSessionBySessionID(db *sql.DB, sessionID string) (*Session, error) {
 	if s, err := getSessionBySessionIDFromTable(db, "sessions", sessionID); err == nil {
