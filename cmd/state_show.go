@@ -17,6 +17,7 @@ type stateShowSummary struct {
 	ActiveSessions    int `json:"active_sessions"`
 	ArchivedSessions  int `json:"archived_sessions"`
 	QueuedAdoptions   int `json:"queued_adoptions"`
+	ManagedRepos      int `json:"managed_repos"`
 	BlockedSessions   int `json:"blocked_sessions"`
 	ErrorSessions     int `json:"error_sessions"`
 	GhostSessions     int `json:"ghost_sessions"`
@@ -115,8 +116,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions) ===\n",
-		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions)
+	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos) ===\n",
+		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
@@ -367,6 +368,12 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			CreatedAt:        adoption.CreatedAt,
 		})
 	}
+
+	managedRepos, err := store.ListManagedRepos(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing managed repos: %w", err)
+	}
+	report.Summary.ManagedRepos = len(managedRepos)
 
 	return report, nil
 }

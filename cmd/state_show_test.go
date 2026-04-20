@@ -15,6 +15,15 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now()
+	if err := store.UpsertManagedRepo(db, &store.ManagedRepo{
+		Name:        "myassistant",
+		Repository:  "chaspy/myassistant",
+		Role:        "personal-ops-console",
+		Visibility:  "private",
+		RawSpecJSON: `{"repo":"github.com/chaspy/myassistant","tier":"control-plane","role":"personal-ops-console","visibility":"private"}`,
+	}); err != nil {
+		t.Fatalf("UpsertManagedRepo: %v", err)
+	}
 	_ = store.UpsertSession(db, &store.Session{
 		ID:            "claude:a/b:blocked",
 		Agent:         "claude",
@@ -79,6 +88,9 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 
 	if report.Summary.ActiveSessions != 5 {
 		t.Fatalf("active_sessions = %d, want 5", report.Summary.ActiveSessions)
+	}
+	if report.Summary.ManagedRepos != 1 {
+		t.Fatalf("managed_repos = %d, want 1", report.Summary.ManagedRepos)
 	}
 	if report.Summary.BlockedSessions != 2 {
 		t.Fatalf("blocked_sessions = %d, want 2", report.Summary.BlockedSessions)

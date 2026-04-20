@@ -62,6 +62,9 @@ agentctl apply -f ~/go/src/github.com/chaspy/myassistant/ops/repos/book-assistan
 # Validate a self-hosting spec in read-only mode
 agentctl validate -f ~/go/src/github.com/chaspy/myassistant/ops/system/ecosystem.yaml --json
 
+# Read applied ManagedRepo desired state from the local DB
+agentctl state managed-repo list --json
+
 # Kill a session (with safety checks)
 agentctl kill <session-name>
 
@@ -91,6 +94,7 @@ agentctl serve
 | `state adopt <zellij-session>` | Queue a protected adoption plan for an unmanaged Codex session |
 | `state import-from-zellij` | Rebuild DB session records from current zellij sessions |
 | `state show` | Show saved state from SQLite |
+| `state managed-repo` | Inspect applied ManagedRepo desired state from SQLite |
 | `state log` | Record or view action logs |
 | `state log handoff <session-id>` | Record route reason, handoff summary, and token burn |
 | `state task` | Manage tasks (add, complete, list) |

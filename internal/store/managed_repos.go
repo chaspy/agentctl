@@ -132,3 +132,61 @@ func GetManagedRepo(db *sql.DB, name string) (*ManagedRepo, error) {
 	}
 	return &repo, nil
 }
+
+// ListManagedRepos returns all persisted ManagedRepo desired-state snapshots.
+func ListManagedRepos(db *sql.DB) ([]ManagedRepo, error) {
+	rows, err := db.Query(`
+		SELECT
+			name,
+			repository,
+			source_repo_ref,
+			role,
+			visibility,
+			repo_contract_path,
+			default_routing_policy_ref,
+			default_review_policy_ref,
+			default_approval_policy_ref,
+			default_benchmark_policy_ref,
+			notes,
+			source_path,
+			source_commit,
+			spec_hash,
+			raw_spec_json,
+			created_at,
+			updated_at
+		FROM managed_repos
+		ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []ManagedRepo
+	for rows.Next() {
+		var repo ManagedRepo
+		if err := rows.Scan(
+			&repo.Name,
+			&repo.Repository,
+			&repo.SourceRepoRef,
+			&repo.Role,
+			&repo.Visibility,
+			&repo.RepoContractPath,
+			&repo.DefaultRoutingPolicyRef,
+			&repo.DefaultReviewPolicyRef,
+			&repo.DefaultApprovalPolicyRef,
+			&repo.DefaultBenchmarkPolicyRef,
+			&repo.Notes,
+			&repo.SourcePath,
+			&repo.SourceCommit,
+			&repo.SpecHash,
+			&repo.RawSpecJSON,
+			&repo.CreatedAt,
+			&repo.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		repos = append(repos, repo)
+	}
+	return repos, rows.Err()
+}
