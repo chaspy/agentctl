@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/controlplane"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
 	"github.com/chaspy/agentctl/internal/store"
@@ -46,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/actions", s.handleActions)
 	mux.HandleFunc("/api/rate", s.handleRate)
 	mux.HandleFunc("/api/state", s.handleState)
+	mux.HandleFunc("/api/reconcile", s.handleReconcile)
 	mux.HandleFunc("/api/sync", s.handleSync)
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/sessions/messages", s.handleSessionMessages)
@@ -235,6 +237,20 @@ func (s *Server) handleRate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, rates)
+}
+
+func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	report, err := controlplane.BuildReconcileReport(s.db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, report)
 }
 
 func buildRateJSON(agent string, info provider.RateInfo) rateJSON {

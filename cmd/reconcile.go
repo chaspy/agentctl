@@ -4,40 +4,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/chaspy/agentctl/internal/controlplane"
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
 )
 
-type reconcileSummary struct {
-	ManagedRepos       int `json:"managedRepos"`
-	LocalClonesFound   int `json:"localClonesFound"`
-	RepoContractsFound int `json:"repoContractsFound"`
-	NeedsAttention     int `json:"needsAttention"`
-}
-
-type reconcileManagedRepoStatus struct {
-	Name             string   `json:"name"`
-	Repository       string   `json:"repository"`
-	Tier             string   `json:"tier,omitempty"`
-	Role             string   `json:"role,omitempty"`
-	LocalPath        string   `json:"localPath,omitempty"`
-	LocalCloneFound  bool     `json:"localCloneFound"`
-	RepoContractPath string   `json:"repoContractPath,omitempty"`
-	HasRepoContract  bool     `json:"hasRepoContract"`
-	NeedsAttention   bool     `json:"needsAttention"`
-	Issues           []string `json:"issues,omitempty"`
-}
-
-type reconcileReport struct {
-	Mode    string                       `json:"mode"`
-	Summary reconcileSummary             `json:"summary"`
-	Repos   []reconcileManagedRepoStatus `json:"repos"`
-}
+type reconcileSummary = controlplane.ReconcileSummary
+type reconcileManagedRepoStatus = controlplane.ReconcileManagedRepoStatus
+type reconcileReport = controlplane.ReconcileReport
 
 var (
 	reconcileOnceReadOnly bool
@@ -123,79 +100,9 @@ func runReconcileOnce(cmd *cobra.Command, args []string) error {
 }
 
 func buildReconcileReport(db *sql.DB) (*reconcileReport, error) {
-	managedRepos, err := store.ListManagedRepos(db)
+	report, err := controlplane.BuildReconcileReport(db)
 	if err != nil {
-		return nil, fmt.Errorf("listing managed repos: %w", err)
+		return nil, err
 	}
-
-	report := &reconcileReport{
-		Mode: "read-only",
-		Summary: reconcileSummary{
-			ManagedRepos: len(managedRepos),
-		},
-		Repos: make([]reconcileManagedRepoStatus, 0, len(managedRepos)),
-	}
-
-	for _, repo := range managedRepos {
-		status := observeManagedRepo(repo)
-		if status.LocalCloneFound {
-			report.Summary.LocalClonesFound++
-		}
-		if status.HasRepoContract {
-			report.Summary.RepoContractsFound++
-		}
-		if status.NeedsAttention {
-			report.Summary.NeedsAttention++
-		}
-		report.Repos = append(report.Repos, status)
-	}
-
 	return report, nil
-}
-
-func observeManagedRepo(repo store.ManagedRepo) reconcileManagedRepoStatus {
-	desired := buildManagedRepoReport(repo)
-	status := reconcileManagedRepoStatus{
-		Name:             desired.Name,
-		Repository:       desired.Repository,
-		Tier:             desired.Tier,
-		Role:             desired.Role,
-		RepoContractPath: desired.RepoContractPath,
-	}
-
-	entry, err := ResolveRepoPath(desired.Repository)
-	if err != nil {
-		status.Issues = append(status.Issues, fmt.Sprintf("local clone not found: %v", err))
-	} else {
-		status.LocalCloneFound = true
-		status.LocalPath = entry.FullPath
-	}
-
-	contractPath := strings.TrimSpace(desired.RepoContractPath)
-	if contractPath == "" {
-		status.Issues = append(status.Issues, "repoContractPath is not configured")
-		status.NeedsAttention = true
-		return status
-	}
-
-	if !status.LocalCloneFound {
-		status.NeedsAttention = true
-		return status
-	}
-
-	observedContract := filepath.Join(status.LocalPath, filepath.FromSlash(contractPath))
-	info, err := os.Stat(observedContract)
-	switch {
-	case err == nil && !info.IsDir():
-		status.HasRepoContract = true
-	case err == nil && info.IsDir():
-		status.Issues = append(status.Issues, fmt.Sprintf("repo contract path is a directory: %s", contractPath))
-	case os.IsNotExist(err):
-		status.Issues = append(status.Issues, fmt.Sprintf("repo contract not found: %s", contractPath))
-	default:
-		status.Issues = append(status.Issues, fmt.Sprintf("repo contract check failed: %v", err))
-	}
-
-	status.NeedsAttention = len(status.Issues) > 0
-	return status
 }

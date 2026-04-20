@@ -7,32 +7,12 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/chaspy/agentctl/internal/controlplane"
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
 )
 
-type managedRepoReport struct {
-	Name                      string                     `json:"name"`
-	Repository                string                     `json:"repository"`
-	SourceRepoRef             string                     `json:"sourceRepoRef,omitempty"`
-	Tier                      string                     `json:"tier,omitempty"`
-	Role                      string                     `json:"role"`
-	Visibility                string                     `json:"visibility"`
-	RepoContractPath          string                     `json:"repoContractPath,omitempty"`
-	DefaultRoutingPolicyRef   string                     `json:"defaultRoutingPolicyRef,omitempty"`
-	DefaultReviewPolicyRef    string                     `json:"defaultReviewPolicyRef,omitempty"`
-	DefaultApprovalPolicyRef  string                     `json:"defaultApprovalPolicyRef,omitempty"`
-	DefaultBenchmarkPolicyRef string                     `json:"defaultBenchmarkPolicyRef,omitempty"`
-	DefaultReleaseGateRef     string                     `json:"defaultReleaseGateRef,omitempty"`
-	SelfHosting               managedRepoSelfHostingSpec `json:"selfHosting,omitempty"`
-	Notes                     string                     `json:"notes,omitempty"`
-	SourcePath                string                     `json:"sourcePath,omitempty"`
-	SourceCommit              string                     `json:"sourceCommit,omitempty"`
-	SpecHash                  string                     `json:"specHash,omitempty"`
-	CreatedAt                 string                     `json:"createdAt,omitempty"`
-	UpdatedAt                 string                     `json:"updatedAt,omitempty"`
-	SpecParseError            string                     `json:"specParseError,omitempty"`
-}
+type managedRepoReport = controlplane.ManagedRepoView
 
 var (
 	stateManagedRepoJSON bool
@@ -72,27 +52,22 @@ func runStateManagedRepoList(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	repos, err := store.ListManagedRepos(db)
+	repos, err := controlplane.ListManagedRepoViews(db)
 	if err != nil {
 		return fmt.Errorf("listing managed repos: %w", err)
 	}
-	reports := make([]managedRepoReport, 0, len(repos))
-	for _, repo := range repos {
-		reports = append(reports, buildManagedRepoReport(repo))
-	}
-
 	if stateManagedRepoJSON {
-		return writeManagedRepoJSON(cmd.OutOrStdout(), reports)
+		return writeManagedRepoJSON(cmd.OutOrStdout(), repos)
 	}
 
-	if len(reports) == 0 {
+	if len(repos) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "No managed repos found.")
 		return nil
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tREPOSITORY\tTIER\tROLE\tVISIBILITY\tROUTING\tREVIEW\tAPPROVAL\tRELEASE\tUPDATED")
-	for _, repo := range reports {
+	for _, repo := range repos {
 		tier := repo.Tier
 		if tier == "" {
 			tier = "-"
@@ -137,7 +112,7 @@ func runStateManagedRepoGet(cmd *cobra.Command, args []string) error {
 	if repo == nil {
 		return fmt.Errorf("managed repo %q not found", args[0])
 	}
-	report := buildManagedRepoReport(*repo)
+	report := controlplane.BuildManagedRepoView(*repo)
 
 	if stateManagedRepoJSON {
 		return writeManagedRepoJSON(cmd.OutOrStdout(), report)
@@ -183,41 +158,6 @@ func runStateManagedRepoGet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildManagedRepoReport(repo store.ManagedRepo) managedRepoReport {
-	report := managedRepoReport{
-		Name:                      repo.Name,
-		Repository:                repo.Repository,
-		SourceRepoRef:             repo.SourceRepoRef,
-		Role:                      repo.Role,
-		Visibility:                repo.Visibility,
-		RepoContractPath:          repo.RepoContractPath,
-		DefaultRoutingPolicyRef:   repo.DefaultRoutingPolicyRef,
-		DefaultReviewPolicyRef:    repo.DefaultReviewPolicyRef,
-		DefaultApprovalPolicyRef:  repo.DefaultApprovalPolicyRef,
-		DefaultBenchmarkPolicyRef: repo.DefaultBenchmarkPolicyRef,
-		Notes:                     repo.Notes,
-		SourcePath:                repo.SourcePath,
-		SourceCommit:              repo.SourceCommit,
-		SpecHash:                  repo.SpecHash,
-		CreatedAt:                 repo.CreatedAt,
-		UpdatedAt:                 repo.UpdatedAt,
-	}
-
-	if strings.TrimSpace(repo.RawSpecJSON) == "" {
-		return report
-	}
-
-	var spec managedRepoSpec
-	if err := json.Unmarshal([]byte(repo.RawSpecJSON), &spec); err != nil {
-		report.SpecParseError = err.Error()
-		return report
-	}
-	report.Tier = spec.Tier
-	report.DefaultReleaseGateRef = spec.DefaultReleaseGateRef
-	report.SelfHosting = spec.SelfHosting
-	return report
-}
-
 func writeManagedRepoJSON(w io.Writer, value any) error {
 	out, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -227,7 +167,7 @@ func writeManagedRepoJSON(w io.Writer, value any) error {
 	return err
 }
 
-func hasSelfHostingSettings(spec managedRepoSelfHostingSpec) bool {
+func hasSelfHostingSettings(spec controlplane.ManagedRepoSelfHostingSpec) bool {
 	return spec.CanModifyDocs ||
 		spec.CanModifyOpsSpecs ||
 		spec.CanModifyRuntimeCode ||

@@ -12,7 +12,7 @@ A CLI tool for managing multiple coding agent sessions (Claude Code, Codex CLI) 
 - **State persistence** - SQLite-backed state with session sync, task tracking, and action logging
 - **Protected adoption queue** - Stage unmanaged Codex sessions for later safe adoption without touching the live session immediately
 - **Handoff telemetry** - Persist route reason, handoff summary, and token burn for completed worker sessions
-- **PWA dashboard** - Web-based dashboard for mobile monitoring
+- **PWA dashboard** - Web-based dashboard for mobile monitoring, including control-plane observed state for applied ManagedRepo resources
 
 ## Requirements
 
@@ -74,7 +74,7 @@ agentctl kill <session-name>
 # Monitor all sessions for changes
 agentctl monitor --target <your-session> --interval 30
 
-# Start PWA dashboard
+# Start PWA dashboard (Dashboard / Control Plane / Database tabs)
 agentctl serve
 ```
 
