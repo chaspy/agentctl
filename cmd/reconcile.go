@@ -17,8 +17,9 @@ type reconcileManagedRepoStatus = controlplane.ReconcileManagedRepoStatus
 type reconcileReport = controlplane.ReconcileReport
 
 var (
-	reconcileOnceReadOnly bool
-	reconcileOnceJSON     bool
+	reconcileOnceReadOnly     bool
+	reconcileOnceJSON         bool
+	reconcilePersistProposals bool
 )
 
 var reconcileCmd = &cobra.Command{
@@ -34,7 +35,10 @@ var reconcileOnceCmd = &cobra.Command{
 Today only read-only observation is supported. agentctl reads ManagedRepo
 resources from the local DB, checks whether local clones are present,
 observes origin remote reachability/default branch when available, and
-verifies whether the configured repo contract file exists.`,
+verifies whether the configured repo contract file exists.
+
+Use --persist-proposals to write the generated task proposal snapshot into
+the local DB for future client / approval flow experiments.`,
 	Args: cobra.NoArgs,
 	RunE: runReconcileOnce,
 }
@@ -44,6 +48,7 @@ func init() {
 	reconcileCmd.AddCommand(reconcileOnceCmd)
 	reconcileOnceCmd.Flags().BoolVar(&reconcileOnceReadOnly, "read-only", false, "Observe local state without mutating runtime state")
 	reconcileOnceCmd.Flags().BoolVar(&reconcileOnceJSON, "json", false, "Output machine-readable JSON")
+	reconcileOnceCmd.Flags().BoolVar(&reconcilePersistProposals, "persist-proposals", false, "Persist generated task proposal snapshots into the local DB")
 }
 
 func runReconcileOnce(cmd *cobra.Command, args []string) error {
@@ -60,6 +65,11 @@ func runReconcileOnce(cmd *cobra.Command, args []string) error {
 	report, err := buildReconcileReport(db)
 	if err != nil {
 		return err
+	}
+	if reconcilePersistProposals {
+		if err := persistTaskProposalSnapshots(db, report); err != nil {
+			return fmt.Errorf("persist task proposals: %w", err)
+		}
 	}
 
 	if reconcileOnceJSON {
@@ -130,7 +140,13 @@ func runReconcileOnce(cmd *cobra.Command, args []string) error {
 			proposal.Title,
 		)
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if reconcilePersistProposals {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nPersisted %d task proposal snapshot(s).\n", len(report.Proposals))
+	}
+	return nil
 }
 
 func buildReconcileReport(db *sql.DB) (*reconcileReport, error) {
@@ -139,4 +155,35 @@ func buildReconcileReport(db *sql.DB) (*reconcileReport, error) {
 		return nil, err
 	}
 	return report, nil
+}
+
+func persistTaskProposalSnapshots(db *sql.DB, report *reconcileReport) error {
+	snapshots := make([]store.TaskProposalSnapshot, 0, len(report.Proposals))
+	for _, proposal := range report.Proposals {
+		rawProposalJSON, err := json.Marshal(proposal)
+		if err != nil {
+			return fmt.Errorf("marshal proposal %s: %w", proposal.ID, err)
+		}
+		snapshots = append(snapshots, store.TaskProposalSnapshot{
+			ID:                proposal.ID,
+			Source:            "reconcile",
+			ReportMode:        report.Mode,
+			RepoRef:           proposal.RepoRef,
+			Repository:        proposal.Repository,
+			Tier:              proposal.Tier,
+			Category:          proposal.Category,
+			Title:             proposal.Title,
+			Objective:         proposal.Objective,
+			TaskType:          proposal.TaskType,
+			Risk:              proposal.Risk,
+			ReviewPolicyRef:   proposal.ReviewPolicyRef,
+			ApprovalPolicyRef: proposal.ApprovalPolicyRef,
+			ApprovalStatus:    proposal.Approval.Status,
+			ApprovalReason:    proposal.Approval.Reason,
+			DesiredOutcome:    append([]string(nil), proposal.DesiredOutcome...),
+			TriggerIssues:     append([]string(nil), proposal.TriggerIssues...),
+			RawProposalJSON:   string(rawProposalJSON),
+		})
+	}
+	return store.ReplaceTaskProposalSnapshots(db, "reconcile", snapshots)
 }

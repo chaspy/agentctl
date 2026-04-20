@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/rate", s.handleRate)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/reconcile", s.handleReconcile)
+	mux.HandleFunc("/api/proposals", s.handleProposals)
 	mux.HandleFunc("/api/sync", s.handleSync)
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/sessions/messages", s.handleSessionMessages)
@@ -251,6 +252,65 @@ func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, report)
+}
+
+type proposalJSON struct {
+	ID                string   `json:"id"`
+	Source            string   `json:"source"`
+	ReportMode        string   `json:"reportMode"`
+	RepoRef           string   `json:"repoRef"`
+	Repository        string   `json:"repository"`
+	Tier              string   `json:"tier,omitempty"`
+	Category          string   `json:"category"`
+	Title             string   `json:"title"`
+	Objective         string   `json:"objective"`
+	TaskType          string   `json:"taskType"`
+	Risk              string   `json:"risk"`
+	ReviewPolicyRef   string   `json:"reviewPolicyRef,omitempty"`
+	ApprovalPolicyRef string   `json:"approvalPolicyRef,omitempty"`
+	ApprovalStatus    string   `json:"approvalStatus"`
+	ApprovalReason    string   `json:"approvalReason,omitempty"`
+	DesiredOutcome    []string `json:"desiredOutcome,omitempty"`
+	TriggerIssues     []string `json:"triggerIssues,omitempty"`
+	UpdatedAt         string   `json:"updatedAt,omitempty"`
+}
+
+func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	proposals, err := store.ListTaskProposalSnapshots(s.db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	out := make([]proposalJSON, 0, len(proposals))
+	for _, proposal := range proposals {
+		out = append(out, proposalJSON{
+			ID:                proposal.ID,
+			Source:            proposal.Source,
+			ReportMode:        proposal.ReportMode,
+			RepoRef:           proposal.RepoRef,
+			Repository:        proposal.Repository,
+			Tier:              proposal.Tier,
+			Category:          proposal.Category,
+			Title:             proposal.Title,
+			Objective:         proposal.Objective,
+			TaskType:          proposal.TaskType,
+			Risk:              proposal.Risk,
+			ReviewPolicyRef:   proposal.ReviewPolicyRef,
+			ApprovalPolicyRef: proposal.ApprovalPolicyRef,
+			ApprovalStatus:    proposal.ApprovalStatus,
+			ApprovalReason:    proposal.ApprovalReason,
+			DesiredOutcome:    proposal.DesiredOutcome,
+			TriggerIssues:     proposal.TriggerIssues,
+			UpdatedAt:         proposal.UpdatedAt,
+		})
+	}
+	writeJSON(w, out)
 }
 
 func buildRateJSON(agent string, info provider.RateInfo) rateJSON {

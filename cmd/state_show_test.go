@@ -24,6 +24,21 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertManagedRepo: %v", err)
 	}
+	if err := store.ReplaceTaskProposalSnapshots(db, "reconcile", []store.TaskProposalSnapshot{
+		{
+			ID:             "myassistant-create-repo-contract",
+			RepoRef:        "myassistant",
+			Repository:     "chaspy/myassistant",
+			Category:       "create_repo_contract",
+			Title:          "Create repo contract",
+			Objective:      "Add .agent/repo.yaml",
+			TaskType:       "docs",
+			Risk:           "low",
+			ApprovalStatus: "not_required",
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceTaskProposalSnapshots: %v", err)
+	}
 	_ = store.UpsertSession(db, &store.Session{
 		ID:            "claude:a/b:blocked",
 		Agent:         "claude",
@@ -91,6 +106,9 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}
 	if report.Summary.ManagedRepos != 1 {
 		t.Fatalf("managed_repos = %d, want 1", report.Summary.ManagedRepos)
+	}
+	if report.Summary.TaskProposals != 1 {
+		t.Fatalf("task_proposals = %d, want 1", report.Summary.TaskProposals)
 	}
 	if report.Summary.BlockedSessions != 2 {
 		t.Fatalf("blocked_sessions = %d, want 2", report.Summary.BlockedSessions)

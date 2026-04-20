@@ -937,12 +937,13 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state, reconcile] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, proposals] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
     fetchJSON('/api/state'),
     fetchJSON('/api/reconcile'),
+    fetchJSON('/api/proposals'),
   ]);
 
   let html = '';
@@ -1052,6 +1053,25 @@ async function loadDatabase() {
         <td>${escapeHTML(proposal.risk || '')}</td>
         <td title="${escapeHTML(proposal.approval?.reason || '')}">${escapeHTML(proposal.approval?.status || 'unknown')}</td>
         <td>${escapeHTML(proposal.title || '')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (proposals && proposals.length > 0) {
+    html += `<div class="db-section-title">Persisted Proposal Snapshots <span class="db-count">(${proposals.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Source</th><th>Repo</th><th>Category</th><th>Task Type</th><th>Risk</th><th>Approval</th><th>Updated</th></tr></thead><tbody>';
+    for (const proposal of proposals) {
+      html += `<tr>
+        <td>${escapeHTML(proposal.id || '')}</td>
+        <td>${escapeHTML(proposal.source || '')}</td>
+        <td>${escapeHTML(proposal.repoRef || '')}</td>
+        <td>${escapeHTML(proposal.category || '')}</td>
+        <td>${escapeHTML(proposal.taskType || '')}</td>
+        <td>${escapeHTML(proposal.risk || '')}</td>
+        <td title="${escapeHTML(proposal.approvalReason || '')}">${escapeHTML(proposal.approvalStatus || 'unknown')}</td>
+        <td>${escapeHTML(proposal.updatedAt || '-')}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';
