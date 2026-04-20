@@ -26,6 +26,7 @@ var migrations = []string{
 	migrationV21,
 	migrationV22,
 	migrationV23,
+	migrationV24,
 }
 
 // Migrate applies all pending schema migrations.
@@ -458,4 +459,32 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo_ref ON agent_tasks(repo_ref);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated_at ON agent_tasks(status, updated_at DESC);
+`
+
+const migrationV24 = `
+CREATE TABLE IF NOT EXISTS agent_task_decisions (
+	id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent_task_name       TEXT NOT NULL,
+	repo_ref              TEXT NOT NULL,
+	repository            TEXT NOT NULL DEFAULT '',
+	task_type             TEXT NOT NULL,
+	risk                  TEXT NOT NULL,
+	routing_policy_ref    TEXT NOT NULL DEFAULT '',
+	policy_version        TEXT NOT NULL DEFAULT '',
+	selection_mode        TEXT NOT NULL DEFAULT '',
+	selected_agent        TEXT NOT NULL,
+	selected_repo_mode    TEXT NOT NULL DEFAULT '',
+	repo_profile_source   TEXT NOT NULL DEFAULT '',
+	mode_source           TEXT NOT NULL DEFAULT '',
+	agent_source          TEXT NOT NULL DEFAULT '',
+	eligible_agents_json  TEXT NOT NULL DEFAULT '[]',
+	candidate_scores_json TEXT NOT NULL DEFAULT '[]',
+	route_reason          TEXT NOT NULL DEFAULT '',
+	status                TEXT NOT NULL DEFAULT 'recorded' CHECK(status IN ('recorded', 'superseded', 'applied', 'cancelled')),
+	created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_task_decisions_task_created_at ON agent_task_decisions(agent_task_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_task_decisions_status_created_at ON agent_task_decisions(status, created_at DESC);
 `

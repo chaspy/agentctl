@@ -212,3 +212,70 @@ func TestHandleAgentTasksReturnsMaterializedItems(t *testing.T) {
 		t.Fatalf("status = %q", payload[0].Status)
 	}
 }
+
+func TestHandleAgentTaskDecisionsReturnsRecordedItems(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.CreateAgentTaskDecision(db, &store.AgentTaskDecision{
+		AgentTaskName:     "agentctl-create-repo-contract-adoption-1",
+		RepoRef:           "agentctl",
+		Repository:        "chaspy/agentctl",
+		TaskType:          "docs",
+		Risk:              "low",
+		RoutingPolicyRef:  "control-plane-default",
+		PolicyVersion:     "unresolved",
+		SelectionMode:     "auto_task_type",
+		SelectedAgent:     "codex",
+		SelectedRepoMode:  "branch",
+		RepoProfileSource: "managed_repo",
+		ModeSource:        "managed_repo",
+		AgentSource:       "default",
+		EligibleAgents:    []string{"codex", "claude"},
+		RouteReason:       "task-type docs prefers codex",
+		Status:            "recorded",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskDecision: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-task-decisions", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		AgentTaskName    string   `json:"agentTaskName"`
+		SelectedAgent    string   `json:"selectedAgent"`
+		EligibleAgents   []string `json:"eligibleAgents"`
+		RoutingPolicyRef string   `json:"routingPolicyRef"`
+		Status           string   `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].AgentTaskName != "agentctl-create-repo-contract-adoption-1" {
+		t.Fatalf("agentTaskName = %q", payload[0].AgentTaskName)
+	}
+	if payload[0].SelectedAgent != "codex" {
+		t.Fatalf("selectedAgent = %q", payload[0].SelectedAgent)
+	}
+	if payload[0].RoutingPolicyRef != "control-plane-default" {
+		t.Fatalf("routingPolicyRef = %q", payload[0].RoutingPolicyRef)
+	}
+	if payload[0].Status != "recorded" {
+		t.Fatalf("status = %q", payload[0].Status)
+	}
+	if len(payload[0].EligibleAgents) != 2 {
+		t.Fatalf("eligibleAgents len = %d, want 2", len(payload[0].EligibleAgents))
+	}
+}

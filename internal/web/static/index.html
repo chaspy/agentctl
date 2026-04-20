@@ -937,7 +937,7 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks, agentTaskDecisions] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
@@ -946,6 +946,7 @@ async function loadDatabase() {
     fetchJSON('/api/proposals'),
     fetchJSON('/api/proposal-adoptions'),
     fetchJSON('/api/agent-tasks'),
+    fetchJSON('/api/agent-task-decisions'),
   ]);
 
   let html = '';
@@ -1112,6 +1113,26 @@ async function loadDatabase() {
         <td>${escapeHTML(task.status || '')}</td>
         <td>${escapeHTML(task.sourceKind || '')}</td>
         <td>${escapeHTML(task.updatedAt || '-')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTaskDecisions && agentTaskDecisions.length > 0) {
+    html += `<div class="db-section-title">Agent Task Decisions <span class="db-count">(${agentTaskDecisions.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Agent Task</th><th>Repo</th><th>Task Type</th><th>Risk</th><th>Selected Agent</th><th>Repo Mode</th><th>Status</th><th>Route Reason</th></tr></thead><tbody>';
+    for (const decision of agentTaskDecisions) {
+      html += `<tr>
+        <td>#${escapeHTML(String(decision.id || ''))}</td>
+        <td>${escapeHTML(decision.agentTaskName || '')}</td>
+        <td>${escapeHTML(decision.repoRef || '')}</td>
+        <td>${escapeHTML(decision.taskType || '')}</td>
+        <td>${escapeHTML(decision.risk || '')}</td>
+        <td>${escapeHTML(decision.selectedAgent || '')}</td>
+        <td>${escapeHTML(decision.selectedRepoMode || '-')}</td>
+        <td>${escapeHTML(decision.status || '')}</td>
+        <td title="${escapeHTML(decision.routeReason || '')}">${truncate(decision.routeReason, 60)}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';

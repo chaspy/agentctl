@@ -183,6 +183,11 @@ func CountAgentTasks(db *sql.DB) (int, error) {
 	return count, nil
 }
 
+func UpdateAgentTaskStatus(db *sql.DB, name, status string) error {
+	_, err := db.Exec(`UPDATE agent_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?`, status, name)
+	return err
+}
+
 func scanAgentTask(scanner taskProposalRowScanner) (AgentTask, error) {
 	var task AgentTask
 	var contextRefsJSON string

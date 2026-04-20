@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,12 +32,28 @@ var stateAgentTaskGetCmd = &cobra.Command{
 	RunE:  runStateAgentTaskGet,
 }
 
+var (
+	stateAgentTaskDecideDryRun bool
+)
+
+var stateAgentTaskDecideCmd = &cobra.Command{
+	Use:   "decide <name>",
+	Short: "Record a routing decision for one planned AgentTask",
+	Long: `Computes and stores the current routing decision for an AgentTask.
+This records the selected agent, repo mode, candidate scores, and route reason,
+but does not spawn a session yet.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runStateAgentTaskDecide,
+}
+
 func init() {
 	stateCmd.AddCommand(stateAgentTaskCmd)
 	stateAgentTaskCmd.AddCommand(stateAgentTaskListCmd)
 	stateAgentTaskCmd.AddCommand(stateAgentTaskGetCmd)
+	stateAgentTaskCmd.AddCommand(stateAgentTaskDecideCmd)
 	stateAgentTaskListCmd.Flags().BoolVar(&stateAgentTaskJSON, "json", false, "Output machine-readable JSON")
 	stateAgentTaskGetCmd.Flags().BoolVar(&stateAgentTaskJSON, "json", false, "Output machine-readable JSON")
+	stateAgentTaskDecideCmd.Flags().BoolVar(&stateAgentTaskDecideDryRun, "dry-run", false, "Preview the decision without writing to SQLite")
 }
 
 func runStateAgentTaskList(cmd *cobra.Command, args []string) error {
@@ -121,6 +138,54 @@ func runStateAgentTaskGet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runStateAgentTaskDecide(cmd *cobra.Command, args []string) error {
+	db, err := store.Open("")
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	task, err := store.GetAgentTask(db, args[0])
+	if err != nil {
+		return fmt.Errorf("getting agent task %s: %w", args[0], err)
+	}
+	if task == nil {
+		return fmt.Errorf("agent task %q not found", args[0])
+	}
+	if task.Status != "planned" {
+		return fmt.Errorf("agent task %q is %q, expected planned", task.Name, task.Status)
+	}
+
+	decision, err := buildAgentTaskDecision(db, task)
+	if err != nil {
+		return fmt.Errorf("building decision for agent task %s: %w", task.Name, err)
+	}
+	if stateAgentTaskDecideDryRun {
+		writeAgentTaskDecision(cmd.OutOrStdout(), decision, true)
+		fmt.Fprintln(cmd.OutOrStdout(), "No database changes were made.")
+		return nil
+	}
+
+	if err := store.CreateAgentTaskDecision(db, decision); err != nil {
+		return fmt.Errorf("storing decision: %w", err)
+	}
+	if err := store.UpdateAgentTaskStatus(db, task.Name, "routed"); err != nil {
+		return fmt.Errorf("marking agent task routed: %w", err)
+	}
+	if err := store.LogAction(db, &store.Action{
+		ActionType:  "decision",
+		Content:     fmt.Sprintf("Recorded decision #%d for agent task %s", decision.ID, task.Name),
+		RouteReason: decision.RouteReason,
+		Result:      decision.SelectedAgent,
+	}); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("logging decision action: %w", err)
+	}
+
+	writeAgentTaskDecision(cmd.OutOrStdout(), decision, false)
+	fmt.Fprintf(cmd.OutOrStdout(), "Recorded decision #%d for AgentTask %s.\n", decision.ID, task.Name)
+	return nil
+}
+
 func writeAgentTaskJSON(w io.Writer, value any) error {
 	out, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -128,6 +193,27 @@ func writeAgentTaskJSON(w io.Writer, value any) error {
 	}
 	_, err = fmt.Fprintln(w, string(out))
 	return err
+}
+
+func writeAgentTaskDecision(w io.Writer, decision *store.AgentTaskDecision, dryRun bool) {
+	title := "AgentTask decision"
+	if dryRun {
+		title += " (dry-run)"
+	}
+	fmt.Fprintln(w, title)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "FIELD\tVALUE")
+	fmt.Fprintf(tw, "agent_task\t%s\n", decision.AgentTaskName)
+	fmt.Fprintf(tw, "repo\t%s\n", decision.RepoRef)
+	fmt.Fprintf(tw, "task_type\t%s\n", decision.TaskType)
+	fmt.Fprintf(tw, "risk\t%s\n", decision.Risk)
+	fmt.Fprintf(tw, "routing_policy_ref\t%s\n", dashIfEmpty(decision.RoutingPolicyRef))
+	fmt.Fprintf(tw, "policy_version\t%s\n", dashIfEmpty(decision.PolicyVersion))
+	fmt.Fprintf(tw, "selection_mode\t%s\n", decision.SelectionMode)
+	fmt.Fprintf(tw, "selected_agent\t%s\n", decision.SelectedAgent)
+	fmt.Fprintf(tw, "selected_repo_mode\t%s\n", decision.SelectedRepoMode)
+	fmt.Fprintf(tw, "route_reason\t%s\n", dashIfEmpty(decision.RouteReason))
+	_ = tw.Flush()
 }
 
 func yesNo(v bool) string {
