@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/controlplane"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
@@ -63,17 +64,29 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	sessionName := spawnName
 	repoMode := "branch"
 	repoAgent := spawnAgentAuto
+	profileSource := controlplane.RepoProfileSourceDefault
 
 	if db, err := store.Open(""); err == nil {
-		if cfg, err := store.GetRepoFullConfig(db, repo.ShortName); err == nil && cfg != nil {
-			if cfg.Mode != "" {
-				repoMode = cfg.Mode
+		if profile, err := controlplane.GetRepoProfile(db, repo.ShortName); err == nil && profile != nil {
+			if profile.Mode != "" {
+				repoMode = profile.Mode
 			}
-			if cfg.Agent != "" {
-				repoAgent = cfg.Agent
+			if profile.Agent != "" {
+				repoAgent = profile.Agent
 			}
+			profileSource = profile.PrimarySource
+			fmt.Fprintf(os.Stderr, "Using repo profile %s: mode=%s(%s) agent=%s(%s)\n",
+				profile.PrimarySource,
+				profile.Mode,
+				profile.ModeSource,
+				profile.Agent,
+				profile.AgentSource,
+			)
 		}
 		db.Close()
+	}
+	if profileSource == controlplane.RepoProfileSourceDefault {
+		fmt.Fprintf(os.Stderr, "Using default repo profile: mode=%s(default) agent=%s(default)\n", repoMode, repoAgent)
 	}
 
 	agentPref := spawnAgent

@@ -5,6 +5,7 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/chaspy/agentctl/internal/controlplane"
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -119,29 +120,32 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	cfg, err := store.GetRepoFullConfig(db, repo)
+	profile, err := controlplane.GetRepoProfile(db, repo)
 	if err != nil {
-		return fmt.Errorf("get repo config: %w", err)
+		return fmt.Errorf("get repo profile: %w", err)
 	}
 
-	if cfg == nil {
+	if profile == nil {
 		fmt.Printf("%s: mode=branch (default), agent=auto (default), description=(none)\n", repo)
 		return nil
 	}
 
-	fmt.Printf("Repository:  %s\n", cfg.Repo)
-	fmt.Printf("Mode:        %s\n", cfg.Mode)
-	if cfg.Agent != "" {
-		fmt.Printf("Agent:       %s\n", cfg.Agent)
+	fmt.Printf("Repository:        %s\n", profile.Repo)
+	fmt.Printf("PrimarySource:     %s\n", profile.PrimarySource)
+	fmt.Printf("Mode:              %s (%s)\n", profile.Mode, profile.ModeSource)
+	fmt.Printf("Agent:             %s (%s)\n", profile.Agent, profile.AgentSource)
+	if profile.Description != "" {
+		fmt.Printf("Description:       %s (%s)\n", profile.Description, profile.DescriptionSource)
 	} else {
-		fmt.Printf("Agent:       auto\n")
+		fmt.Printf("Description:       (none) (%s)\n", profile.DescriptionSource)
 	}
-	if cfg.Description != "" {
-		fmt.Printf("Description: %s\n", cfg.Description)
-	} else {
-		fmt.Printf("Description: (none)\n")
+	if profile.ManagedRepo != nil {
+		fmt.Printf("ManagedRepoTier:   %s\n", emptyFallback(profile.ManagedRepo.Tier))
+		fmt.Printf("ManagedRepoRole:   %s\n", emptyFallback(profile.ManagedRepo.Role))
 	}
-	fmt.Printf("Updated:     %s\n", cfg.UpdatedAt)
+	fmt.Printf("LegacyRepoConfig:  %t\n", profile.HasRepoConfig)
+	fmt.Printf("ManagedRepo:       %t\n", profile.HasManagedRepo)
+	fmt.Printf("Updated:           %s\n", emptyFallback(profile.UpdatedAt))
 	return nil
 }
 
@@ -152,28 +156,37 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	configs, err := store.ListRepoConfigs(db)
+	profiles, err := controlplane.ListRepoProfiles(db)
 	if err != nil {
-		return fmt.Errorf("list repo configs: %w", err)
+		return fmt.Errorf("list repo profiles: %w", err)
 	}
 
-	if len(configs) == 0 {
-		fmt.Println("No repository configurations set. Defaults: mode=branch, agent=auto.")
+	if len(profiles) == 0 {
+		fmt.Println("No repository profiles found. Defaults: mode=branch, agent=auto.")
 		return nil
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "REPO\tMODE\tAGENT\tDESCRIPTION\tUPDATED")
-	for _, c := range configs {
-		desc := c.Description
+	fmt.Fprintln(w, "REPO\tPRIMARY\tMODE\tAGENT\tDESCRIPTION\tUPDATED")
+	for _, profile := range profiles {
+		desc := profile.Description
 		if len(desc) > 50 {
 			desc = desc[:47] + "..."
 		}
-		agent := c.Agent
-		if agent == "" {
-			agent = "auto"
+		modeValue := fmt.Sprintf("%s(%s)", profile.Mode, profile.ModeSource)
+		agentValue := fmt.Sprintf("%s(%s)", profile.Agent, profile.AgentSource)
+		descValue := "(none)"
+		if desc != "" {
+			descValue = fmt.Sprintf("%s(%s)", desc, profile.DescriptionSource)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", c.Repo, c.Mode, agent, desc, c.UpdatedAt)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			profile.Repo,
+			profile.PrimarySource,
+			modeValue,
+			agentValue,
+			descValue,
+			emptyFallback(profile.UpdatedAt),
+		)
 	}
 	return w.Flush()
 }

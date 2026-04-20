@@ -133,6 +133,58 @@ func GetManagedRepo(db *sql.DB, name string) (*ManagedRepo, error) {
 	return &repo, nil
 }
 
+// GetManagedRepoByRepository loads a ManagedRepo by repository slug. Returns nil if not found.
+func GetManagedRepoByRepository(db *sql.DB, repository string) (*ManagedRepo, error) {
+	var repo ManagedRepo
+	err := db.QueryRow(`
+		SELECT
+			name,
+			repository,
+			source_repo_ref,
+			role,
+			visibility,
+			repo_contract_path,
+			default_routing_policy_ref,
+			default_review_policy_ref,
+			default_approval_policy_ref,
+			default_benchmark_policy_ref,
+			notes,
+			source_path,
+			source_commit,
+			spec_hash,
+			raw_spec_json,
+			created_at,
+			updated_at
+		FROM managed_repos
+		WHERE repository = ?
+	`, repository).Scan(
+		&repo.Name,
+		&repo.Repository,
+		&repo.SourceRepoRef,
+		&repo.Role,
+		&repo.Visibility,
+		&repo.RepoContractPath,
+		&repo.DefaultRoutingPolicyRef,
+		&repo.DefaultReviewPolicyRef,
+		&repo.DefaultApprovalPolicyRef,
+		&repo.DefaultBenchmarkPolicyRef,
+		&repo.Notes,
+		&repo.SourcePath,
+		&repo.SourceCommit,
+		&repo.SpecHash,
+		&repo.RawSpecJSON,
+		&repo.CreatedAt,
+		&repo.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &repo, nil
+}
+
 // ListManagedRepos returns all persisted ManagedRepo desired-state snapshots.
 func ListManagedRepos(db *sql.DB) ([]ManagedRepo, error) {
 	rows, err := db.Query(`
