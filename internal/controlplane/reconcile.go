@@ -54,6 +54,9 @@ type ReconcileSummary struct {
 	RemoteURLsResolved            int `json:"remoteURLsResolved"`
 	RemoteReachable               int `json:"remoteReachable"`
 	RemoteDefaultBranchesResolved int `json:"remoteDefaultBranchesResolved"`
+	TaskProposals                 int `json:"taskProposals"`
+	ApprovalRequiredProposals     int `json:"approvalRequiredProposals"`
+	ApprovalUnknownProposals      int `json:"approvalUnknownProposals"`
 	NeedsAttention                int `json:"needsAttention"`
 }
 
@@ -76,10 +79,39 @@ type ReconcileManagedRepoStatus struct {
 }
 
 type ReconcileReport struct {
-	Mode    string                       `json:"mode"`
-	Summary ReconcileSummary             `json:"summary"`
-	Repos   []ReconcileManagedRepoStatus `json:"repos"`
+	Mode      string                       `json:"mode"`
+	Summary   ReconcileSummary             `json:"summary"`
+	Repos     []ReconcileManagedRepoStatus `json:"repos"`
+	Proposals []ReconcileTaskProposal      `json:"proposals,omitempty"`
 }
+
+type ReconcileTaskProposal struct {
+	ID                string                 `json:"id"`
+	RepoRef           string                 `json:"repoRef"`
+	Repository        string                 `json:"repository"`
+	Tier              string                 `json:"tier,omitempty"`
+	Category          string                 `json:"category"`
+	Title             string                 `json:"title"`
+	Objective         string                 `json:"objective"`
+	TaskType          string                 `json:"taskType"`
+	Risk              string                 `json:"risk"`
+	ReviewPolicyRef   string                 `json:"reviewPolicyRef,omitempty"`
+	ApprovalPolicyRef string                 `json:"approvalPolicyRef,omitempty"`
+	Approval          ProposalApprovalStatus `json:"approval"`
+	DesiredOutcome    []string               `json:"desiredOutcome,omitempty"`
+	TriggerIssues     []string               `json:"triggerIssues,omitempty"`
+}
+
+type ProposalApprovalStatus struct {
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+const (
+	proposalApprovalRequired    = "required"
+	proposalApprovalNotRequired = "not_required"
+	proposalApprovalUnknown     = "unknown"
+)
 
 type remoteObservation struct {
 	source        string
@@ -88,6 +120,12 @@ type remoteObservation struct {
 	reachable     bool
 	defaultBranch string
 	issues        []string
+}
+
+type proposalBuilder struct {
+	view   ManagedRepoView
+	status ReconcileManagedRepoStatus
+	items  []ReconcileTaskProposal
 }
 
 type managedRepoSpecSnapshot struct {
@@ -188,11 +226,13 @@ func BuildReconcileReport(db *sql.DB) (*ReconcileReport, error) {
 		Summary: ReconcileSummary{
 			ManagedRepos: len(repos),
 		},
-		Repos: make([]ReconcileManagedRepoStatus, 0, len(repos)),
+		Repos:     make([]ReconcileManagedRepoStatus, 0, len(repos)),
+		Proposals: make([]ReconcileTaskProposal, 0),
 	}
 
 	for _, repo := range repos {
-		status := observeManagedRepo(repo)
+		view := BuildManagedRepoView(repo)
+		status := observeManagedRepoView(view)
 		if status.LocalCloneFound {
 			report.Summary.LocalClonesFound++
 		}
@@ -212,13 +252,28 @@ func BuildReconcileReport(db *sql.DB) (*ReconcileReport, error) {
 			report.Summary.NeedsAttention++
 		}
 		report.Repos = append(report.Repos, status)
+
+		proposals := buildTaskProposals(view, status)
+		report.Summary.TaskProposals += len(proposals)
+		for _, proposal := range proposals {
+			switch proposal.Approval.Status {
+			case proposalApprovalRequired:
+				report.Summary.ApprovalRequiredProposals++
+			case proposalApprovalUnknown:
+				report.Summary.ApprovalUnknownProposals++
+			}
+			report.Proposals = append(report.Proposals, proposal)
+		}
 	}
 
 	return report, nil
 }
 
 func observeManagedRepo(repo store.ManagedRepo) ReconcileManagedRepoStatus {
-	view := BuildManagedRepoView(repo)
+	return observeManagedRepoView(BuildManagedRepoView(repo))
+}
+
+func observeManagedRepoView(view ManagedRepoView) ReconcileManagedRepoStatus {
 	status := ReconcileManagedRepoStatus{
 		Name:             view.Name,
 		Repository:       view.Repository,
@@ -263,6 +318,174 @@ func observeManagedRepo(repo store.ManagedRepo) ReconcileManagedRepoStatus {
 
 	status.NeedsAttention = len(status.Issues) > 0
 	return status
+}
+
+func buildTaskProposals(view ManagedRepoView, status ReconcileManagedRepoStatus) []ReconcileTaskProposal {
+	builder := proposalBuilder{view: view, status: status}
+
+	if !status.LocalCloneFound {
+		builder.add("bootstrap_local_clone", "Bootstrap local clone", "implementation", riskForLocalClone(view),
+			fmt.Sprintf("Create a local checkout for %s so reconcile and agent tasks can operate on a workspace.", view.Repository),
+			[]string{
+				fmt.Sprintf("A local clone exists for %s", view.Repository),
+				"reconcile reports localCloneFound=true",
+			},
+			filterIssues(status.Issues, "local clone not found:"),
+		)
+	}
+
+	if strings.TrimSpace(status.RepoContractPath) == "" {
+		builder.add("configure_repo_contract_path", "Configure repo contract path", "docs", "low",
+			fmt.Sprintf("Update ManagedRepo %s so repoContractPath is declared in desired state.", view.Name),
+			[]string{
+				"ManagedRepo spec declares repoContractPath",
+				`reconcile no longer reports "repoContractPath is not configured"`,
+			},
+			filterIssues(status.Issues, "repoContractPath is not configured"),
+		)
+	} else if status.LocalCloneFound && !status.HasRepoContract {
+		builder.add("create_repo_contract", "Create repo contract", "docs", "low",
+			fmt.Sprintf("Add %s to %s and describe the repo contract for agentctl.", status.RepoContractPath, view.Repository),
+			[]string{
+				fmt.Sprintf("%s exists in the repository", status.RepoContractPath),
+				"reconcile reports hasRepoContract=true",
+			},
+			filterIssues(status.Issues, "repo contract not found:", "repo contract path is a directory:", "repo contract check failed:"),
+		)
+	}
+
+	if status.RemoteURL != "" && !status.RemoteReachable {
+		builder.add("restore_remote_reachability", "Restore remote reachability", "implementation", riskForRemote(view),
+			fmt.Sprintf("Investigate and restore read-only access to %s for %s.", status.RemoteURL, view.Repository),
+			[]string{
+				"reconcile reports remoteReachable=true",
+				"remote default branch can be observed",
+			},
+			filterIssues(status.Issues, "remote reachability check failed:"),
+		)
+	}
+
+	if status.ObservedRemoteRepo != "" && status.ObservedRemoteRepo != status.Repository {
+		builder.add("align_remote_repository_reference", "Align remote repository reference", "implementation", riskForRemote(view),
+			fmt.Sprintf("Align ManagedRepo.repository and the observed remote for %s.", view.Name),
+			[]string{
+				fmt.Sprintf("ManagedRepo.repository matches the observed remote for %s", view.Name),
+				"reconcile no longer reports remote repository mismatch",
+			},
+			filterIssues(status.Issues, "remote points to"),
+		)
+	}
+
+	return builder.items
+}
+
+func (b *proposalBuilder) add(category, title, taskType, risk, objective string, desiredOutcome, triggerIssues []string) {
+	approval := inferProposalApproval(b.view, taskType, risk)
+	proposal := ReconcileTaskProposal{
+		ID:                proposalID(b.view.Name, category),
+		RepoRef:           b.view.Name,
+		Repository:        b.view.Repository,
+		Tier:              b.view.Tier,
+		Category:          category,
+		Title:             title,
+		Objective:         objective,
+		TaskType:          taskType,
+		Risk:              risk,
+		ReviewPolicyRef:   b.view.DefaultReviewPolicyRef,
+		ApprovalPolicyRef: b.view.DefaultApprovalPolicyRef,
+		Approval:          approval,
+		DesiredOutcome:    desiredOutcome,
+		TriggerIssues:     triggerIssues,
+	}
+	b.items = append(b.items, proposal)
+}
+
+func inferProposalApproval(view ManagedRepoView, taskType, risk string) ProposalApprovalStatus {
+	switch {
+	case risk == "high":
+		return ProposalApprovalStatus{
+			Status: proposalApprovalRequired,
+			Reason: "high-risk proposals require explicit human approval",
+		}
+	case view.SelfHosting.RequiresHumanApprovalBeforeMerge && taskType == "implementation":
+		return ProposalApprovalStatus{
+			Status: proposalApprovalRequired,
+			Reason: "self-hosting implementation work is gated until human approval",
+		}
+	case view.Tier == "control-plane" && taskType == "implementation":
+		return ProposalApprovalStatus{
+			Status: proposalApprovalRequired,
+			Reason: "control-plane implementation work is conservatively gated",
+		}
+	case taskType == "docs" && risk == "low":
+		return ProposalApprovalStatus{
+			Status: proposalApprovalNotRequired,
+			Reason: "low-risk docs/config proposals do not need a task-level approval gate",
+		}
+	case strings.TrimSpace(view.DefaultApprovalPolicyRef) == "":
+		return ProposalApprovalStatus{
+			Status: proposalApprovalUnknown,
+			Reason: "no defaultApprovalPolicyRef is configured",
+		}
+	default:
+		return ProposalApprovalStatus{
+			Status: proposalApprovalUnknown,
+			Reason: fmt.Sprintf("full evaluation for approval policy %q is not implemented yet", view.DefaultApprovalPolicyRef),
+		}
+	}
+}
+
+func riskForLocalClone(view ManagedRepoView) string {
+	if view.Tier == "control-plane" {
+		return "medium"
+	}
+	return "low"
+}
+
+func riskForRemote(view ManagedRepoView) string {
+	if view.Tier == "control-plane" {
+		return "high"
+	}
+	return "medium"
+}
+
+func filterIssues(issues []string, prefixes ...string) []string {
+	if len(prefixes) == 0 {
+		return append([]string(nil), issues...)
+	}
+	filtered := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		for _, prefix := range prefixes {
+			if strings.Contains(issue, prefix) {
+				filtered = append(filtered, issue)
+				break
+			}
+		}
+	}
+	return filtered
+}
+
+func proposalID(repoRef, category string) string {
+	return sanitizeProposalPart(repoRef) + "-" + sanitizeProposalPart(category)
+}
+
+func sanitizeProposalPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash && b.Len() > 0 {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func observeRemoteState(view ManagedRepoView, localPath string) remoteObservation {

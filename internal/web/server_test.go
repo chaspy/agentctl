@@ -56,6 +56,7 @@ func TestHandleReconcileReturnsObservedManagedRepoState(t *testing.T) {
 			ManagedRepos       int `json:"managedRepos"`
 			LocalClonesFound   int `json:"localClonesFound"`
 			RepoContractsFound int `json:"repoContractsFound"`
+			TaskProposals      int `json:"taskProposals"`
 			NeedsAttention     int `json:"needsAttention"`
 		} `json:"summary"`
 		Repos []struct {
@@ -64,6 +65,9 @@ func TestHandleReconcileReturnsObservedManagedRepoState(t *testing.T) {
 			HasRepoContract bool   `json:"hasRepoContract"`
 			NeedsAttention  bool   `json:"needsAttention"`
 		} `json:"repos"`
+		Proposals []struct {
+			ID string `json:"id"`
+		} `json:"proposals"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
@@ -77,6 +81,9 @@ func TestHandleReconcileReturnsObservedManagedRepoState(t *testing.T) {
 	}
 	if payload.Summary.RepoContractsFound != 1 {
 		t.Fatalf("repoContractsFound = %d, want 1", payload.Summary.RepoContractsFound)
+	}
+	if payload.Summary.TaskProposals != 0 {
+		t.Fatalf("taskProposals = %d, want 0", payload.Summary.TaskProposals)
 	}
 	if payload.Summary.NeedsAttention != 0 {
 		t.Fatalf("needsAttention = %d, want 0", payload.Summary.NeedsAttention)
@@ -92,5 +99,8 @@ func TestHandleReconcileReturnsObservedManagedRepoState(t *testing.T) {
 	}
 	if payload.Repos[0].NeedsAttention {
 		t.Fatalf("expected no attention: %+v", payload.Repos[0])
+	}
+	if len(payload.Proposals) != 0 {
+		t.Fatalf("expected no proposals: %+v", payload.Proposals)
 	}
 }

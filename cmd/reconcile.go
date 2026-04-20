@@ -72,13 +72,16 @@ func runReconcileOnce(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "=== Reconcile Once (%s) ===\n", report.Mode)
-	fmt.Fprintf(cmd.OutOrStdout(), "ManagedRepos=%d LocalClonesFound=%d RepoContractsFound=%d RemoteURLsResolved=%d RemoteReachable=%d RemoteDefaultBranchesResolved=%d NeedsAttention=%d\n",
+	fmt.Fprintf(cmd.OutOrStdout(), "ManagedRepos=%d LocalClonesFound=%d RepoContractsFound=%d RemoteURLsResolved=%d RemoteReachable=%d RemoteDefaultBranchesResolved=%d TaskProposals=%d ApprovalRequiredProposals=%d ApprovalUnknownProposals=%d NeedsAttention=%d\n",
 		report.Summary.ManagedRepos,
 		report.Summary.LocalClonesFound,
 		report.Summary.RepoContractsFound,
 		report.Summary.RemoteURLsResolved,
 		report.Summary.RemoteReachable,
 		report.Summary.RemoteDefaultBranchesResolved,
+		report.Summary.TaskProposals,
+		report.Summary.ApprovalRequiredProposals,
+		report.Summary.ApprovalUnknownProposals,
 		report.Summary.NeedsAttention,
 	)
 	if len(report.Repos) == 0 {
@@ -103,6 +106,29 @@ func runReconcileOnce(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%t\t%s\t%t\t%t\t%s\n",
 			repo.Name, repo.Repository, tier, repo.LocalCloneFound, repo.RemoteReachable, defaultBranch, repo.HasRepoContract, repo.NeedsAttention, issues)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+
+	if len(report.Proposals) == 0 {
+		return nil
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintf(cmd.OutOrStdout(), "=== Task Proposals (%d) ===\n", len(report.Proposals))
+	w = tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tREPO\tCATEGORY\tTASK_TYPE\tRISK\tAPPROVAL\tTITLE")
+	for _, proposal := range report.Proposals {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			proposal.ID,
+			proposal.RepoRef,
+			proposal.Category,
+			proposal.TaskType,
+			proposal.Risk,
+			proposal.Approval.Status,
+			proposal.Title,
+		)
 	}
 	return w.Flush()
 }

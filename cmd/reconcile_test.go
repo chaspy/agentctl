@@ -56,6 +56,9 @@ func TestBuildReconcileReportObservedLocalCloneAndRepoContract(t *testing.T) {
 	if report.Summary.RepoContractsFound != 1 {
 		t.Fatalf("repo contracts found = %d, want 1", report.Summary.RepoContractsFound)
 	}
+	if report.Summary.TaskProposals != 0 {
+		t.Fatalf("task proposals = %d, want 0", report.Summary.TaskProposals)
+	}
 	if report.Summary.NeedsAttention != 0 {
 		t.Fatalf("needs attention = %d, want 0", report.Summary.NeedsAttention)
 	}
@@ -128,5 +131,11 @@ func TestRunReconcileOnceFlagsAttentionForMissingObservedState(t *testing.T) {
 	}
 	if !strings.Contains(got, `"repoContractPath is not configured"`) {
 		t.Fatalf("expected JSON output to include missing repo contract issue, got %q", got)
+	}
+	if !strings.Contains(got, `"taskProposals": 2`) {
+		t.Fatalf("expected JSON output to include task proposal count, got %q", got)
+	}
+	if !strings.Contains(got, `"category": "bootstrap_local_clone"`) {
+		t.Fatalf("expected JSON output to include local clone proposal, got %q", got)
 	}
 }

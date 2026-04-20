@@ -67,6 +67,9 @@ func TestBuildReconcileReportObservesRemoteMetadata(t *testing.T) {
 	if report.Summary.RemoteDefaultBranchesResolved != 1 {
 		t.Fatalf("remote default branches resolved = %d, want 1", report.Summary.RemoteDefaultBranchesResolved)
 	}
+	if report.Summary.TaskProposals != 0 {
+		t.Fatalf("task proposals = %d, want 0", report.Summary.TaskProposals)
+	}
 	if len(report.Repos) != 1 {
 		t.Fatalf("repos len = %d, want 1", len(report.Repos))
 	}
@@ -86,6 +89,9 @@ func TestBuildReconcileReportObservesRemoteMetadata(t *testing.T) {
 	}
 	if repo.NeedsAttention {
 		t.Fatalf("expected no attention: %+v", repo)
+	}
+	if len(report.Proposals) != 0 {
+		t.Fatalf("proposals len = %d, want 0", len(report.Proposals))
 	}
 }
 
@@ -142,6 +148,9 @@ func TestBuildReconcileReportFallsBackToSpecRemoteWithoutLocalClone(t *testing.T
 	if report.Summary.RemoteDefaultBranchesResolved != 1 {
 		t.Fatalf("remote default branches resolved = %d, want 1", report.Summary.RemoteDefaultBranchesResolved)
 	}
+	if report.Summary.TaskProposals != 1 {
+		t.Fatalf("task proposals = %d, want 1", report.Summary.TaskProposals)
+	}
 
 	repo := report.Repos[0]
 	if repo.RemoteSource != "spec" {
@@ -158,6 +167,16 @@ func TestBuildReconcileReportFallsBackToSpecRemoteWithoutLocalClone(t *testing.T
 	}
 	if !repo.NeedsAttention {
 		t.Fatalf("expected attention because local clone is missing: %+v", repo)
+	}
+	if len(report.Proposals) != 1 {
+		t.Fatalf("proposals len = %d, want 1", len(report.Proposals))
+	}
+	proposal := report.Proposals[0]
+	if proposal.Category != "bootstrap_local_clone" {
+		t.Fatalf("proposal category = %q, want bootstrap_local_clone", proposal.Category)
+	}
+	if proposal.Approval.Status != proposalApprovalRequired {
+		t.Fatalf("proposal approval = %q, want required", proposal.Approval.Status)
 	}
 }
 
