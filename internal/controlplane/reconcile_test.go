@@ -89,6 +89,78 @@ func TestBuildReconcileReportObservesRemoteMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildReconcileReportFallsBackToSpecRemoteWithoutLocalClone(t *testing.T) {
+	tmpDir := t.TempDir()
+	home := filepath.Join(tmpDir, "home")
+	remotePath := filepath.Join(tmpDir, "remote", "agent-exporter.git")
+
+	runGit(t, "", "init", "--bare", "--initial-branch=main", remotePath)
+	workPath := filepath.Join(tmpDir, "seed")
+	runGit(t, "", "init", "--initial-branch=main", workPath)
+	runGit(t, workPath, "config", "user.name", "AgentCtl Test")
+	runGit(t, workPath, "config", "user.email", "agentctl@example.com")
+	if err := os.WriteFile(filepath.Join(workPath, "README.md"), []byte("# agent-exporter\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile README: %v", err)
+	}
+	runGit(t, workPath, "add", "README.md")
+	runGit(t, workPath, "commit", "-m", "seed")
+	runGit(t, workPath, "remote", "add", "origin", remotePath)
+	runGit(t, workPath, "push", "-u", "origin", "main")
+
+	t.Setenv("HOME", home)
+
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertManagedRepo(db, &store.ManagedRepo{
+		Name:          "agent-exporter",
+		Repository:    "chaspy/agent-exporter",
+		SourceRepoRef: remotePath,
+		Role:          "agentops-observability",
+		Visibility:    "public",
+		RawSpecJSON:   `{"repo":"github.com/chaspy/agent-exporter","tier":"control-plane","role":"agentops-observability","visibility":"public","repoContractPath":".agent/repo.yaml"}`,
+	}); err != nil {
+		t.Fatalf("UpsertManagedRepo: %v", err)
+	}
+
+	report, err := BuildReconcileReport(db)
+	if err != nil {
+		t.Fatalf("BuildReconcileReport: %v", err)
+	}
+	if report.Summary.LocalClonesFound != 0 {
+		t.Fatalf("local clones found = %d, want 0", report.Summary.LocalClonesFound)
+	}
+	if report.Summary.RemoteURLsResolved != 1 {
+		t.Fatalf("remote URLs resolved = %d, want 1", report.Summary.RemoteURLsResolved)
+	}
+	if report.Summary.RemoteReachable != 1 {
+		t.Fatalf("remote reachable = %d, want 1", report.Summary.RemoteReachable)
+	}
+	if report.Summary.RemoteDefaultBranchesResolved != 1 {
+		t.Fatalf("remote default branches resolved = %d, want 1", report.Summary.RemoteDefaultBranchesResolved)
+	}
+
+	repo := report.Repos[0]
+	if repo.RemoteSource != "spec" {
+		t.Fatalf("remote source = %q, want spec", repo.RemoteSource)
+	}
+	if repo.RemoteURL != remotePath {
+		t.Fatalf("remote URL = %q, want %q", repo.RemoteURL, remotePath)
+	}
+	if !repo.RemoteReachable {
+		t.Fatalf("expected remote to be reachable: %+v", repo)
+	}
+	if repo.RemoteDefaultBranch != "main" {
+		t.Fatalf("remote default branch = %q, want main", repo.RemoteDefaultBranch)
+	}
+	if !repo.NeedsAttention {
+		t.Fatalf("expected attention because local clone is missing: %+v", repo)
+	}
+}
+
 func TestParseGitHubRepoFromRemoteURL(t *testing.T) {
 	tests := []struct {
 		url  string
@@ -103,6 +175,24 @@ func TestParseGitHubRepoFromRemoteURL(t *testing.T) {
 	for _, tt := range tests {
 		if got := parseGitHubRepoFromRemoteURL(tt.url); got != tt.want {
 			t.Fatalf("parseGitHubRepoFromRemoteURL(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeRemoteCandidate(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"github.com/chaspy/myassistant", "https://github.com/chaspy/myassistant.git"},
+		{"chaspy/agentctl", "https://github.com/chaspy/agentctl.git"},
+		{"https://github.com/chaspy/book-assistant.git", "https://github.com/chaspy/book-assistant.git"},
+		{"/tmp/remote/repo.git", "/tmp/remote/repo.git"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := normalizeRemoteCandidate(tt.in); got != tt.want {
+			t.Fatalf("normalizeRemoteCandidate(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }

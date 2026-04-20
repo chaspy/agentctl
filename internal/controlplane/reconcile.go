@@ -235,7 +235,7 @@ func observeManagedRepo(repo store.ManagedRepo) ReconcileManagedRepoStatus {
 		status.LocalPath = entry.fullPath
 	}
 
-	remote := observeRemoteState(view.Repository, status.LocalPath)
+	remote := observeRemoteState(view, status.LocalPath)
 	status.RemoteSource = remote.source
 	status.RemoteURL = remote.url
 	status.ObservedRemoteRepo = remote.repository
@@ -265,20 +265,30 @@ func observeManagedRepo(repo store.ManagedRepo) ReconcileManagedRepoStatus {
 	return status
 }
 
-func observeRemoteState(expectedRepo, localPath string) remoteObservation {
-	if strings.TrimSpace(localPath) == "" || !isGitRepository(localPath) {
+func observeRemoteState(view ManagedRepoView, localPath string) remoteObservation {
+	if strings.TrimSpace(localPath) != "" {
+		if isGitRepository(localPath) {
+			remoteURL, err := gitRemoteURL(localPath, "origin")
+			if err != nil {
+				return remoteObservation{
+					issues: []string{fmt.Sprintf("origin remote check failed: %v", err)},
+				}
+			}
+			return probeRemoteURL("origin", remoteURL, view.Repository)
+		}
 		return remoteObservation{}
 	}
 
-	remoteURL, err := gitRemoteURL(localPath, "origin")
-	if err != nil {
-		return remoteObservation{
-			issues: []string{fmt.Sprintf("origin remote check failed: %v", err)},
-		}
+	specRemoteURL := deriveRemoteURLFromSpec(view)
+	if specRemoteURL == "" {
+		return remoteObservation{}
 	}
+	return probeRemoteURL("spec", specRemoteURL, view.Repository)
+}
 
+func probeRemoteURL(source, remoteURL, expectedRepo string) remoteObservation {
 	observation := remoteObservation{
-		source: "origin",
+		source: source,
 		url:    remoteURL,
 	}
 
@@ -286,20 +296,66 @@ func observeRemoteState(expectedRepo, localPath string) remoteObservation {
 		observation.repository = observedRepo
 		if expectedRepo != "" && observedRepo != expectedRepo {
 			observation.issues = append(observation.issues,
-				fmt.Sprintf("origin remote points to %s, expected %s", observedRepo, expectedRepo))
+				fmt.Sprintf("%s remote points to %s, expected %s", source, observedRepo, expectedRepo))
 		}
 	}
 
 	defaultBranch, err := probeRemoteDefaultBranch(remoteURL)
 	if err != nil {
 		observation.issues = append(observation.issues,
-			fmt.Sprintf("remote reachability check failed: %v", err))
+			fmt.Sprintf("%s remote reachability check failed: %v", source, err))
 		return observation
 	}
 
 	observation.reachable = true
 	observation.defaultBranch = defaultBranch
 	return observation
+}
+
+func deriveRemoteURLFromSpec(view ManagedRepoView) string {
+	candidates := []string{
+		strings.TrimSpace(view.SourceRepoRef),
+		strings.TrimSpace(view.Repository),
+	}
+	for _, candidate := range candidates {
+		if remoteURL := normalizeRemoteCandidate(candidate); remoteURL != "" {
+			return remoteURL
+		}
+	}
+	return ""
+}
+
+func normalizeRemoteCandidate(candidate string) string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return ""
+	}
+
+	switch {
+	case strings.HasPrefix(candidate, "git@"),
+		strings.HasPrefix(candidate, "ssh://"),
+		strings.HasPrefix(candidate, "https://"),
+		strings.HasPrefix(candidate, "http://"),
+		strings.HasPrefix(candidate, "file://"),
+		strings.HasPrefix(candidate, "/"),
+		strings.HasPrefix(candidate, "./"),
+		strings.HasPrefix(candidate, "../"):
+		return candidate
+	case strings.HasPrefix(candidate, "github.com/"):
+		return ensureGitSuffix("https://" + strings.TrimPrefix(candidate, "https://"))
+	case strings.Count(candidate, "/") == 1:
+		return ensureGitSuffix("https://github.com/" + candidate)
+	default:
+		return ""
+	}
+}
+
+func ensureGitSuffix(remoteURL string) string {
+	trimmed := strings.TrimSpace(remoteURL)
+	if trimmed == "" || strings.HasSuffix(trimmed, ".git") {
+		return trimmed
+	}
+	return trimmed + ".git"
 }
 
 func isGitRepository(localPath string) bool {
