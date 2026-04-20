@@ -22,6 +22,7 @@ var migrations = []string{
 	migrationV17,
 	migrationV18,
 	migrationV19,
+	migrationV20,
 }
 
 // Migrate applies all pending schema migrations.
@@ -341,4 +342,28 @@ CREATE TABLE IF NOT EXISTS session_adoptions (
 
 CREATE INDEX IF NOT EXISTS idx_session_adoptions_status_created_at ON session_adoptions(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_adoptions_zellij_session ON session_adoptions(zellij_session);
+`
+
+const migrationV20 = `
+CREATE TABLE IF NOT EXISTS managed_repos (
+	name                         TEXT PRIMARY KEY,
+	repository                   TEXT NOT NULL,
+	source_repo_ref              TEXT NOT NULL DEFAULT '',
+	role                         TEXT NOT NULL DEFAULT '',
+	visibility                   TEXT NOT NULL DEFAULT '',
+	repo_contract_path           TEXT NOT NULL DEFAULT '',
+	default_routing_policy_ref   TEXT NOT NULL DEFAULT '',
+	default_review_policy_ref    TEXT NOT NULL DEFAULT '',
+	default_approval_policy_ref  TEXT NOT NULL DEFAULT '',
+	default_benchmark_policy_ref TEXT NOT NULL DEFAULT '',
+	notes                        TEXT NOT NULL DEFAULT '',
+	source_path                  TEXT NOT NULL DEFAULT '',
+	source_commit                TEXT NOT NULL DEFAULT '',
+	spec_hash                    TEXT NOT NULL DEFAULT '',
+	raw_spec_json                TEXT NOT NULL DEFAULT '',
+	created_at                   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at                   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_managed_repos_repository ON managed_repos(repository);
 `

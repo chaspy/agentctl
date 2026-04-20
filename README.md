@@ -56,6 +56,9 @@ agentctl spawn owner/repo --branch feature/foo --task-type research --agent auto
 # Pin a repository to Codex workers by default
 agentctl config set owner/repo --agent codex
 
+# Import a ManagedRepo manifest into the local DB
+agentctl apply -f ~/go/src/github.com/chaspy/myassistant/ops/repos/book-assistant.yaml
+
 # Kill a session (with safety checks)
 agentctl kill <session-name>
 
@@ -89,6 +92,7 @@ agentctl serve
 | `state log handoff <session-id>` | Record route reason, handoff summary, and token burn |
 | `state task` | Manage tasks (add, complete, list) |
 | `config` | Manage per-repository configuration |
+| `apply` | Import a desired-state manifest into the local control-plane DB |
 | `repos <query>` | Search for repositories on disk |
 
 ## Session Status Detection
