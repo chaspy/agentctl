@@ -279,3 +279,66 @@ func TestHandleAgentTaskDecisionsReturnsRecordedItems(t *testing.T) {
 		t.Fatalf("eligibleAgents len = %d, want 2", len(payload[0].EligibleAgents))
 	}
 }
+
+func TestHandleAgentTaskAttemptsReturnsSpawnedItems(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.CreateAgentTaskAttempt(db, &store.AgentTaskAttempt{
+		DecisionID:       1,
+		AgentTaskName:    "agentctl-create-repo-contract",
+		RepoRef:          "agentctl",
+		Repository:       "chaspy/agentctl",
+		TaskType:         "docs",
+		Risk:             "low",
+		Agent:            "codex",
+		RepoMode:         "branch",
+		Branch:           "agentctl-create-repo-contract",
+		SessionName:      "agentctl-agentctl-create-repo-contract",
+		ManagedSessionID: "codex:chaspy/agentctl:zellij-agentctl-agentctl-create-repo-contract",
+		Status:           "spawned",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskAttempt: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-task-attempts", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		DecisionID       int64  `json:"decisionId"`
+		AgentTaskName    string `json:"agentTaskName"`
+		SessionName      string `json:"sessionName"`
+		ManagedSessionID string `json:"managedSessionId"`
+		Status           string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].DecisionID != 1 {
+		t.Fatalf("decisionId = %d", payload[0].DecisionID)
+	}
+	if payload[0].AgentTaskName != "agentctl-create-repo-contract" {
+		t.Fatalf("agentTaskName = %q", payload[0].AgentTaskName)
+	}
+	if payload[0].SessionName != "agentctl-agentctl-create-repo-contract" {
+		t.Fatalf("sessionName = %q", payload[0].SessionName)
+	}
+	if payload[0].ManagedSessionID == "" {
+		t.Fatal("expected managedSessionId")
+	}
+	if payload[0].Status != "spawned" {
+		t.Fatalf("status = %q", payload[0].Status)
+	}
+}

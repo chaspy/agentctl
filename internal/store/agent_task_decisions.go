@@ -187,6 +187,11 @@ func CountAgentTaskDecisions(db *sql.DB) (int, error) {
 	return count, nil
 }
 
+func UpdateAgentTaskDecisionStatus(db *sql.DB, id int64, status string) error {
+	_, err := db.Exec(`UPDATE agent_task_decisions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, id)
+	return err
+}
+
 func scanAgentTaskDecision(scanner taskProposalRowScanner) (AgentTaskDecision, error) {
 	var decision AgentTaskDecision
 	var eligibleAgentsJSON string

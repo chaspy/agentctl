@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/proposal-adoptions", s.handleProposalAdoptions)
 	mux.HandleFunc("/api/agent-tasks", s.handleAgentTasks)
 	mux.HandleFunc("/api/agent-task-decisions", s.handleAgentTaskDecisions)
+	mux.HandleFunc("/api/agent-task-attempts", s.handleAgentTaskAttempts)
 	mux.HandleFunc("/api/sync", s.handleSync)
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/sessions/messages", s.handleSessionMessages)
@@ -345,6 +346,29 @@ type agentTaskDecisionJSON struct {
 	UpdatedAt         string   `json:"updatedAt,omitempty"`
 }
 
+type agentTaskAttemptJSON struct {
+	ID               int64  `json:"id"`
+	DecisionID       int64  `json:"decisionId"`
+	AgentTaskName    string `json:"agentTaskName"`
+	RepoRef          string `json:"repoRef"`
+	Repository       string `json:"repository"`
+	TaskType         string `json:"taskType"`
+	Risk             string `json:"risk"`
+	Agent            string `json:"agent"`
+	RepoMode         string `json:"repoMode,omitempty"`
+	Branch           string `json:"branch,omitempty"`
+	SessionName      string `json:"sessionName,omitempty"`
+	ManagedSessionID string `json:"managedSessionId,omitempty"`
+	WorkDir          string `json:"workDir,omitempty"`
+	LaunchCommand    string `json:"launchCommand,omitempty"`
+	InitialMessage   string `json:"initialMessage,omitempty"`
+	Summary          string `json:"summary,omitempty"`
+	Status           string `json:"status"`
+	FailureReason    string `json:"failureReason,omitempty"`
+	CreatedAt        string `json:"createdAt,omitempty"`
+	UpdatedAt        string `json:"updatedAt,omitempty"`
+}
+
 func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -496,6 +520,46 @@ func (s *Server) handleAgentTaskDecisions(w http.ResponseWriter, r *http.Request
 			Status:            decision.Status,
 			CreatedAt:         decision.CreatedAt,
 			UpdatedAt:         decision.UpdatedAt,
+		})
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleAgentTaskAttempts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	attempts, err := store.ListAgentTaskAttempts(s.db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	out := make([]agentTaskAttemptJSON, 0, len(attempts))
+	for _, attempt := range attempts {
+		out = append(out, agentTaskAttemptJSON{
+			ID:               attempt.ID,
+			DecisionID:       attempt.DecisionID,
+			AgentTaskName:    attempt.AgentTaskName,
+			RepoRef:          attempt.RepoRef,
+			Repository:       attempt.Repository,
+			TaskType:         attempt.TaskType,
+			Risk:             attempt.Risk,
+			Agent:            attempt.Agent,
+			RepoMode:         attempt.RepoMode,
+			Branch:           attempt.Branch,
+			SessionName:      attempt.SessionName,
+			ManagedSessionID: attempt.ManagedSessionID,
+			WorkDir:          attempt.WorkDir,
+			LaunchCommand:    attempt.LaunchCommand,
+			InitialMessage:   attempt.InitialMessage,
+			Summary:          attempt.Summary,
+			Status:           attempt.Status,
+			FailureReason:    attempt.FailureReason,
+			CreatedAt:        attempt.CreatedAt,
+			UpdatedAt:        attempt.UpdatedAt,
 		})
 	}
 	writeJSON(w, out)

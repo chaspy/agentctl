@@ -937,7 +937,7 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks, agentTaskDecisions] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks, agentTaskDecisions, agentTaskAttempts] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
@@ -947,6 +947,7 @@ async function loadDatabase() {
     fetchJSON('/api/proposal-adoptions'),
     fetchJSON('/api/agent-tasks'),
     fetchJSON('/api/agent-task-decisions'),
+    fetchJSON('/api/agent-task-attempts'),
   ]);
 
   let html = '';
@@ -1133,6 +1134,25 @@ async function loadDatabase() {
         <td>${escapeHTML(decision.selectedRepoMode || '-')}</td>
         <td>${escapeHTML(decision.status || '')}</td>
         <td title="${escapeHTML(decision.routeReason || '')}">${truncate(decision.routeReason, 60)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTaskAttempts && agentTaskAttempts.length > 0) {
+    html += `<div class="db-section-title">Agent Task Attempts <span class="db-count">(${agentTaskAttempts.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Decision</th><th>Agent Task</th><th>Agent</th><th>Repo Mode</th><th>Status</th><th>Session</th><th>Failure</th></tr></thead><tbody>';
+    for (const attempt of agentTaskAttempts) {
+      html += `<tr>
+        <td>#${escapeHTML(String(attempt.id || ''))}</td>
+        <td>#${escapeHTML(String(attempt.decisionId || ''))}</td>
+        <td>${escapeHTML(attempt.agentTaskName || '')}</td>
+        <td>${escapeHTML(attempt.agent || '')}</td>
+        <td>${escapeHTML(attempt.repoMode || '-')}</td>
+        <td>${escapeHTML(attempt.status || '')}</td>
+        <td>${escapeHTML(attempt.sessionName || '-')}</td>
+        <td title="${escapeHTML(attempt.failureReason || '')}">${truncate(attempt.failureReason, 60)}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';
