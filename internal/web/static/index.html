@@ -937,7 +937,7 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
@@ -945,6 +945,7 @@ async function loadDatabase() {
     fetchJSON('/api/reconcile'),
     fetchJSON('/api/proposals'),
     fetchJSON('/api/proposal-adoptions'),
+    fetchJSON('/api/agent-tasks'),
   ]);
 
   let html = '';
@@ -1093,6 +1094,24 @@ async function loadDatabase() {
         <td title="${escapeHTML(adoption.approvalReason || '')}">${escapeHTML(adoption.status || 'queued')}</td>
         <td>${escapeHTML(adoption.operatorNote || '-')}</td>
         <td>${escapeHTML(adoption.createdAt || '-')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTasks && agentTasks.length > 0) {
+    html += `<div class="db-section-title">Agent Tasks <span class="db-count">(${agentTasks.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>Name</th><th>Repo</th><th>Task Type</th><th>Risk</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>';
+    for (const task of agentTasks) {
+      html += `<tr>
+        <td>${escapeHTML(task.name || '')}</td>
+        <td>${escapeHTML(task.repoRef || '')}</td>
+        <td>${escapeHTML(task.taskType || '')}</td>
+        <td>${escapeHTML(task.risk || '')}</td>
+        <td>${escapeHTML(task.status || '')}</td>
+        <td>${escapeHTML(task.sourceKind || '')}</td>
+        <td>${escapeHTML(task.updatedAt || '-')}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';

@@ -251,6 +251,11 @@ func CountQueuedTaskProposalAdoptions(db *sql.DB) (int, error) {
 	return count, nil
 }
 
+func UpdateTaskProposalAdoptionStatus(db *sql.DB, id int64, status string) error {
+	_, err := db.Exec(`UPDATE task_proposal_adoptions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, id)
+	return err
+}
+
 func queryTaskProposalAdoptions(db *sql.DB, query string, args ...any) ([]TaskProposalAdoption, error) {
 	rows, err := db.Query(query, args...)
 	if err != nil {

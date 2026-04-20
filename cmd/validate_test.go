@@ -96,3 +96,38 @@ spec:
 		}
 	}
 }
+
+func TestValidateManifestFileAgentTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	manifestPath := filepath.Join(tmpDir, "agent-task.yaml")
+	content := []byte(`
+apiVersion: myassistant.dev/v1alpha1
+kind: AgentTask
+metadata:
+  name: agentctl-create-repo-contract
+spec:
+  repoRef: agentctl
+  objective: Add .agent/repo.yaml
+  taskType: docs
+  risk: low
+  desiredOutcome:
+    - .agent/repo.yaml exists
+`)
+	if err := os.WriteFile(manifestPath, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	result, err := validateManifestFile(manifestPath)
+	if err != nil {
+		t.Fatalf("validateManifestFile: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid AgentTask manifest, got errors: %+v", result.Errors)
+	}
+	if result.Kind != resourceKindAgentTask {
+		t.Fatalf("kind = %q", result.Kind)
+	}
+	if result.Name != "agentctl-create-repo-contract" {
+		t.Fatalf("name = %q", result.Name)
+	}
+}

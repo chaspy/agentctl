@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/reconcile", s.handleReconcile)
 	mux.HandleFunc("/api/proposals", s.handleProposals)
 	mux.HandleFunc("/api/proposal-adoptions", s.handleProposalAdoptions)
+	mux.HandleFunc("/api/agent-tasks", s.handleAgentTasks)
 	mux.HandleFunc("/api/sync", s.handleSync)
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/sessions/messages", s.handleSessionMessages)
@@ -301,6 +302,26 @@ type proposalAdoptionJSON struct {
 	UpdatedAt          string   `json:"updatedAt,omitempty"`
 }
 
+type agentTaskJSON struct {
+	Name                        string   `json:"name"`
+	RepoRef                     string   `json:"repoRef"`
+	Repository                  string   `json:"repository"`
+	Objective                   string   `json:"objective"`
+	TaskType                    string   `json:"taskType"`
+	Risk                        string   `json:"risk"`
+	ContextRefs                 []string `json:"contextRefs,omitempty"`
+	DesiredOutcome              []string `json:"desiredOutcome,omitempty"`
+	RoutingPolicyRef            string   `json:"routingPolicyRef,omitempty"`
+	ReviewPolicyRef             string   `json:"reviewPolicyRef,omitempty"`
+	ApprovalPolicyRef           string   `json:"approvalPolicyRef,omitempty"`
+	ApprovalRequiredBeforeMerge bool     `json:"approvalRequiredBeforeMerge"`
+	SourceKind                  string   `json:"sourceKind"`
+	SourceRef                   string   `json:"sourceRef,omitempty"`
+	Status                      string   `json:"status"`
+	CreatedAt                   string   `json:"createdAt,omitempty"`
+	UpdatedAt                   string   `json:"updatedAt,omitempty"`
+}
+
 func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -376,6 +397,43 @@ func (s *Server) handleProposalAdoptions(w http.ResponseWriter, r *http.Request)
 			OperatorNote:       adoption.OperatorNote,
 			CreatedAt:          adoption.CreatedAt,
 			UpdatedAt:          adoption.UpdatedAt,
+		})
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleAgentTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tasks, err := store.ListAgentTasks(s.db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	out := make([]agentTaskJSON, 0, len(tasks))
+	for _, task := range tasks {
+		out = append(out, agentTaskJSON{
+			Name:                        task.Name,
+			RepoRef:                     task.RepoRef,
+			Repository:                  task.Repository,
+			Objective:                   task.Objective,
+			TaskType:                    task.TaskType,
+			Risk:                        task.Risk,
+			ContextRefs:                 task.ContextRefs,
+			DesiredOutcome:              task.DesiredOutcome,
+			RoutingPolicyRef:            task.RoutingPolicyRef,
+			ReviewPolicyRef:             task.ReviewPolicyRef,
+			ApprovalPolicyRef:           task.ApprovalPolicyRef,
+			ApprovalRequiredBeforeMerge: task.ApprovalRequiredBeforeMerge,
+			SourceKind:                  task.SourceKind,
+			SourceRef:                   task.SourceRef,
+			Status:                      task.Status,
+			CreatedAt:                   task.CreatedAt,
+			UpdatedAt:                   task.UpdatedAt,
 		})
 	}
 	writeJSON(w, out)

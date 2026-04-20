@@ -260,3 +260,86 @@ func TestRunStateProposalAdoptionListJSON(t *testing.T) {
 		t.Fatalf("expected adoption JSON to contain queued status, got %q", got)
 	}
 }
+
+func TestRunStateProposalAdoptionMaterialize(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "agentctl.db")
+
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	if err := store.CreateTaskProposalAdoption(db, &store.TaskProposalAdoption{
+		ProposalSnapshotID: "agentctl-create-repo-contract",
+		Source:             "reconcile",
+		ReportMode:         "read-only",
+		RepoRef:            "agentctl",
+		Repository:         "chaspy/agentctl",
+		Category:           "create_repo_contract",
+		Title:              "Create repo contract",
+		Objective:          "Add .agent/repo.yaml",
+		TaskType:           "docs",
+		Risk:               "low",
+		ApprovalStatus:     "not_required",
+		Status:             store.TaskProposalAdoptionStatusQueued,
+		OperatorNote:       "carry forward",
+	}); err != nil {
+		t.Fatalf("CreateTaskProposalAdoption: %v", err)
+	}
+	db.Close()
+
+	origDBPath := os.Getenv("AGENTCTL_DB_PATH")
+	origDryRun := stateProposalMaterializeDryRun
+	origName := stateProposalMaterializeName
+	var out bytes.Buffer
+	stateProposalAdoptionMaterializeCmd.SetOut(&out)
+	t.Cleanup(func() {
+		stateProposalMaterializeDryRun = origDryRun
+		stateProposalMaterializeName = origName
+		if origDBPath == "" {
+			_ = os.Unsetenv("AGENTCTL_DB_PATH")
+			return
+		}
+		_ = os.Setenv("AGENTCTL_DB_PATH", origDBPath)
+	})
+	if err := os.Setenv("AGENTCTL_DB_PATH", dbPath); err != nil {
+		t.Fatalf("Setenv: %v", err)
+	}
+	stateProposalMaterializeDryRun = false
+	stateProposalMaterializeName = "agentctl-create-repo-contract-task"
+
+	if err := runStateProposalAdoptionMaterialize(stateProposalAdoptionMaterializeCmd, []string{"1"}); err != nil {
+		t.Fatalf("runStateProposalAdoptionMaterialize: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "Materialized AgentTask") {
+		t.Fatalf("expected materialized output, got %q", got)
+	}
+	if !strings.Contains(got, "agentctl-create-repo-contract-task") {
+		t.Fatalf("expected custom task name in output, got %q", got)
+	}
+
+	db, err = store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open(second): %v", err)
+	}
+	defer db.Close()
+	task, err := store.GetAgentTask(db, "agentctl-create-repo-contract-task")
+	if err != nil {
+		t.Fatalf("GetAgentTask: %v", err)
+	}
+	if task == nil {
+		t.Fatal("expected agent task to be materialized")
+	}
+	if task.SourceKind != "proposal_adoption" {
+		t.Fatalf("sourceKind = %q", task.SourceKind)
+	}
+	adoption, err := store.GetTaskProposalAdoption(db, 1)
+	if err != nil {
+		t.Fatalf("GetTaskProposalAdoption: %v", err)
+	}
+	if adoption.Status != store.TaskProposalAdoptionStatusMaterialized {
+		t.Fatalf("adoption status = %q, want materialized", adoption.Status)
+	}
+}

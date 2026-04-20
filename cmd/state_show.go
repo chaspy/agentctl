@@ -20,6 +20,7 @@ type stateShowSummary struct {
 	ManagedRepos            int `json:"managed_repos"`
 	TaskProposals           int `json:"task_proposals"`
 	QueuedProposalAdoptions int `json:"queued_proposal_adoptions"`
+	AgentTasks              int `json:"agent_tasks"`
 	BlockedSessions         int `json:"blocked_sessions"`
 	ErrorSessions           int `json:"error_sessions"`
 	GhostSessions           int `json:"ghost_sessions"`
@@ -92,11 +93,24 @@ type stateShowProposalAdoption struct {
 	CreatedAt        string   `json:"created_at"`
 }
 
+type stateShowAgentTask struct {
+	Name        string   `json:"name"`
+	RepoRef     string   `json:"repo_ref"`
+	Repository  string   `json:"repository"`
+	TaskType    string   `json:"task_type"`
+	Risk        string   `json:"risk"`
+	Status      string   `json:"status"`
+	SourceKind  string   `json:"source_kind"`
+	ContextRefs []string `json:"context_refs,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+}
+
 type stateShowReport struct {
 	Summary               stateShowSummary            `json:"summary"`
 	Sessions              []stateShowSession          `json:"sessions"`
 	AdoptionQueue         []stateShowAdoption         `json:"adoption_queue,omitempty"`
 	ProposalAdoptionQueue []stateShowProposalAdoption `json:"proposal_adoption_queue,omitempty"`
+	AgentTasks            []stateShowAgentTask        `json:"agent_tasks,omitempty"`
 	RecentActions         []stateShowAction           `json:"recent_actions,omitempty"`
 }
 
@@ -134,8 +148,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d task proposals, %d queued proposal adoptions) ===\n",
-		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions)
+	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d task proposals, %d queued proposal adoptions, %d agent tasks) ===\n",
+		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions, report.Summary.AgentTasks)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
@@ -208,6 +222,17 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				a.ID, a.ProposalSnapshot, a.RepoRef, a.Category, a.TaskType, a.Risk, a.ApprovalStatus, note)
+		}
+		w.Flush()
+	}
+
+	if len(report.AgentTasks) > 0 {
+		fmt.Println("\n=== Agent Tasks ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NAME\tREPO\tTASK_TYPE\tRISK\tSTATUS\tSOURCE_KIND")
+		for _, a := range report.AgentTasks {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				a.Name, a.RepoRef, a.TaskType, a.Risk, a.Status, a.SourceKind)
 		}
 		w.Flush()
 	}
@@ -435,6 +460,25 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 		return nil, fmt.Errorf("counting task proposal snapshots: %w", err)
 	}
 	report.Summary.TaskProposals = taskProposals
+
+	agentTasks, err := store.ListAgentTasks(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent tasks: %w", err)
+	}
+	report.Summary.AgentTasks = len(agentTasks)
+	for _, task := range agentTasks {
+		report.AgentTasks = append(report.AgentTasks, stateShowAgentTask{
+			Name:        task.Name,
+			RepoRef:     task.RepoRef,
+			Repository:  task.Repository,
+			TaskType:    task.TaskType,
+			Risk:        task.Risk,
+			Status:      task.Status,
+			SourceKind:  task.SourceKind,
+			ContextRefs: task.ContextRefs,
+			CreatedAt:   task.CreatedAt,
+		})
+	}
 
 	return report, nil
 }

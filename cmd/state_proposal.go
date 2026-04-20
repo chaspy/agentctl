@@ -13,10 +13,12 @@ import (
 )
 
 var (
-	stateProposalJSON         bool
-	stateProposalAdoptionJSON bool
-	stateProposalAdoptDryRun  bool
-	stateProposalAdoptNote    string
+	stateProposalJSON              bool
+	stateProposalAdoptionJSON      bool
+	stateProposalAdoptDryRun       bool
+	stateProposalAdoptNote         string
+	stateProposalMaterializeDryRun bool
+	stateProposalMaterializeName   string
 )
 
 var stateProposalCmd = &cobra.Command{
@@ -69,6 +71,15 @@ var stateProposalAdoptionGetCmd = &cobra.Command{
 	RunE:  runStateProposalAdoptionGet,
 }
 
+var stateProposalAdoptionMaterializeCmd = &cobra.Command{
+	Use:   "materialize <id>",
+	Short: "Materialize a queued proposal adoption into an AgentTask record",
+	Long: `Creates a planned AgentTask record from a queued proposal adoption.
+This does not spawn a session or create an execution task yet.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runStateProposalAdoptionMaterialize,
+}
+
 func init() {
 	stateCmd.AddCommand(stateProposalCmd)
 	stateProposalCmd.AddCommand(stateProposalListCmd)
@@ -77,12 +88,15 @@ func init() {
 	stateProposalCmd.AddCommand(stateProposalAdoptionCmd)
 	stateProposalAdoptionCmd.AddCommand(stateProposalAdoptionListCmd)
 	stateProposalAdoptionCmd.AddCommand(stateProposalAdoptionGetCmd)
+	stateProposalAdoptionCmd.AddCommand(stateProposalAdoptionMaterializeCmd)
 	stateProposalListCmd.Flags().BoolVar(&stateProposalJSON, "json", false, "Output machine-readable JSON")
 	stateProposalGetCmd.Flags().BoolVar(&stateProposalJSON, "json", false, "Output machine-readable JSON")
 	stateProposalAdoptCmd.Flags().BoolVar(&stateProposalAdoptDryRun, "dry-run", false, "Preview the adoption without writing to SQLite")
 	stateProposalAdoptCmd.Flags().StringVar(&stateProposalAdoptNote, "note", "", "Operator note stored with the queued adoption")
 	stateProposalAdoptionListCmd.Flags().BoolVar(&stateProposalAdoptionJSON, "json", false, "Output machine-readable JSON")
 	stateProposalAdoptionGetCmd.Flags().BoolVar(&stateProposalAdoptionJSON, "json", false, "Output machine-readable JSON")
+	stateProposalAdoptionMaterializeCmd.Flags().BoolVar(&stateProposalMaterializeDryRun, "dry-run", false, "Preview the AgentTask record without writing to SQLite")
+	stateProposalAdoptionMaterializeCmd.Flags().StringVar(&stateProposalMaterializeName, "name", "", "Override the AgentTask name")
 }
 
 func runStateProposalList(cmd *cobra.Command, args []string) error {
@@ -310,6 +324,84 @@ func runStateProposalAdoptionGet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runStateProposalAdoptionMaterialize(cmd *cobra.Command, args []string) error {
+	db, err := store.Open("")
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid adoption ID %q: %w", args[0], err)
+	}
+
+	adoption, err := store.GetTaskProposalAdoption(db, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("task proposal adoption %q not found", args[0])
+		}
+		return fmt.Errorf("getting task proposal adoption %s: %w", args[0], err)
+	}
+	if adoption.Status != store.TaskProposalAdoptionStatusQueued {
+		return fmt.Errorf("task proposal adoption %d is %q, expected queued", adoption.ID, adoption.Status)
+	}
+
+	task := buildAgentTaskFromProposalAdoption(adoption, stateProposalMaterializeName)
+	specJSON, err := json.Marshal(struct {
+		RepoRef           string   `json:"repoRef"`
+		Objective         string   `json:"objective"`
+		TaskType          string   `json:"taskType"`
+		Risk              string   `json:"risk"`
+		DesiredOutcome    []string `json:"desiredOutcome,omitempty"`
+		ReviewPolicyRef   string   `json:"reviewPolicyRef,omitempty"`
+		ApprovalPolicyRef string   `json:"approvalPolicyRef,omitempty"`
+		Approval          struct {
+			RequiredBeforeMerge bool `json:"requiredBeforeMerge"`
+		} `json:"approval"`
+	}{
+		RepoRef:           task.RepoRef,
+		Objective:         task.Objective,
+		TaskType:          task.TaskType,
+		Risk:              task.Risk,
+		DesiredOutcome:    task.DesiredOutcome,
+		ReviewPolicyRef:   task.ReviewPolicyRef,
+		ApprovalPolicyRef: task.ApprovalPolicyRef,
+		Approval: struct {
+			RequiredBeforeMerge bool `json:"requiredBeforeMerge"`
+		}{
+			RequiredBeforeMerge: task.ApprovalRequiredBeforeMerge,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal materialized agent task spec: %w", err)
+	}
+	task.RawSpecJSON = string(specJSON)
+	out := cmd.OutOrStdout()
+	if stateProposalMaterializeDryRun {
+		writeMaterializedAgentTask(out, task, true)
+		fmt.Fprintln(out, "No database changes were made.")
+		return nil
+	}
+
+	if existing, err := store.GetAgentTask(db, task.Name); err != nil {
+		return fmt.Errorf("checking existing agent task %s: %w", task.Name, err)
+	} else if existing != nil {
+		return fmt.Errorf("agent task %q already exists", task.Name)
+	}
+
+	if err := store.UpsertAgentTask(db, task); err != nil {
+		return fmt.Errorf("storing agent task: %w", err)
+	}
+	if err := store.UpdateTaskProposalAdoptionStatus(db, adoption.ID, store.TaskProposalAdoptionStatusMaterialized); err != nil {
+		return fmt.Errorf("marking proposal adoption materialized: %w", err)
+	}
+
+	writeMaterializedAgentTask(out, task, false)
+	fmt.Fprintf(out, "Materialized AgentTask %s from proposal adoption #%d.\n", task.Name, adoption.ID)
+	return nil
+}
+
 func buildTaskProposalAdoption(snapshot *store.TaskProposalSnapshot, note string) *store.TaskProposalAdoption {
 	return &store.TaskProposalAdoption{
 		ProposalSnapshotID: snapshot.ID,
@@ -335,6 +427,28 @@ func buildTaskProposalAdoption(snapshot *store.TaskProposalSnapshot, note string
 	}
 }
 
+func buildAgentTaskFromProposalAdoption(adoption *store.TaskProposalAdoption, overrideName string) *store.AgentTask {
+	name := overrideName
+	if name == "" {
+		name = fmt.Sprintf("%s-%s-adoption-%d", adoption.RepoRef, adoption.Category, adoption.ID)
+	}
+	return &store.AgentTask{
+		Name:                        name,
+		RepoRef:                     adoption.RepoRef,
+		Repository:                  adoption.Repository,
+		Objective:                   adoption.Objective,
+		TaskType:                    adoption.TaskType,
+		Risk:                        adoption.Risk,
+		DesiredOutcome:              append([]string(nil), adoption.DesiredOutcome...),
+		ReviewPolicyRef:             adoption.ReviewPolicyRef,
+		ApprovalPolicyRef:           adoption.ApprovalPolicyRef,
+		ApprovalRequiredBeforeMerge: adoption.ApprovalStatus == "required",
+		SourceKind:                  "proposal_adoption",
+		SourceRef:                   strconv.FormatInt(adoption.ID, 10),
+		Status:                      "planned",
+	}
+}
+
 func writeProposalAdoption(w io.Writer, adoption *store.TaskProposalAdoption, dryRun bool) {
 	title := "Task proposal adoption"
 	if dryRun {
@@ -355,6 +469,26 @@ func writeProposalAdoption(w io.Writer, adoption *store.TaskProposalAdoption, dr
 	fmt.Fprintf(tw, "title\t%s\n", dashIfEmpty(adoption.Title))
 	fmt.Fprintf(tw, "status\t%s\n", dashIfEmpty(adoption.Status))
 	fmt.Fprintf(tw, "note\t%s\n", dashIfEmpty(adoption.OperatorNote))
+	_ = tw.Flush()
+}
+
+func writeMaterializedAgentTask(w io.Writer, task *store.AgentTask, dryRun bool) {
+	title := "Materialized AgentTask"
+	if dryRun {
+		title += " (dry-run)"
+	}
+	fmt.Fprintln(w, title)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "FIELD\tVALUE")
+	fmt.Fprintf(tw, "name\t%s\n", task.Name)
+	fmt.Fprintf(tw, "repo\t%s\n", dashIfEmpty(task.RepoRef))
+	fmt.Fprintf(tw, "repository\t%s\n", dashIfEmpty(task.Repository))
+	fmt.Fprintf(tw, "task_type\t%s\n", dashIfEmpty(task.TaskType))
+	fmt.Fprintf(tw, "risk\t%s\n", dashIfEmpty(task.Risk))
+	fmt.Fprintf(tw, "source_kind\t%s\n", dashIfEmpty(task.SourceKind))
+	fmt.Fprintf(tw, "source_ref\t%s\n", dashIfEmpty(task.SourceRef))
+	fmt.Fprintf(tw, "status\t%s\n", dashIfEmpty(task.Status))
+	fmt.Fprintf(tw, "approval_required_before_merge\t%s\n", yesNo(task.ApprovalRequiredBeforeMerge))
 	_ = tw.Flush()
 }
 

@@ -25,6 +25,7 @@ var migrations = []string{
 	migrationV20,
 	migrationV21,
 	migrationV22,
+	migrationV23,
 }
 
 // Migrate applies all pending schema migrations.
@@ -428,4 +429,33 @@ CREATE TABLE IF NOT EXISTS task_proposal_adoptions (
 CREATE INDEX IF NOT EXISTS idx_task_proposal_adoptions_status_created_at ON task_proposal_adoptions(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_proposal_adoptions_snapshot ON task_proposal_adoptions(proposal_snapshot_id);
 CREATE INDEX IF NOT EXISTS idx_task_proposal_adoptions_repo_ref ON task_proposal_adoptions(repo_ref);
+`
+
+const migrationV23 = `
+CREATE TABLE IF NOT EXISTS agent_tasks (
+	name                          TEXT PRIMARY KEY,
+	repo_ref                      TEXT NOT NULL,
+	repository                    TEXT NOT NULL DEFAULT '',
+	objective                     TEXT NOT NULL,
+	task_type                     TEXT NOT NULL,
+	risk                          TEXT NOT NULL,
+	context_refs_json             TEXT NOT NULL DEFAULT '[]',
+	desired_outcome_json          TEXT NOT NULL DEFAULT '[]',
+	routing_policy_ref            TEXT NOT NULL DEFAULT '',
+	review_policy_ref             TEXT NOT NULL DEFAULT '',
+	approval_policy_ref           TEXT NOT NULL DEFAULT '',
+	approval_required_before_merge INTEGER NOT NULL DEFAULT 0,
+	source_kind                   TEXT NOT NULL DEFAULT 'manifest' CHECK(source_kind IN ('manifest', 'proposal_adoption')),
+	source_ref                    TEXT NOT NULL DEFAULT '',
+	status                        TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned', 'ready', 'routed', 'spawned', 'completed', 'cancelled')),
+	source_path                   TEXT NOT NULL DEFAULT '',
+	source_commit                 TEXT NOT NULL DEFAULT '',
+	spec_hash                     TEXT NOT NULL DEFAULT '',
+	raw_spec_json                 TEXT NOT NULL DEFAULT '',
+	created_at                    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at                    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo_ref ON agent_tasks(repo_ref);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated_at ON agent_tasks(status, updated_at DESC);
 `

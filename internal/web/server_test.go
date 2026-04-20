@@ -160,3 +160,55 @@ func TestHandleProposalAdoptionsReturnsQueuedItems(t *testing.T) {
 		t.Fatalf("operatorNote = %q", payload[0].OperatorNote)
 	}
 }
+
+func TestHandleAgentTasksReturnsMaterializedItems(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertAgentTask(db, &store.AgentTask{
+		Name:       "agentctl-create-repo-contract-adoption-1",
+		RepoRef:    "agentctl",
+		Repository: "chaspy/agentctl",
+		Objective:  "Add .agent/repo.yaml",
+		TaskType:   "docs",
+		Risk:       "low",
+		SourceKind: "proposal_adoption",
+		SourceRef:  "1",
+		Status:     "planned",
+	}); err != nil {
+		t.Fatalf("UpsertAgentTask: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-tasks", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		Name       string `json:"name"`
+		SourceKind string `json:"sourceKind"`
+		Status     string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].Name != "agentctl-create-repo-contract-adoption-1" {
+		t.Fatalf("name = %q", payload[0].Name)
+	}
+	if payload[0].SourceKind != "proposal_adoption" {
+		t.Fatalf("sourceKind = %q", payload[0].SourceKind)
+	}
+	if payload[0].Status != "planned" {
+		t.Fatalf("status = %q", payload[0].Status)
+	}
+}

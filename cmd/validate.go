@@ -26,6 +26,7 @@ Supported kinds today:
   - ManagedRepo
   - AgentOpsEcosystem
   - SelfHostingPolicy
+  - AgentTask
 
 Examples:
   agentctl validate -f ops/repos/book-assistant.yaml

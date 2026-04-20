@@ -17,6 +17,7 @@ const (
 	resourceKindBenchmarkPolicy    = "BenchmarkPolicy"
 	resourceKindExperienceProposal = "ExperienceProposal"
 	resourceKindReleaseGate        = "ReleaseGate"
+	resourceKindAgentTask          = "AgentTask"
 )
 
 type applyHeader struct {
@@ -192,6 +193,28 @@ type experienceProposalManifest struct {
 	} `yaml:"spec"`
 }
 
+type agentTaskManifest struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name string `yaml:"name"`
+	} `yaml:"metadata"`
+	Spec struct {
+		RepoRef           string   `yaml:"repoRef"`
+		Objective         string   `yaml:"objective"`
+		TaskType          string   `yaml:"taskType"`
+		Risk              string   `yaml:"risk"`
+		ContextRefs       []string `yaml:"contextRefs"`
+		DesiredOutcome    []string `yaml:"desiredOutcome"`
+		RoutingPolicyRef  string   `yaml:"routingPolicyRef"`
+		ReviewPolicyRef   string   `yaml:"reviewPolicyRef"`
+		ApprovalPolicyRef string   `yaml:"approvalPolicyRef"`
+		Approval          struct {
+			RequiredBeforeMerge bool `yaml:"requiredBeforeMerge"`
+		} `yaml:"approval"`
+	} `yaml:"spec"`
+}
+
 type releaseGateManifest struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
@@ -249,6 +272,8 @@ func validateManifestContent(content []byte) manifestValidationResult {
 		return validateExperienceProposalManifest(content)
 	case resourceKindReleaseGate:
 		return validateReleaseGateManifest(content)
+	case resourceKindAgentTask:
+		return validateAgentTaskManifest(content)
 	default:
 		return manifestValidationResult{
 			Kind:   kind,
@@ -523,6 +548,39 @@ func validateReleaseGateManifest(content []byte) manifestValidationResult {
 	}
 	if len(manifest.Spec.RequiredChecks) == 0 {
 		errs = append(errs, "spec.requiredChecks must contain at least one check")
+	}
+	result.Valid = len(errs) == 0
+	result.Errors = errs
+	return result
+}
+
+func validateAgentTaskManifest(content []byte) manifestValidationResult {
+	var manifest agentTaskManifest
+	if err := yaml.Unmarshal(content, &manifest); err != nil {
+		return manifestValidationResult{
+			Kind:   resourceKindAgentTask,
+			Valid:  false,
+			Errors: []string{fmt.Sprintf("parse AgentTask: %v", err)},
+		}
+	}
+	result := manifestValidationResult{Kind: resourceKindAgentTask, Name: strings.TrimSpace(manifest.Metadata.Name)}
+	var errs []string
+	if result.Name == "" {
+		errs = append(errs, "metadata.name is required")
+	}
+	if strings.TrimSpace(manifest.Spec.RepoRef) == "" {
+		errs = append(errs, "spec.repoRef is required")
+	}
+	if strings.TrimSpace(manifest.Spec.Objective) == "" {
+		errs = append(errs, "spec.objective is required")
+	}
+	if strings.TrimSpace(manifest.Spec.TaskType) == "" {
+		errs = append(errs, "spec.taskType is required")
+	}
+	switch strings.TrimSpace(manifest.Spec.Risk) {
+	case "low", "medium", "high":
+	default:
+		errs = append(errs, "spec.risk must be one of low, medium, high")
 	}
 	result.Valid = len(errs) == 0
 	result.Errors = errs

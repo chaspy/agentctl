@@ -23,7 +23,9 @@ var applyCmd = &cobra.Command{
 	Short: "Import a resource manifest into agentctl state",
 	Long: `Import a desired-state manifest into agentctl's local database.
 
-Today, only ManagedRepo resources are supported.
+Supported kinds today:
+  - ManagedRepo
+  - AgentTask
 
 Examples:
   agentctl apply -f ~/go/src/github.com/chaspy/myassistant/ops/repos/book-assistant.yaml`,
@@ -52,8 +54,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 	switch validation.Kind {
 	case resourceKindManagedRepo:
 		return applyManagedRepo(content)
+	case resourceKindAgentTask:
+		return applyAgentTask(content)
 	default:
-		return fmt.Errorf("unsupported kind %q for apply: only ManagedRepo is supported today", validation.Kind)
+		return fmt.Errorf("unsupported kind %q for apply", validation.Kind)
 	}
 }
 
@@ -122,6 +126,86 @@ func applyManagedRepo(content []byte) error {
 	}
 
 	fmt.Printf("Applied ManagedRepo %s -> %s\n", row.Name, row.Repository)
+	if row.SourceCommit != "" {
+		fmt.Printf("Source commit: %s\n", row.SourceCommit)
+	}
+	return nil
+}
+
+func applyAgentTask(content []byte) error {
+	var manifest agentTaskManifest
+	if err := yaml.Unmarshal(content, &manifest); err != nil {
+		return fmt.Errorf("parse AgentTask: %w", err)
+	}
+
+	name := strings.TrimSpace(manifest.Metadata.Name)
+	if name == "" {
+		return fmt.Errorf("AgentTask metadata.name is required")
+	}
+	repoRef := strings.TrimSpace(manifest.Spec.RepoRef)
+	if repoRef == "" {
+		return fmt.Errorf("AgentTask spec.repoRef is required")
+	}
+
+	specJSON, err := json.Marshal(manifest.Spec)
+	if err != nil {
+		return fmt.Errorf("marshal AgentTask spec: %w", err)
+	}
+
+	absPath, err := filepath.Abs(applyFile)
+	if err != nil {
+		return fmt.Errorf("resolve manifest path: %w", err)
+	}
+
+	db, err := store.Open("")
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+
+	managedRepo, err := store.GetManagedRepo(db, repoRef)
+	if err != nil {
+		return fmt.Errorf("resolve repoRef %s: %w", repoRef, err)
+	}
+	if managedRepo == nil {
+		return fmt.Errorf("AgentTask repoRef %q is not applied in managed_repos", repoRef)
+	}
+
+	row := &store.AgentTask{
+		Name:                        name,
+		RepoRef:                     repoRef,
+		Repository:                  managedRepo.Repository,
+		Objective:                   strings.TrimSpace(manifest.Spec.Objective),
+		TaskType:                    strings.TrimSpace(manifest.Spec.TaskType),
+		Risk:                        strings.TrimSpace(manifest.Spec.Risk),
+		ContextRefs:                 append([]string(nil), manifest.Spec.ContextRefs...),
+		DesiredOutcome:              append([]string(nil), manifest.Spec.DesiredOutcome...),
+		RoutingPolicyRef:            strings.TrimSpace(manifest.Spec.RoutingPolicyRef),
+		ReviewPolicyRef:             strings.TrimSpace(manifest.Spec.ReviewPolicyRef),
+		ApprovalPolicyRef:           strings.TrimSpace(manifest.Spec.ApprovalPolicyRef),
+		ApprovalRequiredBeforeMerge: manifest.Spec.Approval.RequiredBeforeMerge,
+		SourceKind:                  "manifest",
+		SourceRef:                   name,
+		Status:                      "planned",
+		SourcePath:                  absPath,
+		SourceCommit:                gitHeadForPath(absPath),
+		SpecHash:                    sha256Hex(content),
+		RawSpecJSON:                 string(specJSON),
+	}
+
+	if applyDryRun {
+		fmt.Printf("Validated AgentTask %s -> %s (dry-run)\n", row.Name, row.RepoRef)
+		if row.SourceCommit != "" {
+			fmt.Printf("Source commit: %s\n", row.SourceCommit)
+		}
+		return nil
+	}
+
+	if err := store.UpsertAgentTask(db, row); err != nil {
+		return fmt.Errorf("upsert agent task: %w", err)
+	}
+
+	fmt.Printf("Applied AgentTask %s -> %s\n", row.Name, row.RepoRef)
 	if row.SourceCommit != "" {
 		fmt.Printf("Source commit: %s\n", row.SourceCommit)
 	}
