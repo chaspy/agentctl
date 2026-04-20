@@ -65,6 +65,9 @@ agentctl validate -f ~/go/src/github.com/chaspy/myassistant/ops/system/ecosystem
 # Read applied ManagedRepo desired state from the local DB
 agentctl state managed-repo list --json
 
+# Compare applied desired state against observed local checkouts
+agentctl reconcile once --read-only --json
+
 # Kill a session (with safety checks)
 agentctl kill <session-name>
 
@@ -101,6 +104,7 @@ agentctl serve
 | `config` | Manage per-repository configuration |
 | `apply` | Import a desired-state manifest into the local control-plane DB |
 | `validate` | Validate desired-state manifests without mutating runtime state |
+| `reconcile once --read-only` | Compare applied ManagedRepo desired state against observed local clones and repo contracts |
 | `repos <query>` | Search for repositories on disk |
 
 ## Session Status Detection
