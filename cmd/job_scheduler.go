@@ -128,11 +128,19 @@ func isJobDue(db *sql.DB, job store.Job, now time.Time) (bool, error) {
 
 	base := job.CreatedAt
 	if latestRun != nil {
-		base = latestRun.StartedAt
+		base = normalizeCronBase(latestRun.StartedAt)
 	}
 
 	nextRun := schedule.Next(base)
 	return !nextRun.After(now), nil
+}
+
+func normalizeCronBase(ts time.Time) time.Time {
+	base := ts.Truncate(time.Minute)
+	if ts.After(base) {
+		return base.Add(time.Minute)
+	}
+	return base
 }
 
 func schedulerLockOwner() (string, error) {
