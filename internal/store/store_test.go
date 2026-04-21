@@ -879,6 +879,58 @@ func TestListAllSessionsWithArchive(t *testing.T) {
 	}
 }
 
+func TestListAllSessionsWithArchiveHandlesIntegerLastActive(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = UpsertSession(db, &Session{
+		ID: "claude:legacy:s1", Agent: "claude", Repository: "legacy", SessionID: "s1",
+		Status: "dead", Alive: false, LastActive: time.Now(),
+	})
+	if err := MoveToArchive(db, "claude:legacy:s1"); err != nil {
+		t.Fatalf("MoveToArchive: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE sessions_archive SET last_active = 0, pr_number = '', role = '2026-03-29 23:47:58', archived = 'worker', created_at = '2026-03-29 23:47:58.123456789 +0900 JST', updated_at = '2026-03-29 23:47:59.123456789 +0900 JST' WHERE id = ?`, "claude:legacy:s1"); err != nil {
+		t.Fatalf("seed legacy archive values: %v", err)
+	}
+
+	all, err := ListAllSessionsWithArchive(db)
+	if err != nil {
+		t.Fatalf("ListAllSessionsWithArchive: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(all))
+	}
+	if !all[0].LastActive.IsZero() {
+		t.Fatalf("expected zero last_active for legacy value 0, got %s", all[0].LastActive)
+	}
+	if all[0].PRNumber != 0 {
+		t.Fatalf("expected empty pr_number to remain unset, got %d", all[0].PRNumber)
+	}
+	if !all[0].Archived {
+		t.Fatalf("expected archive select to mark legacy row archived")
+	}
+	if all[0].Role != "worker" {
+		t.Fatalf("expected invalid legacy role to default to worker, got %q", all[0].Role)
+	}
+	if all[0].CreatedAt.IsZero() || all[0].UpdatedAt.IsZero() {
+		t.Fatalf("expected legacy created_at/updated_at strings to scan, got created=%s updated=%s", all[0].CreatedAt, all[0].UpdatedAt)
+	}
+}
+
+func TestNullableSessionTimeIgnoresInvalidLegacyText(t *testing.T) {
+	var got nullableSessionTime
+	if err := got.Scan("awaiting_approval"); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if got.Valid || !got.Time.IsZero() {
+		t.Fatalf("expected invalid legacy text to become zero time, got valid=%v time=%s", got.Valid, got.Time)
+	}
+}
+
 func TestMigrationArchivesExisting(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

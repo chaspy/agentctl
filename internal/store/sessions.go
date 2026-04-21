@@ -2,6 +2,8 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -84,9 +86,14 @@ const (
 const sessionSelectColumns = `id, agent, repository, session_id, cwd, git_branch,
 	zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 	pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at`
+const sessionSelectArchiveColumns = `id, agent, repository, session_id, cwd, git_branch,
+	zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
+	pr_number, pr_url, pr_state, task_summary,
+	CASE WHEN role IN ('worker', 'director', 'secretary') THEN role ELSE 'worker' END AS role,
+	1 AS archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at`
 
 const sessionSelectFromSessions = "SELECT " + sessionSelectColumns + " FROM sessions"
-const sessionSelectFromArchive = "SELECT " + sessionSelectColumns + " FROM sessions_archive"
+const sessionSelectFromArchive = "SELECT " + sessionSelectArchiveColumns + " FROM sessions_archive"
 
 // WantsRunning reports whether the user-intent state for this session is running.
 func (s Session) WantsRunning() bool {
@@ -158,12 +165,13 @@ func UpsertSession(db *sql.DB, s *Session) error {
 func GetSession(db *sql.DB, id string) (*Session, error) {
 	s := &Session{}
 	var archived, isLoop, isProtected int
-	var prNumber sql.NullInt64
-	var lastActive sql.NullTime
+	var prNumber nullableSessionInt
+	var lastActive nullableSessionTime
+	var createdAt, updatedAt nullableSessionTime
 	err := db.QueryRow(sessionSelectFromSessions+` WHERE id = ?`, id).Scan(
 		&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
 		&s.ZellijSession, &s.Status, &s.BlockedReason, &s.DesiredState, &s.LastMessage, &s.LastRole, &lastActive,
-		&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState, &s.CreatedAt, &s.UpdatedAt)
+		&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +184,12 @@ func GetSession(db *sql.DB, id string) (*Session, error) {
 	}
 	if lastActive.Valid {
 		s.LastActive = lastActive.Time
+	}
+	if createdAt.Valid {
+		s.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		s.UpdatedAt = updatedAt.Time
 	}
 	return s, nil
 }
@@ -428,12 +442,13 @@ func querySessions(db *sql.DB, query string, args ...any) ([]Session, error) {
 	for rows.Next() {
 		var s Session
 		var archived, isLoop, isProtected int
-		var prNumber sql.NullInt64
-		var lastActive sql.NullTime
+		var prNumber nullableSessionInt
+		var lastActive nullableSessionTime
+		var createdAt, updatedAt nullableSessionTime
 		if err := rows.Scan(
 			&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
 			&s.ZellijSession, &s.Status, &s.BlockedReason, &s.DesiredState, &s.LastMessage, &s.LastRole, &lastActive,
-			&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState, &s.CreatedAt, &s.UpdatedAt,
+			&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -447,13 +462,141 @@ func querySessions(db *sql.DB, query string, args ...any) ([]Session, error) {
 		if lastActive.Valid {
 			s.LastActive = lastActive.Time
 		}
+		if createdAt.Valid {
+			s.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			s.UpdatedAt = updatedAt.Time
+		}
 		sessions = append(sessions, s)
 	}
 	return sessions, rows.Err()
 }
 
+type nullableSessionTime struct {
+	Time  time.Time
+	Valid bool
+}
+
+type nullableSessionInt struct {
+	Int64 int64
+	Valid bool
+}
+
+func (i *nullableSessionInt) Scan(value any) error {
+	if value == nil {
+		i.Valid = false
+		i.Int64 = 0
+		return nil
+	}
+	switch v := value.(type) {
+	case int64:
+		i.Int64 = v
+		i.Valid = true
+		return nil
+	case int:
+		i.Int64 = int64(v)
+		i.Valid = true
+		return nil
+	case string:
+		return i.scanString(v)
+	case []byte:
+		return i.scanString(string(v))
+	default:
+		return fmt.Errorf("unsupported session integer type %T", value)
+	}
+}
+
+func (i *nullableSessionInt) scanString(value string) error {
+	if value == "" {
+		i.Valid = false
+		i.Int64 = 0
+		return nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fmt.Errorf("unsupported session integer value %q", value)
+	}
+	i.Int64 = parsed
+	i.Valid = true
+	return nil
+}
+
+func (t *nullableSessionTime) Scan(value any) error {
+	if value == nil {
+		t.Valid = false
+		t.Time = time.Time{}
+		return nil
+	}
+	switch v := value.(type) {
+	case time.Time:
+		t.Valid = !v.IsZero()
+		t.Time = v
+		return nil
+	case string:
+		return t.scanString(v)
+	case []byte:
+		return t.scanString(string(v))
+	case int64:
+		return t.scanUnix(v)
+	case int:
+		return t.scanUnix(int64(v))
+	default:
+		return fmt.Errorf("unsupported session timestamp type %T", value)
+	}
+}
+
+func (t *nullableSessionTime) scanUnix(value int64) error {
+	if value == 0 {
+		t.Valid = false
+		t.Time = time.Time{}
+		return nil
+	}
+	if value > 1_000_000_000_000 {
+		t.Time = time.UnixMilli(value)
+	} else {
+		t.Time = time.Unix(value, 0)
+	}
+	t.Valid = true
+	return nil
+}
+
+func (t *nullableSessionTime) scanString(value string) error {
+	if value == "" {
+		t.Valid = false
+		t.Time = time.Time{}
+		return nil
+	}
+	if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return t.scanUnix(unix)
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			t.Time = parsed
+			t.Valid = !parsed.IsZero()
+			return nil
+		}
+	}
+	t.Valid = false
+	t.Time = time.Time{}
+	return nil
+}
+
 func getSessionBySessionIDFromTable(db *sql.DB, table, sessionID string) (*Session, error) {
-	sessions, err := querySessions(db, "SELECT "+sessionSelectColumns+" FROM "+table+" WHERE session_id = ? ORDER BY last_active DESC LIMIT 1", sessionID)
+	selectFrom := sessionSelectFromSessions
+	if table == "sessions_archive" {
+		selectFrom = sessionSelectFromArchive
+	}
+	sessions, err := querySessions(db, selectFrom+" WHERE session_id = ? ORDER BY last_active DESC LIMIT 1", sessionID)
 	if err != nil {
 		return nil, err
 	}
