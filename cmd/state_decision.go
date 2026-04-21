@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ var (
 	stateDecisionAttemptName    string
 	stateDecisionAttemptMessage string
 	stateDecisionAttemptSummary string
+	stateDecisionAttemptAttach  string
 )
 
 var stateDecisionCmd = &cobra.Command{
@@ -43,6 +45,7 @@ var stateDecisionAttemptCmd = &cobra.Command{
 	Use:   "attempt <id>",
 	Short: "Create and execute one Attempt from a recorded Decision",
 	Long: `Builds an AgentTask Attempt from a recorded Decision and executes the spawn path.
+Use --attach-session to bind an existing managed session instead of spawning a new one.
 Use --dry-run to preview the attempt without writing to SQLite or starting a session.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runStateDecisionAttempt,
@@ -60,6 +63,7 @@ func init() {
 	stateDecisionAttemptCmd.Flags().StringVar(&stateDecisionAttemptName, "name", "", "Zellij session name override")
 	stateDecisionAttemptCmd.Flags().StringVar(&stateDecisionAttemptMessage, "message", "", "Initial instruction override")
 	stateDecisionAttemptCmd.Flags().StringVar(&stateDecisionAttemptSummary, "summary", "", "Task summary override")
+	stateDecisionAttemptCmd.Flags().StringVar(&stateDecisionAttemptAttach, "attach-session", "", "Attach an existing managed session by DB ID, provider session ID, or zellij session name instead of spawning")
 }
 
 func runStateDecisionList(cmd *cobra.Command, args []string) error {
@@ -199,6 +203,10 @@ func runStateDecisionAttempt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("agent task %q is %q, expected routed", task.Name, task.Status)
 	}
 
+	if stateDecisionAttemptAttach != "" {
+		return runStateDecisionAttemptAttach(cmd, db, task, decision)
+	}
+
 	plan, err := buildAgentTaskAttemptPlan(task, decision, stateDecisionAttemptBranch, stateDecisionAttemptName, stateDecisionAttemptMessage, stateDecisionAttemptSummary)
 	if err != nil {
 		return fmt.Errorf("building attempt plan: %w", err)
@@ -253,6 +261,119 @@ func runStateDecisionAttempt(cmd *cobra.Command, args []string) error {
 	writeAgentTaskAttemptPlan(cmd.OutOrStdout(), plan.Attempt, false)
 	fmt.Fprintf(cmd.OutOrStdout(), "Executed attempt #%d from Decision %d.\n", plan.Attempt.ID, decision.ID)
 	return nil
+}
+
+func runStateDecisionAttemptAttach(cmd *cobra.Command, db *sql.DB, task *store.AgentTask, decision *store.AgentTaskDecision) error {
+	session, err := resolveAgentTaskAttachSession(db, stateDecisionAttemptAttach)
+	if err != nil {
+		return err
+	}
+	attempt := buildAttachedAgentTaskAttempt(task, decision, session, stateDecisionAttemptSummary)
+	if stateDecisionAttemptDryRun {
+		writeAgentTaskAttemptPlan(cmd.OutOrStdout(), attempt, true)
+		fmt.Fprintln(cmd.OutOrStdout(), "No database changes were made.")
+		return nil
+	}
+
+	if err := store.CreateAgentTaskAttempt(db, attempt); err != nil {
+		return fmt.Errorf("creating attached attempt: %w", err)
+	}
+	if err := store.UpdateAgentTaskDecisionStatus(db, decision.ID, "applied"); err != nil {
+		return fmt.Errorf("marking decision applied: %w", err)
+	}
+	if err := store.UpdateAgentTaskStatus(db, task.Name, "spawned"); err != nil {
+		return fmt.Errorf("marking agent task spawned: %w", err)
+	}
+	if err := store.LogAction(db, &store.Action{
+		SessionID:   attempt.ManagedSessionID,
+		ActionType:  "attempt_attach",
+		Content:     fmt.Sprintf("Attached existing session to attempt #%d from decision #%d for %s", attempt.ID, decision.ID, task.Name),
+		Result:      attempt.SessionName,
+		RouteReason: decision.RouteReason,
+	}); err != nil {
+		return fmt.Errorf("logging attached attempt action: %w", err)
+	}
+
+	writeAgentTaskAttemptPlan(cmd.OutOrStdout(), attempt, false)
+	fmt.Fprintf(cmd.OutOrStdout(), "Attached session %s as attempt #%d from Decision %d.\n", attempt.SessionName, attempt.ID, decision.ID)
+	return nil
+}
+
+func resolveAgentTaskAttachSession(db *sql.DB, ref string) (*store.Session, error) {
+	if ref == "" {
+		return nil, fmt.Errorf("--attach-session requires a session reference")
+	}
+	if session, err := store.GetSessionAny(db, ref); err == nil {
+		return session, nil
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("getting session by id %q: %w", ref, err)
+	}
+	if session, err := store.GetSessionBySessionID(db, ref); err == nil {
+		return session, nil
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("getting session by provider id %q: %w", ref, err)
+	}
+
+	matches, err := store.FindSessionByZellijSession(db, ref)
+	if err != nil {
+		return nil, fmt.Errorf("finding session by zellij name %q: %w", ref, err)
+	}
+	var exact []store.Session
+	for _, match := range matches {
+		if match.ZellijSession == ref {
+			exact = append(exact, match)
+		}
+	}
+	if len(exact) == 1 {
+		return &exact[0], nil
+	}
+	if len(exact) > 1 {
+		return nil, fmt.Errorf("session reference %q is ambiguous: %d exact zellij matches", ref, len(exact))
+	}
+	if len(matches) == 1 {
+		return &matches[0], nil
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("session reference %q is ambiguous: %d zellij matches", ref, len(matches))
+	}
+	return nil, fmt.Errorf("session %q not found", ref)
+}
+
+func buildAttachedAgentTaskAttempt(task *store.AgentTask, decision *store.AgentTaskDecision, session *store.Session, summaryOverride string) *store.AgentTaskAttempt {
+	summary := summaryOverride
+	if summary == "" {
+		summary = session.TaskSummary
+	}
+	if summary == "" {
+		summary = task.Objective
+	}
+	agent := session.Agent
+	if agent == "" {
+		agent = decision.SelectedAgent
+	}
+	sessionName := session.ZellijSession
+	if sessionName == "" {
+		sessionName = session.SessionID
+	}
+	return &store.AgentTaskAttempt{
+		DecisionID:       decision.ID,
+		AgentTaskName:    task.Name,
+		RepoRef:          task.RepoRef,
+		Repository:       firstNonEmpty(task.Repository, session.Repository, decision.Repository),
+		TaskType:         task.TaskType,
+		Risk:             task.Risk,
+		Agent:            agent,
+		RepoMode:         firstNonEmpty(decision.SelectedRepoMode, "attached"),
+		Branch:           session.GitBranch,
+		SessionName:      sessionName,
+		ManagedSessionID: session.ID,
+		WorkDir:          session.CWD,
+		LaunchCommand:    "attached-existing-session",
+		InitialMessage:   "",
+		Summary:          summary,
+		Status:           "spawned",
+		FailureReason:    "",
+	}
 }
 
 func writeAgentTaskAttemptPlan(w io.Writer, attempt *store.AgentTaskAttempt, dryRun bool) {
