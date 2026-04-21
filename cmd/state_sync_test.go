@@ -1075,6 +1075,121 @@ func TestSyncAgentTaskOutcomesAutoFailsSpawnFailure(t *testing.T) {
 	}
 }
 
+func TestSyncAgentTaskOutcomesRefreshesExistingOutcomePRMetadata(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := store.CreateAgentTaskOutcome(db, &store.AgentTaskOutcome{
+		AttemptID:     1,
+		DecisionID:    2,
+		AgentTaskName: "owner-repo-task",
+		RepoRef:       "owner-repo",
+		Repository:    "owner/repo",
+		TaskType:      "docs",
+		Risk:          "low",
+		Agent:         "codex",
+		Status:        "completed",
+		PRNumber:      42,
+		PRURL:         "https://github.com/owner/repo/pull/42",
+		PRState:       "OPEN",
+		Source:        "sync",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskOutcome: %v", err)
+	}
+
+	origLookupPRMetadata := lookupPRMetadata
+	defer func() { lookupPRMetadata = origLookupPRMetadata }()
+	lookupPRMetadata = func(repo, prNumber string) prMetadata {
+		if repo != "owner/repo" || prNumber != "42" {
+			t.Fatalf("unexpected lookupPRMetadata args repo=%q prNumber=%q", repo, prNumber)
+		}
+		return prMetadata{
+			URL:        "https://github.com/owner/repo/pull/42",
+			State:      "MERGED",
+			HeadRefOID: "def456",
+		}
+	}
+
+	if err := syncAgentTaskOutcomes(db, nil); err != nil {
+		t.Fatalf("syncAgentTaskOutcomes: %v", err)
+	}
+
+	outcome, err := store.GetAgentTaskOutcome(db, 1)
+	if err != nil {
+		t.Fatalf("GetAgentTaskOutcome: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected outcome to exist")
+	}
+	if outcome.PRState != "MERGED" {
+		t.Fatalf("PRState = %q, want MERGED", outcome.PRState)
+	}
+	if outcome.CommitSHA != "def456" {
+		t.Fatalf("CommitSHA = %q, want def456", outcome.CommitSHA)
+	}
+}
+
+func TestSyncAgentTaskOutcomesRefreshesExistingOutcomeFromPRNumber(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := store.CreateAgentTaskOutcome(db, &store.AgentTaskOutcome{
+		AttemptID:     1,
+		DecisionID:    2,
+		AgentTaskName: "owner-repo-task",
+		RepoRef:       "owner-repo",
+		Repository:    "owner/repo",
+		TaskType:      "docs",
+		Risk:          "low",
+		Agent:         "codex",
+		Status:        "completed",
+		PRNumber:      42,
+		Source:        "sync",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskOutcome: %v", err)
+	}
+
+	origLookupPRMetadata := lookupPRMetadata
+	defer func() { lookupPRMetadata = origLookupPRMetadata }()
+	lookupPRMetadata = func(repo, prNumber string) prMetadata {
+		if repo != "owner/repo" || prNumber != "42" {
+			t.Fatalf("unexpected lookupPRMetadata args repo=%q prNumber=%q", repo, prNumber)
+		}
+		return prMetadata{
+			URL:        "https://github.com/owner/repo/pull/42",
+			State:      "OPEN",
+			HeadRefOID: "abc123",
+		}
+	}
+
+	if err := syncAgentTaskOutcomes(db, nil); err != nil {
+		t.Fatalf("syncAgentTaskOutcomes: %v", err)
+	}
+
+	outcome, err := store.GetAgentTaskOutcome(db, 1)
+	if err != nil {
+		t.Fatalf("GetAgentTaskOutcome: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected outcome to exist")
+	}
+	if outcome.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %q, want PR URL", outcome.PRURL)
+	}
+	if outcome.PRState != "OPEN" {
+		t.Fatalf("PRState = %q, want OPEN", outcome.PRState)
+	}
+	if outcome.CommitSHA != "abc123" {
+		t.Fatalf("CommitSHA = %q, want abc123", outcome.CommitSHA)
+	}
+}
+
 func TestInferAgentFromLayout(t *testing.T) {
 	tests := []struct {
 		name      string

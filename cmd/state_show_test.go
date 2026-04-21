@@ -114,6 +114,7 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 		ManagedSessionID: "codex:chaspy/myassistant:zellij-myassistant-myassistant-create-repo-contract",
 		Status:           "completed",
 		PRURL:            "https://github.com/chaspy/myassistant/pull/12",
+		PRState:          "OPEN",
 		Source:           "session",
 	}); err != nil {
 		t.Fatalf("CreateAgentTaskOutcome: %v", err)
@@ -290,6 +291,9 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}
 	if report.AgentTaskOutcomes[0].PRURL != "https://github.com/chaspy/myassistant/pull/12" {
 		t.Fatalf("outcome pr_url = %q", report.AgentTaskOutcomes[0].PRURL)
+	}
+	if report.AgentTaskOutcomes[0].PRState != "OPEN" {
+		t.Fatalf("outcome pr_state = %q", report.AgentTaskOutcomes[0].PRState)
 	}
 }
 

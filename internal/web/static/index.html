@@ -1162,13 +1162,14 @@ async function loadDatabase() {
   if (agentTaskOutcomes && agentTaskOutcomes.length > 0) {
     html += `<div class="db-section-title">Agent Task Outcomes <span class="db-count">(${agentTaskOutcomes.length})</span></div>`;
     html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
-    html += '<th>ID</th><th>Attempt</th><th>Agent Task</th><th>Status</th><th>PR</th><th>Commit</th><th>Failure</th><th>Source</th></tr></thead><tbody>';
+    html += '<th>ID</th><th>Attempt</th><th>Agent Task</th><th>Status</th><th>PR State</th><th>PR</th><th>Commit</th><th>Failure</th><th>Source</th></tr></thead><tbody>';
     for (const outcome of agentTaskOutcomes) {
       html += `<tr>
         <td>#${escapeHTML(String(outcome.id || ''))}</td>
         <td>#${escapeHTML(String(outcome.attemptId || ''))}</td>
         <td>${escapeHTML(outcome.agentTaskName || '')}</td>
         <td>${escapeHTML(outcome.status || '')}</td>
+        <td>${escapeHTML(outcome.prState || '-')}</td>
         <td title="${escapeHTML(outcome.prUrl || '')}">${truncate(outcome.prUrl, 60)}</td>
         <td>${escapeHTML(outcome.commitSha || '-')}</td>
         <td title="${escapeHTML(outcome.failureReason || '')}">${truncate(outcome.failureReason || outcome.failureCategory, 60)}</td>

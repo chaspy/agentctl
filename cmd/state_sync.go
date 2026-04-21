@@ -303,6 +303,36 @@ func syncSessionPRMetadata(db *sql.DB) (map[string]prMetadata, error) {
 }
 
 func syncAgentTaskOutcomes(db *sql.DB, prMetadataBySessionID map[string]prMetadata) error {
+	existingOutcomes, err := store.ListAgentTaskOutcomes(db)
+	if err != nil {
+		return fmt.Errorf("listing outcomes for outcome sync: %w", err)
+	}
+	prMetadataCache := make(map[string]prMetadata)
+	for i := range existingOutcomes {
+		if !shouldRefreshOutcomePRMetadata(&existingOutcomes[i]) {
+			continue
+		}
+		meta := resolveOutcomePRMetadata(&existingOutcomes[i], prMetadataBySessionID, prMetadataCache)
+		if meta.URL == "" && meta.State == "" && meta.HeadRefOID == "" {
+			continue
+		}
+		if !applyOutcomePRMetadata(&existingOutcomes[i], meta) {
+			continue
+		}
+		if err := store.UpdateAgentTaskOutcome(db, &existingOutcomes[i]); err != nil {
+			return fmt.Errorf("updating outcome #%d metadata: %w", existingOutcomes[i].ID, err)
+		}
+		if err := store.LogAction(db, &store.Action{
+			SessionID:   existingOutcomes[i].ManagedSessionID,
+			ActionType:  "outcome_refresh",
+			Content:     fmt.Sprintf("Refreshed outcome #%d metadata for %s", existingOutcomes[i].ID, existingOutcomes[i].AgentTaskName),
+			Result:      firstNonEmpty(existingOutcomes[i].PRState, existingOutcomes[i].PRURL, existingOutcomes[i].Status),
+			RouteReason: "",
+		}); err != nil {
+			return fmt.Errorf("logging outcome refresh for outcome #%d: %w", existingOutcomes[i].ID, err)
+		}
+	}
+
 	attempts, err := store.ListAgentTaskAttempts(db)
 	if err != nil {
 		return fmt.Errorf("listing attempts for outcome sync: %w", err)
@@ -322,11 +352,6 @@ func syncAgentTaskOutcomes(db *sql.DB, prMetadataBySessionID map[string]prMetada
 			continue
 		}
 
-		commitSHA := ""
-		if meta, ok := prMetadataBySessionID[attempt.ManagedSessionID]; ok {
-			commitSHA = meta.HeadRefOID
-		}
-
 		plan, err := buildAgentTaskOutcomePlan(
 			db,
 			&attempt,
@@ -335,7 +360,7 @@ func syncAgentTaskOutcomes(db *sql.DB, prMetadataBySessionID map[string]prMetada
 			0,
 			"",
 			"",
-			commitSHA,
+			"",
 			failureCategory,
 			failureReason,
 			"sync",
@@ -343,6 +368,8 @@ func syncAgentTaskOutcomes(db *sql.DB, prMetadataBySessionID map[string]prMetada
 		if err != nil {
 			return fmt.Errorf("building auto outcome for attempt %d: %w", attempt.ID, err)
 		}
+		meta := resolveOutcomePRMetadata(plan.Outcome, prMetadataBySessionID, prMetadataCache)
+		applyOutcomePRMetadata(plan.Outcome, meta)
 
 		if err := store.CreateAgentTaskOutcome(db, plan.Outcome); err != nil {
 			return fmt.Errorf("creating auto outcome for attempt %d: %w", attempt.ID, err)
@@ -375,6 +402,64 @@ func syncAgentTaskOutcomes(db *sql.DB, prMetadataBySessionID map[string]prMetada
 	}
 
 	return nil
+}
+
+func shouldRefreshOutcomePRMetadata(outcome *store.AgentTaskOutcome) bool {
+	hasPRReference := outcome.PRURL != "" || (outcome.PRNumber != 0 && repoFromRepository(outcome.Repository) != "")
+	if !hasPRReference {
+		return false
+	}
+	if outcome.PRURL == "" || outcome.PRState == "" || outcome.PRState == "OPEN" {
+		return true
+	}
+	return outcome.CommitSHA == ""
+}
+
+func resolveOutcomePRMetadata(outcome *store.AgentTaskOutcome, prMetadataBySessionID map[string]prMetadata, cache map[string]prMetadata) prMetadata {
+	if outcome.ManagedSessionID != "" {
+		if meta, ok := prMetadataBySessionID[outcome.ManagedSessionID]; ok {
+			return meta
+		}
+	}
+
+	repo := repoFromRepository(outcome.Repository)
+	if repo == "" {
+		return prMetadata{}
+	}
+	prNumber := outcome.PRNumber
+	if prNumber == 0 {
+		if n, err := strconv.Atoi(extractPRNumber(outcome.PRURL)); err == nil {
+			prNumber = n
+		}
+	}
+	if prNumber == 0 {
+		return prMetadata{}
+	}
+
+	cacheKey := repo + "#" + strconv.Itoa(prNumber)
+	if meta, ok := cache[cacheKey]; ok {
+		return meta
+	}
+	meta := lookupPRMetadata(repo, strconv.Itoa(prNumber))
+	cache[cacheKey] = meta
+	return meta
+}
+
+func applyOutcomePRMetadata(outcome *store.AgentTaskOutcome, meta prMetadata) bool {
+	changed := false
+	if meta.URL != "" && outcome.PRURL != meta.URL {
+		outcome.PRURL = meta.URL
+		changed = true
+	}
+	if meta.State != "" && outcome.PRState != meta.State {
+		outcome.PRState = meta.State
+		changed = true
+	}
+	if meta.HeadRefOID != "" && outcome.CommitSHA != meta.HeadRefOID {
+		outcome.CommitSHA = meta.HeadRefOID
+		changed = true
+	}
+	return changed
 }
 
 func inferOutcomeForAttemptAutoSync(db *sql.DB, attempt *store.AgentTaskAttempt) (status, failureCategory, failureReason string) {

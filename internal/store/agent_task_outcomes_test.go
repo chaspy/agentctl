@@ -55,6 +55,19 @@ func TestAgentTaskOutcomeCRUD(t *testing.T) {
 		t.Fatalf("got = %+v", got)
 	}
 
+	outcome.PRState = "MERGED"
+	outcome.CommitSHA = "def456"
+	if err := UpdateAgentTaskOutcome(db, outcome); err != nil {
+		t.Fatalf("UpdateAgentTaskOutcome: %v", err)
+	}
+	got, err = GetAgentTaskOutcome(db, outcome.ID)
+	if err != nil {
+		t.Fatalf("GetAgentTaskOutcome(after update): %v", err)
+	}
+	if got.PRState != "MERGED" || got.CommitSHA != "def456" {
+		t.Fatalf("updated outcome mismatch: %+v", got)
+	}
+
 	byAttempt, err := GetAgentTaskOutcomeByAttemptID(db, 1)
 	if err != nil {
 		t.Fatalf("GetAgentTaskOutcomeByAttemptID: %v", err)

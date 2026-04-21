@@ -89,6 +89,57 @@ func CreateAgentTaskOutcome(db *sql.DB, outcome *AgentTaskOutcome) error {
 	return nil
 }
 
+func UpdateAgentTaskOutcome(db *sql.DB, outcome *AgentTaskOutcome) error {
+	_, err := db.Exec(`
+		UPDATE agent_task_outcomes
+		SET
+			attempt_id = ?,
+			decision_id = ?,
+			agent_task_name = ?,
+			repo_ref = ?,
+			repository = ?,
+			task_type = ?,
+			risk = ?,
+			agent = ?,
+			branch = ?,
+			session_name = ?,
+			managed_session_id = ?,
+			status = ?,
+			result_summary = ?,
+			pr_number = ?,
+			pr_url = ?,
+			pr_state = ?,
+			commit_sha = ?,
+			failure_category = ?,
+			failure_reason = ?,
+			source = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`,
+		outcome.AttemptID,
+		outcome.DecisionID,
+		outcome.AgentTaskName,
+		outcome.RepoRef,
+		outcome.Repository,
+		outcome.TaskType,
+		outcome.Risk,
+		outcome.Agent,
+		outcome.Branch,
+		outcome.SessionName,
+		outcome.ManagedSessionID,
+		outcome.Status,
+		outcome.ResultSummary,
+		outcome.PRNumber,
+		outcome.PRURL,
+		outcome.PRState,
+		outcome.CommitSHA,
+		outcome.FailureCategory,
+		outcome.FailureReason,
+		outcome.Source,
+		outcome.ID,
+	)
+	return err
+}
+
 func ListAgentTaskOutcomes(db *sql.DB) ([]AgentTaskOutcome, error) {
 	rows, err := db.Query(`
 		SELECT

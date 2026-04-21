@@ -157,6 +157,7 @@ type stateShowAgentTaskOutcome struct {
 	Status           string `json:"status"`
 	ResultSummary    string `json:"result_summary,omitempty"`
 	PRURL            string `json:"pr_url,omitempty"`
+	PRState          string `json:"pr_state,omitempty"`
 	CommitSHA        string `json:"commit_sha,omitempty"`
 	FailureCategory  string `json:"failure_category,omitempty"`
 	FailureReason    string `json:"failure_reason,omitempty"`
@@ -337,13 +338,14 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 	if len(report.AgentTaskOutcomes) > 0 {
 		fmt.Println("\n=== Agent Task Outcomes ===")
 		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tATTEMPT\tAGENT_TASK\tSTATUS\tPR\tSOURCE")
+		fmt.Fprintln(w, "ID\tATTEMPT\tAGENT_TASK\tSTATUS\tPR_STATE\tPR\tSOURCE")
 		for _, outcome := range report.AgentTaskOutcomes {
-			fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\t%s\t%s\n",
 				outcome.ID,
 				outcome.AttemptID,
 				outcome.AgentTaskName,
 				outcome.Status,
+				dashIfEmpty(outcome.PRState),
 				dashIfEmpty(outcome.PRURL),
 				dashIfEmpty(outcome.Source))
 		}
@@ -662,6 +664,7 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			Status:           outcome.Status,
 			ResultSummary:    outcome.ResultSummary,
 			PRURL:            outcome.PRURL,
+			PRState:          outcome.PRState,
 			CommitSHA:        outcome.CommitSHA,
 			FailureCategory:  outcome.FailureCategory,
 			FailureReason:    outcome.FailureReason,
