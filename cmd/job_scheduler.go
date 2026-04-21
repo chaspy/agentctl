@@ -93,6 +93,8 @@ func runScheduledJob(db *sql.DB, job *store.Job) error {
 		target = job.Session
 	case "command":
 		target = job.Instruction
+	case "state-sync":
+		target = firstNonEmpty(job.Agent, "all")
 	}
 	jobSchedulerLogger("executing job %q (action=%s, target=%s)\n", job.Name, job.Action, target)
 

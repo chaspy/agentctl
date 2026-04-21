@@ -31,6 +31,7 @@ var migrations = []string{
 	migrationV26,
 	migrationV27,
 	migrationV28,
+	migrationV29,
 }
 
 // Migrate applies all pending schema migrations.
@@ -709,4 +710,32 @@ DROP TABLE agent_tasks_v23;
 
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_repo_ref ON agent_tasks(repo_ref);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated_at ON agent_tasks(status, updated_at DESC);
+`
+
+const migrationV29 = `
+ALTER TABLE jobs RENAME TO jobs_v16;
+
+CREATE TABLE IF NOT EXISTS jobs (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	name        TEXT NOT NULL UNIQUE,
+	schedule    TEXT NOT NULL,
+	action      TEXT NOT NULL CHECK(action IN ('spawn', 'send', 'command', 'state-sync')),
+	repo        TEXT NOT NULL DEFAULT '',
+	session     TEXT NOT NULL DEFAULT '',
+	branch      TEXT NOT NULL DEFAULT '',
+	agent       TEXT NOT NULL DEFAULT '',
+	instruction TEXT NOT NULL,
+	cwd         TEXT NOT NULL DEFAULT '',
+	timeout     INTEGER NOT NULL DEFAULT 600,
+	enabled     INTEGER NOT NULL DEFAULT 1,
+	created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO jobs (id, name, schedule, action, repo, session, branch, agent, instruction, cwd, timeout, enabled, created_at, updated_at)
+	SELECT id, name, schedule, action, repo, session, branch, agent, instruction, cwd, timeout, enabled, created_at, updated_at FROM jobs_v16;
+
+DROP TABLE jobs_v16;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_enabled_created_at ON jobs(enabled, created_at);
 `

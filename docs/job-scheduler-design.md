@@ -58,7 +58,7 @@ launchd (agentctl-scheduler.plist)
        -> SQLite から due jobs を取得
        -> 実行ロックを確保
        -> job.action を解釈
-       -> spawn または send を内部 API として実行
+       -> spawn / send / state-sync / command を実行
        -> 実行結果を DB に記録
        -> 次回実行時刻を再計算
 ```
@@ -71,7 +71,7 @@ launchd (agentctl-scheduler.plist)
 
 ## Job モデル
 
-job は `action` によって 2 種類に分かれる。
+job は `action` によって種類が分かれる。
 
 ### `action=spawn`
 
@@ -106,6 +106,27 @@ agentctl send <session> <instruction>
 - manager session への定期確認依頼
 - 既存 loop session へのトリガー
 
+### `action=state-sync`
+
+`agentctl state sync` 相当を shell 経由ではなく内部 API として実行する。
+
+対応イメージ:
+
+```bash
+agentctl state sync --agent <all|claude|codex>
+```
+
+主用途:
+
+- session / PR metadata の定期同期
+- `Decision -> Attempt -> Outcome` の自動確定
+- 既存 `Outcome` の PR lifecycle metadata refresh
+
+### `action=command`
+
+既存の deterministic script を移行するための互換 action。
+新規の agentctl 内部処理は、可能な限り専用 action に切り出す。
+
 ## DB スキーマ
 
 既存 DB は `internal/store` の migration 管理を使っているため、scheduler 追加も新しい migration として入れる。
@@ -120,12 +141,12 @@ job 定義本体。
 | `name` | `TEXT` | yes | 人間可読な一意名 |
 | `schedule` | `TEXT` | yes | cron 形式。例: `0 9 * * 1` |
 | `timezone` | `TEXT` | yes | IANA TZ。初期値 `Asia/Tokyo` |
-| `action` | `TEXT` | yes | `spawn` or `send` |
+| `action` | `TEXT` | yes | `spawn`, `send`, `command`, or `state-sync` |
 | `repo` | `TEXT` | no | `spawn` の対象 repo。例: `chaspy/myassistant` |
 | `session` | `TEXT` | no | `send` の対象 session 名 |
 | `branch` | `TEXT` | no | `spawn` の branch |
-| `agent` | `TEXT` | no | `spawn` 時の agent。`claude` / `codex` / `auto` |
-| `instruction` | `TEXT` | yes | LLM に渡す指示文 |
+| `agent` | `TEXT` | no | `spawn` 時の agent、または `state-sync` の filter。`all` / `claude` / `codex` / `auto` |
+| `instruction` | `TEXT` | action dependent | LLM に渡す指示文、または command 文字列 |
 | `enabled` | `INTEGER` | yes | 1=有効, 0=無効 |
 | `concurrency_policy` | `TEXT` | yes | `forbid` / `replace` / `allow` |
 | `catch_up_policy` | `TEXT` | yes | `none` / `one` |
@@ -141,7 +162,7 @@ job 定義本体。
 制約・index:
 
 - `UNIQUE(name)`
-- `CHECK(action IN ('spawn', 'send'))`
+- `CHECK(action IN ('spawn', 'send', 'command', 'state-sync'))`
 - `CHECK(concurrency_policy IN ('forbid', 'replace', 'allow'))`
 - `CHECK(catch_up_policy IN ('none', 'one'))`
 - `INDEX(enabled, next_run_at)`
@@ -243,8 +264,8 @@ job 実行履歴。
 |---|---|
 | `--schedule` | cron 式。必須 |
 | `--timezone` | 省略時 `Asia/Tokyo` |
-| `--action` | `spawn` or `send`。必須 |
-| `--instruction` | 指示文。必須 |
+| `--action` | `spawn`, `send`, `command`, or `state-sync`。必須 |
+| `--instruction` | `spawn` / `send` / `command` では必須。`state-sync` では不要 |
 | `--concurrency` | `forbid` / `replace` / `allow` |
 | `--catch-up` | `none` / `one` |
 | `--disabled` | 追加時に無効化 |
@@ -263,6 +284,12 @@ job 実行履歴。
 |---|---|
 | `--session` | 対象 session 名。必須 |
 
+`action=state-sync`:
+
+| flag | description |
+|---|---|
+| `--agent` | 同期対象 agent filter。省略時 `all` |
+
 ### CLI 例
 
 ```bash
@@ -279,6 +306,11 @@ agentctl job add daily-patrol \
   --action send \
   --session patrol-codex \
   --instruction '今日の巡回をしてください'
+
+agentctl job add agentctl-state-sync \
+  --schedule '*/5 * * * *' \
+  --action state-sync \
+  --agent all
 ```
 
 ### 出力方針
@@ -508,7 +540,7 @@ agentctl job add weekly-report \
 ### 移行時の注意点
 
 - 旧 plist と新 scheduler の同時有効化は避ける
-- command 文字列をそのまま持ち込まず、job の意図を `spawn` / `send` に再モデリングする
+- command 文字列をそのまま持ち込まず、job の意図を `spawn` / `send` / `state-sync` などに再モデリングする
 - まず `send` 系の read-mostly な job から移行すると安全
 
 ## 実装フェーズ分割案
@@ -518,7 +550,7 @@ agentctl job add weekly-report \
 範囲:
 
 - `jobs`, `job_runs`, `job_locks` migration
-- `action=spawn` / `action=send` のバリデーション
+- `action=spawn` / `action=send` / `action=state-sync` のバリデーション
 - `agentctl job add/list/delete/run`
 - `agentctl job scheduler once/run`
 - `forbid` のみ実装
@@ -561,13 +593,13 @@ agentctl job add weekly-report \
 2. `spawn` job の `branch` 命名を固定規約にするか
 3. `send` 実行時の `--no-wait` / `--verify` 相当を job 定義に持たせるか
 4. `job logs` は action log ベースで十分か、それとも別途詳細ログが必要か
-5. `manager_status_job` のような「単なる状態確認コマンド」は scheduler の対象に含めるべきか、それとも `send` / `spawn` に寄らない用途として切り分けるべきか
+5. `manager_status_job` のような「単なる状態確認コマンド」は `command` として残し、agentctl 内部処理に切り出せる部分は `state-sync` のような専用 action に移す
 
 ## 推奨方針
 
-- job action は `spawn` と `send` の 2 種類に限定する
+- job action は structured action を優先し、`spawn` / `send` / `state-sync` を first-class に扱う
 - `instruction` を job 定義の主役として持つ
-- shell command は持たない
+- shell command は legacy deterministic script の移行用に限定する
 - 初期 concurrency は `forbid` を default にする
 - `spawn` の `agent` default は `auto`
 - `catch_up_policy` default は `none`
