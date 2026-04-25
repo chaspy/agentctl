@@ -123,6 +123,7 @@ type remoteObservation struct {
 }
 
 type proposalBuilder struct {
+	db     *sql.DB
 	view   ManagedRepoView
 	status ReconcileManagedRepoStatus
 	items  []ReconcileTaskProposal
@@ -253,7 +254,7 @@ func BuildReconcileReport(db *sql.DB) (*ReconcileReport, error) {
 		}
 		report.Repos = append(report.Repos, status)
 
-		proposals := buildTaskProposals(view, status)
+		proposals := buildTaskProposals(db, view, status)
 		report.Summary.TaskProposals += len(proposals)
 		for _, proposal := range proposals {
 			switch proposal.Approval.Status {
@@ -320,8 +321,8 @@ func observeManagedRepoView(view ManagedRepoView) ReconcileManagedRepoStatus {
 	return status
 }
 
-func buildTaskProposals(view ManagedRepoView, status ReconcileManagedRepoStatus) []ReconcileTaskProposal {
-	builder := proposalBuilder{view: view, status: status}
+func buildTaskProposals(db *sql.DB, view ManagedRepoView, status ReconcileManagedRepoStatus) []ReconcileTaskProposal {
+	builder := proposalBuilder{db: db, view: view, status: status}
 
 	if !status.LocalCloneFound {
 		builder.add("bootstrap_local_clone", "Bootstrap local clone", "implementation", riskForLocalClone(view),
@@ -380,7 +381,7 @@ func buildTaskProposals(view ManagedRepoView, status ReconcileManagedRepoStatus)
 }
 
 func (b *proposalBuilder) add(category, title, taskType, risk, objective string, desiredOutcome, triggerIssues []string) {
-	approval := inferProposalApproval(b.view, taskType, risk)
+	approval := inferProposalApproval(b.db, b.view, taskType, risk)
 	proposal := ReconcileTaskProposal{
 		ID:                proposalID(b.view.Name, category),
 		RepoRef:           b.view.Name,
@@ -400,7 +401,30 @@ func (b *proposalBuilder) add(category, title, taskType, risk, objective string,
 	b.items = append(b.items, proposal)
 }
 
-func inferProposalApproval(view ManagedRepoView, taskType, risk string) ProposalApprovalStatus {
+func inferProposalApproval(db *sql.DB, view ManagedRepoView, taskType, risk string) ProposalApprovalStatus {
+	approvalEval, err := ResolveApprovalPolicy(db, view.DefaultApprovalPolicyRef, PolicyMatchContext{
+		TaskType: taskType,
+		Risk:     risk,
+		RepoRole: view.Role,
+		RepoTier: view.Tier,
+	})
+	if err == nil && approvalEval.PolicyFound && approvalEval.Matched {
+		status := proposalApprovalNotRequired
+		if approvalEval.RequiresHumanApproval {
+			status = proposalApprovalRequired
+		}
+		reason := strings.TrimSpace(approvalEval.Reason)
+		if reason == "" {
+			reason = fmt.Sprintf("approval policy %q matched", approvalEval.PolicyRef)
+		} else {
+			reason = fmt.Sprintf("approval policy %q matched: %s", approvalEval.PolicyRef, reason)
+		}
+		return ProposalApprovalStatus{
+			Status: status,
+			Reason: reason,
+		}
+	}
+
 	switch {
 	case risk == "high":
 		return ProposalApprovalStatus{
@@ -428,6 +452,12 @@ func inferProposalApproval(view ManagedRepoView, taskType, risk string) Proposal
 			Reason: "no defaultApprovalPolicyRef is configured",
 		}
 	default:
+		if err == nil && approvalEval.PolicyFound {
+			return ProposalApprovalStatus{
+				Status: proposalApprovalUnknown,
+				Reason: fmt.Sprintf("approval policy %q has no matching rule", view.DefaultApprovalPolicyRef),
+			}
+		}
 		return ProposalApprovalStatus{
 			Status: proposalApprovalUnknown,
 			Reason: fmt.Sprintf("full evaluation for approval policy %q is not implemented yet", view.DefaultApprovalPolicyRef),

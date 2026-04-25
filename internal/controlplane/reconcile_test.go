@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chaspy/agentctl/internal/store"
@@ -213,6 +214,37 @@ func TestNormalizeRemoteCandidate(t *testing.T) {
 		if got := normalizeRemoteCandidate(tt.in); got != tt.want {
 			t.Fatalf("normalizeRemoteCandidate(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestInferProposalApprovalUsesImportedApprovalPolicy(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertControlPlaneResource(db, &store.ControlPlaneResource{
+		Kind:        "ApprovalPolicy",
+		Name:        "self-hosting-approval",
+		RawSpecJSON: `{"version":"2026-04-25","rules":[{"when":{"risk":"high"},"requiresHumanApproval":true,"reason":"high risk requires human approval"},{"when":{"taskType":"docs","risk":"low"},"requiresHumanApproval":false,"reason":"docs can proceed"}]}`,
+	}); err != nil {
+		t.Fatalf("UpsertControlPlaneResource: %v", err)
+	}
+
+	status := inferProposalApproval(db, ManagedRepoView{
+		Name:                     "agentctl",
+		Repository:               "chaspy/agentctl",
+		Tier:                     "control-plane",
+		Role:                     "agentops-control-plane",
+		DefaultApprovalPolicyRef: "self-hosting-approval",
+	}, "docs", "low")
+
+	if status.Status != proposalApprovalNotRequired {
+		t.Fatalf("approval status = %q, want %q", status.Status, proposalApprovalNotRequired)
+	}
+	if status.Reason == "" || !strings.Contains(status.Reason, "approval policy") {
+		t.Fatalf("approval reason = %q", status.Reason)
 	}
 }
 
