@@ -13,6 +13,7 @@ A CLI tool for managing multiple coding agent sessions (Claude Code, Codex CLI) 
 - **Protected adoption queue** - Stage unmanaged Codex sessions for later safe adoption without touching the live session immediately
 - **Handoff telemetry** - Persist route reason, handoff summary, and token burn for completed worker sessions
 - **PWA dashboard** - Web-based dashboard for mobile monitoring, including control-plane observed state for applied ManagedRepo resources
+- **Integrated observability exporter** - Built-in Prometheus `/metrics` and MCP `/mcp` surfaces for agent activity
 
 ## Requirements
 
@@ -76,6 +77,9 @@ agentctl monitor --target <your-session> --interval 30
 
 # Start PWA dashboard (Dashboard / Control Plane / Database tabs)
 agentctl serve
+
+# Start the integrated Prometheus / MCP exporter
+agentctl exporter
 ```
 
 ## Commands
@@ -93,6 +97,7 @@ agentctl serve
 | `resume <name>` | Resume a stopped session |
 | `preview <PR>` | Preview a pull request in a temporary worktree |
 | `serve` | Start PWA dashboard (default: port 8080) |
+| `exporter` | Start the integrated Prometheus / MCP observability exporter |
 | `state sync` | Sync live session data to SQLite and back up the DB |
 | `state adopt <zellij-session>` | Queue a protected adoption plan for an unmanaged Codex session |
 | `state import-from-zellij` | Rebuild DB session records from current zellij sessions |
@@ -138,6 +143,7 @@ See [docs/protected-codex-adoption.md](docs/protected-codex-adoption.md) for the
 cmd/              CLI commands (cobra)
 internal/
   mux/            tmux/zellij abstraction
+  observability/  Prometheus collector, exporter server, MCP server
   process/        Process detection (PID, CWD matching)
   provider/       Claude/Codex session scanning, rate limits
   session/        JSONL parser, status detection
