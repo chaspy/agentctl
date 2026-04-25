@@ -241,6 +241,55 @@ func TestHandleTasksIncludesOwnerAndPRURL(t *testing.T) {
 	}
 }
 
+func TestHandleControlPlaneResources(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertControlPlaneResource(db, &store.ControlPlaneResource{
+		Kind:        "RoutingPolicy",
+		Name:        "control-plane-default",
+		APIVersion:  "myassistant.dev/v1alpha1",
+		RawSpecJSON: `{"version":"2026-04-25","rules":[{"prefer":"codex"}]}`,
+	}); err != nil {
+		t.Fatalf("UpsertControlPlaneResource: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/control-plane-resources?kind=RoutingPolicy", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+		Spec struct {
+			Version string `json:"version"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].Kind != "RoutingPolicy" {
+		t.Fatalf("kind = %q", payload[0].Kind)
+	}
+	if payload[0].Name != "control-plane-default" {
+		t.Fatalf("name = %q", payload[0].Name)
+	}
+	if payload[0].Spec.Version != "2026-04-25" {
+		t.Fatalf("spec.version = %q", payload[0].Spec.Version)
+	}
+}
+
 func TestHandleSessionMarkDeadUpdatesSession(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {

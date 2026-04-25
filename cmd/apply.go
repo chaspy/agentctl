@@ -25,6 +25,14 @@ var applyCmd = &cobra.Command{
 
 Supported kinds today:
   - ManagedRepo
+  - AgentOpsEcosystem
+  - SelfHostingPolicy
+  - RoutingPolicy
+  - ReviewPolicy
+  - ApprovalPolicy
+  - BenchmarkPolicy
+  - ExperienceProposal
+  - ReleaseGate
   - AgentTask
 
 Examples:
@@ -54,11 +62,85 @@ func runApply(cmd *cobra.Command, args []string) error {
 	switch validation.Kind {
 	case resourceKindManagedRepo:
 		return applyManagedRepo(content)
+	case resourceKindAgentOpsEcosystem,
+		resourceKindSelfHostingPolicy,
+		resourceKindRoutingPolicy,
+		resourceKindReviewPolicy,
+		resourceKindApprovalPolicy,
+		resourceKindBenchmarkPolicy,
+		resourceKindExperienceProposal,
+		resourceKindReleaseGate:
+		return applyControlPlaneResource(content, validation.Kind)
 	case resourceKindAgentTask:
 		return applyAgentTask(content)
 	default:
 		return fmt.Errorf("unsupported kind %q for apply", validation.Kind)
 	}
+}
+
+type genericControlPlaneResourceManifest struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name string `yaml:"name"`
+	} `yaml:"metadata"`
+	Spec any `yaml:"spec"`
+}
+
+func applyControlPlaneResource(content []byte, kind string) error {
+	var manifest genericControlPlaneResourceManifest
+	if err := yaml.Unmarshal(content, &manifest); err != nil {
+		return fmt.Errorf("parse %s: %w", kind, err)
+	}
+
+	name := strings.TrimSpace(manifest.Metadata.Name)
+	if name == "" {
+		return fmt.Errorf("%s metadata.name is required", kind)
+	}
+
+	specJSON, err := json.Marshal(manifest.Spec)
+	if err != nil {
+		return fmt.Errorf("marshal %s spec: %w", kind, err)
+	}
+
+	absPath, err := filepath.Abs(applyFile)
+	if err != nil {
+		return fmt.Errorf("resolve manifest path: %w", err)
+	}
+
+	row := &store.ControlPlaneResource{
+		Kind:         kind,
+		Name:         name,
+		APIVersion:   strings.TrimSpace(manifest.APIVersion),
+		SourcePath:   absPath,
+		SourceCommit: gitHeadForPath(absPath),
+		SpecHash:     sha256Hex(content),
+		RawSpecJSON:  string(specJSON),
+	}
+
+	if applyDryRun {
+		fmt.Printf("Validated %s %s (dry-run)\n", row.Kind, row.Name)
+		if row.SourceCommit != "" {
+			fmt.Printf("Source commit: %s\n", row.SourceCommit)
+		}
+		return nil
+	}
+
+	db, err := store.Open("")
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertControlPlaneResource(db, row); err != nil {
+		return fmt.Errorf("upsert %s: %w", kind, err)
+	}
+
+	fmt.Printf("Applied %s %s\n", row.Kind, row.Name)
+	if row.SourceCommit != "" {
+		fmt.Printf("Source commit: %s\n", row.SourceCommit)
+	}
+	return nil
 }
 
 func applyManagedRepo(content []byte) error {

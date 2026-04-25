@@ -18,6 +18,7 @@ type stateShowSummary struct {
 	ArchivedSessions        int `json:"archived_sessions"`
 	QueuedAdoptions         int `json:"queued_adoptions"`
 	ManagedRepos            int `json:"managed_repos"`
+	ControlPlaneResources   int `json:"control_plane_resources"`
 	TaskProposals           int `json:"task_proposals"`
 	QueuedProposalAdoptions int `json:"queued_proposal_adoptions"`
 	AgentTasks              int `json:"agent_tasks"`
@@ -63,6 +64,14 @@ type stateShowAction struct {
 	HandoffSummary string    `json:"handoff_summary,omitempty"`
 	TokenBurn      int       `json:"token_burn,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+}
+
+type stateShowControlPlaneResource struct {
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	APIVersion string `json:"api_version,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	SourcePath string `json:"source_path,omitempty"`
 }
 
 type stateShowAdoption struct {
@@ -166,15 +175,16 @@ type stateShowAgentTaskOutcome struct {
 }
 
 type stateShowReport struct {
-	Summary               stateShowSummary             `json:"summary"`
-	Sessions              []stateShowSession           `json:"sessions"`
-	AdoptionQueue         []stateShowAdoption          `json:"adoption_queue,omitempty"`
-	ProposalAdoptionQueue []stateShowProposalAdoption  `json:"proposal_adoption_queue,omitempty"`
-	AgentTasks            []stateShowAgentTask         `json:"agent_tasks,omitempty"`
-	AgentTaskDecisions    []stateShowAgentTaskDecision `json:"agent_task_decisions,omitempty"`
-	AgentTaskAttempts     []stateShowAgentTaskAttempt  `json:"agent_task_attempts,omitempty"`
-	AgentTaskOutcomes     []stateShowAgentTaskOutcome  `json:"agent_task_outcomes,omitempty"`
-	RecentActions         []stateShowAction            `json:"recent_actions,omitempty"`
+	Summary               stateShowSummary                `json:"summary"`
+	Sessions              []stateShowSession              `json:"sessions"`
+	ControlPlaneResources []stateShowControlPlaneResource `json:"control_plane_resources,omitempty"`
+	AdoptionQueue         []stateShowAdoption             `json:"adoption_queue,omitempty"`
+	ProposalAdoptionQueue []stateShowProposalAdoption     `json:"proposal_adoption_queue,omitempty"`
+	AgentTasks            []stateShowAgentTask            `json:"agent_tasks,omitempty"`
+	AgentTaskDecisions    []stateShowAgentTaskDecision    `json:"agent_task_decisions,omitempty"`
+	AgentTaskAttempts     []stateShowAgentTaskAttempt     `json:"agent_task_attempts,omitempty"`
+	AgentTaskOutcomes     []stateShowAgentTaskOutcome     `json:"agent_task_outcomes,omitempty"`
+	RecentActions         []stateShowAction               `json:"recent_actions,omitempty"`
 }
 
 var stateShowCmd = &cobra.Command{
@@ -211,8 +221,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d task proposals, %d queued proposal adoptions, %d agent tasks, %d decisions, %d attempts, %d outcomes) ===\n",
-		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions, report.Summary.AgentTasks, report.Summary.AgentTaskDecisions, report.Summary.AgentTaskAttempts, report.Summary.AgentTaskOutcomes)
+	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d control-plane resources, %d task proposals, %d queued proposal adoptions, %d agent tasks, %d decisions, %d attempts, %d outcomes) ===\n",
+		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.ControlPlaneResources, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions, report.Summary.AgentTasks, report.Summary.AgentTaskDecisions, report.Summary.AgentTaskAttempts, report.Summary.AgentTaskOutcomes)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
@@ -285,6 +295,21 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				a.ID, a.ProposalSnapshot, a.RepoRef, a.Category, a.TaskType, a.Risk, a.ApprovalStatus, note)
+		}
+		w.Flush()
+	}
+
+	if len(report.ControlPlaneResources) > 0 {
+		fmt.Println("\n=== Control Plane Resources ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "KIND\tNAME\tAPI_VERSION\tUPDATED\tSOURCE_PATH")
+		for _, resource := range report.ControlPlaneResources {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				resource.Kind,
+				resource.Name,
+				dashIfEmpty(resource.APIVersion),
+				dashIfEmpty(resource.UpdatedAt),
+				dashIfEmpty(resource.SourcePath))
 		}
 		w.Flush()
 	}
@@ -569,6 +594,21 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 		return nil, fmt.Errorf("listing managed repos: %w", err)
 	}
 	report.Summary.ManagedRepos = len(managedRepos)
+
+	controlPlaneResources, err := store.ListControlPlaneResources(db, "")
+	if err != nil {
+		return nil, fmt.Errorf("listing control plane resources: %w", err)
+	}
+	report.Summary.ControlPlaneResources = len(controlPlaneResources)
+	for _, resource := range controlPlaneResources {
+		report.ControlPlaneResources = append(report.ControlPlaneResources, stateShowControlPlaneResource{
+			Kind:       resource.Kind,
+			Name:       resource.Name,
+			APIVersion: resource.APIVersion,
+			UpdatedAt:  resource.UpdatedAt,
+			SourcePath: resource.SourcePath,
+		})
+	}
 
 	taskProposals, err := store.CountTaskProposalSnapshots(db)
 	if err != nil {

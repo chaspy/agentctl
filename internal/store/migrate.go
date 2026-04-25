@@ -32,6 +32,7 @@ var migrations = []string{
 	migrationV27,
 	migrationV28,
 	migrationV29,
+	migrationV30,
 }
 
 // Migrate applies all pending schema migrations.
@@ -738,4 +739,22 @@ INSERT INTO jobs (id, name, schedule, action, repo, session, branch, agent, inst
 DROP TABLE jobs_v16;
 
 CREATE INDEX IF NOT EXISTS idx_jobs_enabled_created_at ON jobs(enabled, created_at);
+`
+
+const migrationV30 = `
+CREATE TABLE IF NOT EXISTS control_plane_resources (
+	kind         TEXT NOT NULL,
+	name         TEXT NOT NULL,
+	api_version  TEXT NOT NULL DEFAULT '',
+	source_path  TEXT NOT NULL DEFAULT '',
+	source_commit TEXT NOT NULL DEFAULT '',
+	spec_hash    TEXT NOT NULL DEFAULT '',
+	raw_spec_json TEXT NOT NULL DEFAULT '',
+	created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (kind, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_control_plane_resources_kind_updated_at
+	ON control_plane_resources(kind, updated_at DESC);
 `

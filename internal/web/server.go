@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/rate", s.handleRate)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/reconcile", s.handleReconcile)
+	mux.HandleFunc("/api/control-plane-resources", s.handleControlPlaneResources)
 	mux.HandleFunc("/api/proposals", s.handleProposals)
 	mux.HandleFunc("/api/proposal-adoptions", s.handleProposalAdoptions)
 	mux.HandleFunc("/api/agent-tasks", s.handleAgentTasks)
@@ -358,6 +359,58 @@ func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, report)
+}
+
+type controlPlaneResourceJSON struct {
+	Kind         string `json:"kind"`
+	Name         string `json:"name"`
+	APIVersion   string `json:"apiVersion,omitempty"`
+	SourcePath   string `json:"sourcePath,omitempty"`
+	SourceCommit string `json:"sourceCommit,omitempty"`
+	SpecHash     string `json:"specHash,omitempty"`
+	Spec         any    `json:"spec,omitempty"`
+	CreatedAt    string `json:"createdAt,omitempty"`
+	UpdatedAt    string `json:"updatedAt,omitempty"`
+}
+
+func (s *Server) handleControlPlaneResources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	resources, err := store.ListControlPlaneResources(s.db, kind)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	out := make([]controlPlaneResourceJSON, 0, len(resources))
+	for _, resource := range resources {
+		out = append(out, controlPlaneResourceToJSON(resource))
+	}
+	writeJSON(w, out)
+}
+
+func controlPlaneResourceToJSON(resource store.ControlPlaneResource) controlPlaneResourceJSON {
+	payload := controlPlaneResourceJSON{
+		Kind:         resource.Kind,
+		Name:         resource.Name,
+		APIVersion:   resource.APIVersion,
+		SourcePath:   resource.SourcePath,
+		SourceCommit: resource.SourceCommit,
+		SpecHash:     resource.SpecHash,
+		CreatedAt:    resource.CreatedAt,
+		UpdatedAt:    resource.UpdatedAt,
+	}
+	if resource.RawSpecJSON != "" {
+		var spec any
+		if err := json.Unmarshal([]byte(resource.RawSpecJSON), &spec); err == nil {
+			payload.Spec = spec
+		}
+	}
+	return payload
 }
 
 type proposalJSON struct {

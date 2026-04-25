@@ -24,6 +24,14 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertManagedRepo: %v", err)
 	}
+	if err := store.UpsertControlPlaneResource(db, &store.ControlPlaneResource{
+		Kind:        "RoutingPolicy",
+		Name:        "control-plane-default",
+		APIVersion:  "myassistant.dev/v1alpha1",
+		RawSpecJSON: `{"version":"2026-04-25","rules":[{"prefer":"codex"}]}`,
+	}); err != nil {
+		t.Fatalf("UpsertControlPlaneResource: %v", err)
+	}
 	if err := store.ReplaceTaskProposalSnapshots(db, "reconcile", []store.TaskProposalSnapshot{
 		{
 			ID:             "myassistant-create-repo-contract",
@@ -187,6 +195,9 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	if report.Summary.ManagedRepos != 1 {
 		t.Fatalf("managed_repos = %d, want 1", report.Summary.ManagedRepos)
 	}
+	if report.Summary.ControlPlaneResources != 1 {
+		t.Fatalf("control_plane_resources = %d, want 1", report.Summary.ControlPlaneResources)
+	}
 	if report.Summary.TaskProposals != 1 {
 		t.Fatalf("task_proposals = %d, want 1", report.Summary.TaskProposals)
 	}
@@ -264,6 +275,12 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}
 	if len(report.ProposalAdoptionQueue) != 1 {
 		t.Fatalf("proposal_adoption_queue len = %d, want 1", len(report.ProposalAdoptionQueue))
+	}
+	if len(report.ControlPlaneResources) != 1 {
+		t.Fatalf("control_plane_resources len = %d, want 1", len(report.ControlPlaneResources))
+	}
+	if report.ControlPlaneResources[0].Name != "control-plane-default" {
+		t.Fatalf("control plane resource name = %q", report.ControlPlaneResources[0].Name)
 	}
 	if report.ProposalAdoptionQueue[0].ProposalSnapshot != "myassistant-create-repo-contract" {
 		t.Fatalf("proposal_snapshot_id = %q", report.ProposalAdoptionQueue[0].ProposalSnapshot)

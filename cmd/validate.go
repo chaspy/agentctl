@@ -26,6 +26,12 @@ Supported kinds today:
   - ManagedRepo
   - AgentOpsEcosystem
   - SelfHostingPolicy
+  - RoutingPolicy
+  - ReviewPolicy
+  - ApprovalPolicy
+  - BenchmarkPolicy
+  - ExperienceProposal
+  - ReleaseGate
   - AgentTask
 
 Examples:

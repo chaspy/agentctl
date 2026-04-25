@@ -937,12 +937,13 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state, reconcile, proposals, proposalAdoptions, agentTasks, agentTaskDecisions, agentTaskAttempts, agentTaskOutcomes] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, controlPlaneResources, proposals, proposalAdoptions, agentTasks, agentTaskDecisions, agentTaskAttempts, agentTaskOutcomes] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
     fetchJSON('/api/state'),
     fetchJSON('/api/reconcile'),
+    fetchJSON('/api/control-plane-resources'),
     fetchJSON('/api/proposals'),
     fetchJSON('/api/proposal-adoptions'),
     fetchJSON('/api/agent-tasks'),
@@ -1040,6 +1041,22 @@ async function loadDatabase() {
         <td>${repo.hasRepoContract ? 'yes' : 'no'}</td>
         <td>${repo.needsAttention ? 'yes' : 'no'}</td>
         <td title="${escapeHTML((repo.issues || []).join('; '))}">${truncate((repo.issues || []).join('; '), 60)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (controlPlaneResources && controlPlaneResources.length > 0) {
+    html += `<div class="db-section-title">Control Plane Resources <span class="db-count">(${controlPlaneResources.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>Kind</th><th>Name</th><th>API Version</th><th>Updated</th><th>Source</th></tr></thead><tbody>';
+    for (const resource of controlPlaneResources) {
+      html += `<tr>
+        <td>${escapeHTML(resource.kind || '')}</td>
+        <td>${escapeHTML(resource.name || '')}</td>
+        <td>${escapeHTML(resource.apiVersion || '-')}</td>
+        <td>${escapeHTML(resource.updatedAt || '-')}</td>
+        <td title="${escapeHTML(resource.sourcePath || '')}">${truncate(resource.sourcePath || '-', 60)}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';
