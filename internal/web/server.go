@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	// API endpoints
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/detail", s.handleSessionDetail)
+	mux.HandleFunc("/api/sessions/mark-dead", s.handleSessionMarkDead)
 	mux.HandleFunc("/api/sessions/summary", s.handleSessionSummary)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/actions", s.handleActions)
@@ -174,8 +175,9 @@ func sessionToJSON(sess store.Session) sessionJSON {
 }
 
 type summaryRequest struct {
-	ID      string `json:"id"`
-	Summary string `json:"summary"`
+	ID         string `json:"id"`
+	SessionKey string `json:"session_key,omitempty"`
+	Summary    string `json:"summary"`
 }
 
 func (s *Server) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
@@ -185,12 +187,26 @@ func (s *Server) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req summaryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
-		http.Error(w, "id and summary required", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.ID == "" && req.SessionKey == "") {
+		http.Error(w, "id or session_key and summary required", http.StatusBadRequest)
 		return
 	}
 
-	_, err := s.db.Exec("UPDATE sessions SET task_summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", req.Summary, req.ID)
+	sessionID := req.ID
+	if sessionID == "" {
+		detail, err := s.findSessionDetail(strings.TrimSpace(req.SessionKey))
+		if err == sql.ErrNoRows {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sessionID = detail.ID
+	}
+
+	_, err := s.db.Exec("UPDATE sessions SET task_summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", req.Summary, sessionID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -204,8 +220,10 @@ type taskJSON struct {
 	SessionID   string `json:"session_id"`
 	Description string `json:"description"`
 	Status      string `json:"status"`
+	Owner       string `json:"owner,omitempty"`
 	AssignedAt  string `json:"assigned_at"`
 	Result      string `json:"result,omitempty"`
+	PRURL       string `json:"pr_url,omitempty"`
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -222,11 +240,44 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			SessionID:   t.SessionID,
 			Description: t.Description,
 			Status:      t.Status,
+			Owner:       t.Owner,
 			AssignedAt:  t.AssignedAt.Format(time.RFC3339),
 			Result:      t.Result,
+			PRURL:       t.PRURL,
 		})
 	}
 	writeJSON(w, out)
+}
+
+type sessionMarkDeadRequest struct {
+	ZellijSession string `json:"zellij_session"`
+}
+
+func (s *Server) handleSessionMarkDead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req sessionMarkDeadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ZellijSession) == "" {
+		http.Error(w, "zellij_session required", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := store.MarkSessionDeadByZellijSession(s.db, strings.TrimSpace(req.ZellijSession))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if rows == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok":           true,
+		"updated_rows": rows,
+	})
 }
 
 type actionJSON struct {

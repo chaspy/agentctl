@@ -268,6 +268,29 @@ func ArchiveSession(db *sql.DB, id string) error {
 	return err
 }
 
+// MarkSessionDeadByZellijSession marks a session dead by zellij session name.
+func MarkSessionDeadByZellijSession(db *sql.DB, zellijSession string) (int64, error) {
+	result, err := db.Exec(
+		`UPDATE sessions
+		 SET desired_state = 'stopped',
+		     status = 'dead',
+		     blocked_reason = '',
+		     runtime_status = 'gone',
+		     lifecycle_state = 'stopped',
+		     updated_at = CURRENT_TIMESTAMP
+		 WHERE zellij_session = ?`,
+		zellijSession,
+	)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
 // UnarchiveSession restores a session so it appears in the default list.
 func UnarchiveSession(db *sql.DB, id string) error {
 	_, err := db.Exec("UPDATE sessions SET archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", id)

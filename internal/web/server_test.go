@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -149,6 +150,144 @@ func TestHandleSessionDetailResolvesBySessionKeys(t *testing.T) {
 		if payload.ZellijSession != "session-detail-codex" {
 			t.Fatalf("key=%q zellij_session = %q", key, payload.ZellijSession)
 		}
+	}
+}
+
+func TestHandleSessionSummarySupportsSessionKey(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertSession(db, &store.Session{
+		ID:            "codex:chaspy/myassistant:summary-1",
+		Agent:         "codex",
+		Repository:    "chaspy/myassistant",
+		SessionID:     "summary-session-1",
+		CWD:           "/tmp/myassistant",
+		GitBranch:     "feat/summary-api",
+		ZellijSession: "summary-api-codex",
+		Status:        "idle",
+		DesiredState:  store.DesiredStateRunning,
+		RuntimeStatus: "running",
+		LastActive:    time.Date(2026, 4, 25, 13, 0, 0, 0, time.UTC),
+		Role:          "worker",
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	body := bytes.NewBufferString(`{"session_key":"summary-session-1","summary":"updated summary"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/summary", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	got, err := store.GetSession(db, "codex:chaspy/myassistant:summary-1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.TaskSummary != "updated summary" {
+		t.Fatalf("task_summary = %q, want updated summary", got.TaskSummary)
+	}
+}
+
+func TestHandleTasksIncludesOwnerAndPRURL(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.CreateTask(db, &store.Task{
+		SessionID:   "summary-session-1",
+		Description: "Review PR #150",
+		Status:      "pending",
+		Owner:       "chaspy",
+		PRURL:       "https://github.com/chaspy/myassistant/pull/150",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		Owner string `json:"owner"`
+		PRURL string `json:"pr_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].Owner != "chaspy" {
+		t.Fatalf("owner = %q, want chaspy", payload[0].Owner)
+	}
+	if payload[0].PRURL != "https://github.com/chaspy/myassistant/pull/150" {
+		t.Fatalf("pr_url = %q", payload[0].PRURL)
+	}
+}
+
+func TestHandleSessionMarkDeadUpdatesSession(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertSession(db, &store.Session{
+		ID:            "codex:chaspy/myassistant:dead-1",
+		Agent:         "codex",
+		Repository:    "chaspy/myassistant",
+		SessionID:     "dead-session-1",
+		CWD:           "/tmp/myassistant",
+		GitBranch:     "feat/dead-api",
+		ZellijSession: "dead-api-codex",
+		Status:        "idle",
+		DesiredState:  store.DesiredStateRunning,
+		RuntimeStatus: "running",
+		LastActive:    time.Date(2026, 4, 25, 13, 30, 0, 0, time.UTC),
+		Role:          "worker",
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	body := bytes.NewBufferString(`{"zellij_session":"dead-api-codex"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/mark-dead", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	got, err := store.GetSession(db, "codex:chaspy/myassistant:dead-1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Status != "dead" {
+		t.Fatalf("status = %q, want dead", got.Status)
+	}
+	if got.DesiredState != store.DesiredStateStopped {
+		t.Fatalf("desired_state = %q, want %q", got.DesiredState, store.DesiredStateStopped)
+	}
+	if got.RuntimeStatus != "gone" {
+		t.Fatalf("runtime_status = %q, want gone", got.RuntimeStatus)
 	}
 }
 
