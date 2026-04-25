@@ -8,9 +8,149 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/chaspy/agentctl/internal/store"
 )
+
+func TestHandleSessionsIncludesExtendedSessionFields(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	lastActive := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertSession(db, &store.Session{
+		ID:            "codex:chaspy/myassistant:abc123",
+		Agent:         "codex",
+		Repository:    "chaspy/myassistant",
+		SessionID:     "abc123",
+		CWD:           "/tmp/myassistant",
+		GitBranch:     "feat/chat-api",
+		ZellijSession: "chat-api-codex",
+		Status:        "blocked",
+		BlockedReason: "input required",
+		DesiredState:  store.DesiredStateRunning,
+		RuntimeStatus: "running",
+		LastMessage:   "needs review",
+		LastActive:    lastActive,
+		TaskSummary:   "chat backend",
+		Role:          "worker",
+		IsLoop:        true,
+		IsProtected:   true,
+		PRNumber:      150,
+		PRURL:         "https://github.com/chaspy/myassistant/pull/150",
+		PRState:       "OPEN",
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload []struct {
+		ID            string `json:"id"`
+		SessionID     string `json:"session_id"`
+		CWD           string `json:"cwd"`
+		ZellijSession string `json:"zellij_session"`
+		BlockedReason string `json:"blocked_reason"`
+		IsLoop        bool   `json:"is_loop"`
+		IsProtected   bool   `json:"is_protected"`
+		PRURL         string `json:"pr_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	if payload[0].ID != "codex:chaspy/myassistant:abc123" {
+		t.Fatalf("id = %q", payload[0].ID)
+	}
+	if payload[0].SessionID != "abc123" {
+		t.Fatalf("session_id = %q", payload[0].SessionID)
+	}
+	if payload[0].CWD != "/tmp/myassistant" {
+		t.Fatalf("cwd = %q", payload[0].CWD)
+	}
+	if payload[0].ZellijSession != "chat-api-codex" {
+		t.Fatalf("zellij_session = %q", payload[0].ZellijSession)
+	}
+	if payload[0].BlockedReason != "input required" {
+		t.Fatalf("blocked_reason = %q", payload[0].BlockedReason)
+	}
+	if !payload[0].IsLoop {
+		t.Fatalf("is_loop = false, want true")
+	}
+	if !payload[0].IsProtected {
+		t.Fatalf("is_protected = false, want true")
+	}
+	if payload[0].PRURL != "https://github.com/chaspy/myassistant/pull/150" {
+		t.Fatalf("pr_url = %q", payload[0].PRURL)
+	}
+}
+
+func TestHandleSessionDetailResolvesBySessionKeys(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.UpsertSession(db, &store.Session{
+		ID:            "codex:chaspy/myassistant:def456",
+		Agent:         "codex",
+		Repository:    "chaspy/myassistant",
+		SessionID:     "provider-session-1",
+		CWD:           "/tmp/myassistant",
+		GitBranch:     "feat/session-detail",
+		ZellijSession: "session-detail-codex",
+		Status:        "idle",
+		DesiredState:  store.DesiredStateRunning,
+		RuntimeStatus: "running",
+		LastMessage:   "done",
+		LastActive:    time.Date(2026, 4, 25, 12, 30, 0, 0, time.UTC),
+		Role:          "worker",
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
+	for _, key := range []string{"codex:chaspy/myassistant:def456", "provider-session-1", "session-detail-codex"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions/detail?key="+key, nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("key=%q status = %d, body = %s", key, rec.Code, rec.Body.String())
+		}
+
+		var payload struct {
+			ID            string `json:"id"`
+			SessionID     string `json:"session_id"`
+			ZellijSession string `json:"zellij_session"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("key=%q json.Unmarshal: %v", key, err)
+		}
+		if payload.ID != "codex:chaspy/myassistant:def456" {
+			t.Fatalf("key=%q id = %q", key, payload.ID)
+		}
+		if payload.SessionID != "provider-session-1" {
+			t.Fatalf("key=%q session_id = %q", key, payload.SessionID)
+		}
+		if payload.ZellijSession != "session-detail-codex" {
+			t.Fatalf("key=%q zellij_session = %q", key, payload.ZellijSession)
+		}
+	}
+}
 
 func TestHandleReconcileReturnsObservedManagedRepoState(t *testing.T) {
 	tmpDir := t.TempDir()

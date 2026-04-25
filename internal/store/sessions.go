@@ -223,6 +223,16 @@ func GetSessionBySessionID(db *sql.DB, sessionID string) (*Session, error) {
 	return getSessionBySessionIDFromTable(db, "sessions_archive", sessionID)
 }
 
+// GetSessionByZellijSession retrieves the most recent session with the given zellij session name.
+func GetSessionByZellijSession(db *sql.DB, zellijSession string) (*Session, error) {
+	if s, err := getSessionByZellijSessionFromTable(db, "sessions", zellijSession); err == nil {
+		return s, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	return getSessionByZellijSessionFromTable(db, "sessions_archive", zellijSession)
+}
+
 // ListSessions returns all sessions ordered by last_active descending.
 func ListSessions(db *sql.DB) ([]Session, error) {
 	return querySessions(db, sessionSelectFromSessions+` ORDER BY last_active DESC`)
@@ -597,6 +607,21 @@ func getSessionBySessionIDFromTable(db *sql.DB, table, sessionID string) (*Sessi
 		selectFrom = sessionSelectFromArchive
 	}
 	sessions, err := querySessions(db, selectFrom+" WHERE session_id = ? ORDER BY last_active DESC LIMIT 1", sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &sessions[0], nil
+}
+
+func getSessionByZellijSessionFromTable(db *sql.DB, table, zellijSession string) (*Session, error) {
+	selectFrom := sessionSelectFromSessions
+	if table == "sessions_archive" {
+		selectFrom = sessionSelectFromArchive
+	}
+	sessions, err := querySessions(db, selectFrom+" WHERE zellij_session = ? ORDER BY last_active DESC LIMIT 1", zellijSession)
 	if err != nil {
 		return nil, err
 	}

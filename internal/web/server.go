@@ -42,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 
 	// API endpoints
 	mux.HandleFunc("/api/sessions", s.handleSessions)
+	mux.HandleFunc("/api/sessions/detail", s.handleSessionDetail)
 	mux.HandleFunc("/api/sessions/summary", s.handleSessionSummary)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/actions", s.handleActions)
@@ -69,8 +70,12 @@ type sessionJSON struct {
 	ID            string `json:"id"`
 	Agent         string `json:"agent"`
 	Repository    string `json:"repository"`
+	SessionID     string `json:"session_id"`
+	CWD           string `json:"cwd"`
 	GitBranch     string `json:"git_branch"`
+	ZellijSession string `json:"zellij_session"`
 	Status        string `json:"status"`
+	BlockedReason string `json:"blocked_reason,omitempty"`
 	DesiredState  string `json:"desired_state"`
 	RuntimeStatus string `json:"runtime_status"`
 	Alive         bool   `json:"alive"`
@@ -79,6 +84,8 @@ type sessionJSON struct {
 	TaskSummary   string `json:"task_summary"`
 	Role          string `json:"role"`
 	Archived      bool   `json:"archived"`
+	IsLoop        bool   `json:"is_loop"`
+	IsProtected   bool   `json:"is_protected"`
 	PRNumber      int    `json:"pr_number,omitempty"`
 	PRURL         string `json:"pr_url,omitempty"`
 	PRState       string `json:"pr_state,omitempty"`
@@ -101,26 +108,69 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]sessionJSON, 0, len(sessions))
 	for _, sess := range sessions {
-		out = append(out, sessionJSON{
-			ID:            sess.ID,
-			Agent:         sess.Agent,
-			Repository:    sess.Repository,
-			GitBranch:     sess.GitBranch,
-			Status:        sess.Status,
-			DesiredState:  sess.DesiredState,
-			RuntimeStatus: sess.RuntimeStatus,
-			Alive:         sess.WantsRunning(),
-			LastMessage:   sess.LastMessage,
-			LastActive:    sess.LastActive.Format(time.RFC3339),
-			TaskSummary:   sess.TaskSummary,
-			Role:          sess.Role,
-			Archived:      sess.Archived,
-			PRNumber:      sess.PRNumber,
-			PRURL:         sess.PRURL,
-			PRState:       sess.PRState,
-		})
+		out = append(out, sessionToJSON(sess))
 	}
 	writeJSON(w, out)
+}
+
+func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.URL.Query().Get("key"))
+	if key == "" {
+		http.Error(w, "key required", http.StatusBadRequest)
+		return
+	}
+
+	detail, err := s.findSessionDetail(key)
+	if err == sql.ErrNoRows {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, sessionToJSON(*detail))
+}
+
+func (s *Server) findSessionDetail(key string) (*store.Session, error) {
+	if detail, err := store.GetSessionAny(s.db, key); err == nil {
+		return detail, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	if detail, err := store.GetSessionBySessionID(s.db, key); err == nil {
+		return detail, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	return store.GetSessionByZellijSession(s.db, key)
+}
+
+func sessionToJSON(sess store.Session) sessionJSON {
+	return sessionJSON{
+		ID:            sess.ID,
+		Agent:         sess.Agent,
+		Repository:    sess.Repository,
+		SessionID:     sess.SessionID,
+		CWD:           sess.CWD,
+		GitBranch:     sess.GitBranch,
+		ZellijSession: sess.ZellijSession,
+		Status:        sess.Status,
+		BlockedReason: sess.BlockedReason,
+		DesiredState:  sess.DesiredState,
+		RuntimeStatus: sess.RuntimeStatus,
+		Alive:         sess.WantsRunning(),
+		LastMessage:   sess.LastMessage,
+		LastActive:    sess.LastActive.Format(time.RFC3339),
+		TaskSummary:   sess.TaskSummary,
+		Role:          sess.Role,
+		Archived:      sess.Archived,
+		IsLoop:        sess.IsLoop,
+		IsProtected:   sess.IsProtected,
+		PRNumber:      sess.PRNumber,
+		PRURL:         sess.PRURL,
+		PRState:       sess.PRState,
+	}
 }
 
 type summaryRequest struct {
