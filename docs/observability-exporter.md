@@ -44,6 +44,17 @@ collect_interval: 5m
 - MCP HTTP server: `http://localhost:9101/mcp`
 - Health check: `http://localhost:9101/health`
 
+## launchd
+
+macOS では `launchd/com.chaspy.agentctl-exporter.plist` を使って常駐化できる。
+
+- label: `com.chaspy.agentctl-exporter`
+- binary: `/Users/chaspy/go/bin/agentctl`
+- args: `exporter`
+- logs:
+  - `/tmp/agentctl-exporter.log`
+  - `/tmp/agentctl-exporter.err`
+
 ## 互換性
 
 - metric 名は旧 `agent-exporter` と同じまま維持する
