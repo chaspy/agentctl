@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -20,6 +21,7 @@ var (
 	listSync  bool
 	listLive  bool
 	listAll   bool
+	listJSON  bool
 )
 
 var listCmd = &cobra.Command{
@@ -36,6 +38,7 @@ func init() {
 	listCmd.Flags().BoolVar(&listSync, "sync", false, "Scan JSONL, sync to SQLite, then display from DB")
 	listCmd.Flags().BoolVar(&listLive, "live", false, "Legacy mode: scan JSONL directly (no DB)")
 	listCmd.Flags().BoolVar(&listAll, "all", false, "Include archived sessions")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output machine-readable JSON")
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -75,11 +78,17 @@ func runListFromDB() error {
 	}
 
 	if len(sessions) == 0 {
+		if listJSON {
+			return printJSON([]listSessionJSON{})
+		}
 		fmt.Println("No sessions in database. Run 'list --sync' to scan and import sessions.")
 		return nil
 	}
 
 	filtered := filterSessionsForList(sessions, time.Now())
+	if listJSON {
+		return printJSON(buildListSessionsJSON(filtered))
+	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST OBSERVED\tLAST MESSAGE\tLAST SENT\tLAST ALIVE\tDESIRED\tRUNTIME\tSTATUS\tROLE\tPR\tPROT\tLAST MESSAGE TEXT")
@@ -140,6 +149,71 @@ func runListFromDB() error {
 	}
 
 	return w.Flush()
+}
+
+type listSessionJSON struct {
+	Name          string    `json:"name"`
+	Repo          string    `json:"repo"`
+	ID            string    `json:"id,omitempty"`
+	Agent         string    `json:"agent"`
+	Repository    string    `json:"repository"`
+	Branch        string    `json:"branch,omitempty"`
+	LastActive    time.Time `json:"last_active"`
+	LastActiveAge string    `json:"last_active_age"`
+	Alive         bool      `json:"alive"`
+	Status        string    `json:"status"`
+	DesiredState  string    `json:"desired_state,omitempty"`
+	RuntimeStatus string    `json:"runtime_status"`
+	Role          string    `json:"role"`
+	PRURL         string    `json:"pr_url,omitempty"`
+	LastMessage   string    `json:"last_message,omitempty"`
+	Archived      bool      `json:"archived,omitempty"`
+}
+
+func buildListSessionsJSON(sessions []store.Session) []listSessionJSON {
+	rows := make([]listSessionJSON, 0, len(sessions))
+	for _, s := range sessions {
+		role := s.Role
+		if role == "" {
+			role = "worker"
+		}
+		desiredState := s.DesiredState
+		if desiredState == "" {
+			desiredState = store.DesiredStateStopped
+		}
+		name := s.ZellijSession
+		if name == "" {
+			name = s.SessionID
+		}
+		if name == "" {
+			name = s.ID
+		}
+		rows = append(rows, listSessionJSON{
+			Name:          name,
+			Repo:          s.Repository,
+			ID:            s.ID,
+			Agent:         s.Agent,
+			Repository:    s.Repository,
+			Branch:        s.GitBranch,
+			LastActive:    s.ObservedActivityAt(),
+			LastActiveAge: formatOptionalAge(s.ObservedActivityAt()),
+			Alive:         s.WantsRunning(),
+			Status:        s.Status,
+			DesiredState:  desiredState,
+			RuntimeStatus: s.RuntimeStatus,
+			Role:          role,
+			PRURL:         s.PRURL,
+			LastMessage:   s.LastMessage,
+			Archived:      s.Archived,
+		})
+	}
+	return rows
+}
+
+func printJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 func filterSessionsForList(sessions []store.Session, now time.Time) []store.Session {

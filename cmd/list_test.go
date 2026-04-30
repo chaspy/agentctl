@@ -7,6 +7,47 @@ import (
 	"github.com/chaspy/agentctl/internal/store"
 )
 
+func TestBuildListSessionsJSON(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	rows := buildListSessionsJSON([]store.Session{
+		{
+			ID:              "codex:chaspy/myassistant:s1",
+			Agent:           "codex",
+			Repository:      "chaspy/myassistant",
+			SessionID:       "sess-1",
+			ZellijSession:   "research-lead",
+			GitBranch:       "feat/json",
+			LastActive:      now.Add(-2 * time.Hour),
+			LastSeenAliveAt: now,
+			Status:          "idle",
+			DesiredState:    store.DesiredStateRunning,
+			RuntimeStatus:   "running",
+			Role:            "lead",
+			PRURL:           "https://github.com/chaspy/myassistant/pull/1",
+			LastMessage:     "done",
+		},
+	})
+
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].Name != "research-lead" {
+		t.Fatalf("name = %q, want research-lead", rows[0].Name)
+	}
+	if rows[0].Repo != "chaspy/myassistant" {
+		t.Fatalf("repo = %q, want chaspy/myassistant", rows[0].Repo)
+	}
+	if rows[0].Role != "lead" {
+		t.Fatalf("role = %q, want lead", rows[0].Role)
+	}
+	if rows[0].RuntimeStatus != "running" {
+		t.Fatalf("runtime_status = %q, want running", rows[0].RuntimeStatus)
+	}
+	if rows[0].LastActive != now {
+		t.Fatalf("last_active = %s, want %s", rows[0].LastActive, now)
+	}
+}
+
 func TestFilterSessionsForListUsesObservedActivity(t *testing.T) {
 	prevAll, prevHours, prevAgent := listAll, listHours, listAgent
 	t.Cleanup(func() {
