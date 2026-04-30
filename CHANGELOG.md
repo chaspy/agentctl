@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.71] - 2026-04-30
+
+### Fixed
+
+- Preserve archived session role `lead` when reading from `sessions_archive`
+
 ## [0.2.48] - 2026-04-11
 
 ### Added
