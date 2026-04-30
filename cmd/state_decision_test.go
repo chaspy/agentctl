@@ -10,6 +10,17 @@ import (
 	"github.com/chaspy/agentctl/internal/store"
 )
 
+func prepareTestRepoHome(t *testing.T, root, repository string) string {
+	t.Helper()
+	home := filepath.Join(root, "home")
+	repoPath := filepath.Join(home, "go", "src", "github.com", filepath.FromSlash(repository))
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(repoPath): %v", err)
+	}
+	t.Setenv("HOME", home)
+	return repoPath
+}
+
 func TestRunStateDecisionList(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "agentctl.db")
@@ -66,6 +77,7 @@ func TestRunStateDecisionList(t *testing.T) {
 func TestRunStateDecisionAttemptDryRun(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "agentctl.db")
+	prepareTestRepoHome(t, tmpDir, "chaspy/agentctl")
 
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -157,6 +169,7 @@ func TestRunStateDecisionAttemptDryRun(t *testing.T) {
 func TestRunStateDecisionAttemptPersistsSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "agentctl.db")
+	prepareTestRepoHome(t, tmpDir, "chaspy/agentctl")
 
 	db, err := store.Open(dbPath)
 	if err != nil {
