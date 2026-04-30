@@ -315,7 +315,7 @@ func TestHandleSessionMarkDeadUpdatesSession(t *testing.T) {
 	}
 
 	server := New(db, func(*sql.DB, string, int, bool) (int, error) { return 0, nil })
-	body := bytes.NewBufferString(`{"zellij_session":"dead-api-codex"}`)
+	body := bytes.NewBufferString(`{"zellij_session":"dead-api-codex","reason":"ghost cleanup","log_action":true,"route_reason":"manager-closeout","result":"closeout_mark_dead"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/mark-dead", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -337,6 +337,26 @@ func TestHandleSessionMarkDeadUpdatesSession(t *testing.T) {
 	}
 	if got.RuntimeStatus != "gone" {
 		t.Fatalf("runtime_status = %q, want gone", got.RuntimeStatus)
+	}
+
+	actions, err := store.GetActionsForSession(db, "codex:chaspy/myassistant:dead-1", 5)
+	if err != nil {
+		t.Fatalf("GetActionsForSession: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1", len(actions))
+	}
+	if actions[0].ActionType != "kill" {
+		t.Fatalf("action_type = %q, want kill", actions[0].ActionType)
+	}
+	if actions[0].Content != "ghost cleanup" {
+		t.Fatalf("content = %q, want ghost cleanup", actions[0].Content)
+	}
+	if actions[0].Result != "closeout_mark_dead" {
+		t.Fatalf("result = %q, want closeout_mark_dead", actions[0].Result)
+	}
+	if actions[0].RouteReason != "manager-closeout" {
+		t.Fatalf("route_reason = %q, want manager-closeout", actions[0].RouteReason)
 	}
 }
 

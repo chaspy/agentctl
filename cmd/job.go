@@ -41,6 +41,26 @@ var (
 
 const jobTestModeEnv = "AGENTCTL_JOB_TEST_MODE"
 
+type jobLockedError struct {
+	JobName  string
+	LockedBy string
+	LockedAt *time.Time
+}
+
+func (e *jobLockedError) Error() string {
+	if e == nil {
+		return "job is already running"
+	}
+	if e.LockedBy != "" && e.LockedAt != nil {
+		return fmt.Sprintf("job %q is already running (locked by %s at %s)",
+			e.JobName,
+			e.LockedBy,
+			e.LockedAt.Format(time.RFC3339),
+		)
+	}
+	return fmt.Sprintf("job %q is already running", e.JobName)
+}
+
 var jobCmd = &cobra.Command{
 	Use:   "job",
 	Short: "Manage scheduled jobs",
@@ -251,6 +271,11 @@ func runJobLogs(cmd *cobra.Command, args []string) error {
 }
 
 func runStoredJob(db *sql.DB, job *store.Job) (string, error) {
+	if err := acquireStoredJobLock(db, job); err != nil {
+		return "", err
+	}
+	defer store.ReleaseJobLock(db, job.ID)
+
 	startedAt := nowFunc().UTC()
 	run := &store.JobRun{
 		JobID:     job.ID,
@@ -277,6 +302,29 @@ func runStoredJob(db *sql.DB, job *store.Job) (string, error) {
 		return output, fmt.Errorf("running job %q: %w", job.Name, runErr)
 	}
 	return output, nil
+}
+
+func acquireStoredJobLock(db *sql.DB, job *store.Job) error {
+	lockedBy, err := jobLockOwner()
+	if err != nil {
+		return err
+	}
+	if err := store.AcquireJobLock(db, job.ID, lockedBy); err != nil {
+		if isUniqueConstraintError(err) {
+			lock, lockErr := store.GetJobLock(db, job.ID)
+			if lockErr == nil {
+				lockedAt := lock.LockedAt.UTC()
+				return &jobLockedError{
+					JobName:  job.Name,
+					LockedBy: lock.LockedBy,
+					LockedAt: &lockedAt,
+				}
+			}
+			return &jobLockedError{JobName: job.Name}
+		}
+		return fmt.Errorf("acquiring job lock for %q: %w", job.Name, err)
+	}
+	return nil
 }
 
 func executeStoredJob(db *sql.DB, job *store.Job) (string, error) {

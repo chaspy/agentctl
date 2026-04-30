@@ -139,3 +139,60 @@ func TestRunJobSchedulerOnce(t *testing.T) {
 		t.Fatalf("scheduler log missing success line: %q", logs.String())
 	}
 }
+
+func TestRunJobSchedulerOnceSkipsLockedJob(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	job := &store.Job{
+		Name:        "scheduler-send",
+		Schedule:    "* * * * *",
+		Action:      "send",
+		Session:     "manager",
+		Instruction: "ping",
+		Enabled:     true,
+	}
+	if err := store.CreateJob(db, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := store.AcquireJobLock(db, job.ID, "manual:999"); err != nil {
+		t.Fatalf("AcquireJobLock: %v", err)
+	}
+	storedJob, err := store.GetJobByID(db, job.ID)
+	if err != nil {
+		t.Fatalf("GetJobByID: %v", err)
+	}
+
+	var logs bytes.Buffer
+	origLogger := jobSchedulerLogger
+	t.Cleanup(func() {
+		jobSchedulerLogger = origLogger
+	})
+	jobSchedulerLogger = func(format string, args ...any) {
+		_, _ = logs.WriteString(fmt.Sprintf(format, args...))
+	}
+
+	checked, executed, err := runJobSchedulerOnce(db, storedJob.CreatedAt.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("runJobSchedulerOnce: %v", err)
+	}
+	if checked != 1 {
+		t.Fatalf("checked = %d, want 1", checked)
+	}
+	if executed != 0 {
+		t.Fatalf("executed = %d, want 0", executed)
+	}
+	runs, err := store.ListJobRuns(db, job.ID, 10)
+	if err != nil {
+		t.Fatalf("ListJobRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs len = %d, want 0", len(runs))
+	}
+	if !strings.Contains(logs.String(), `skipping job "scheduler-send" because it is already running`) {
+		t.Fatalf("scheduler log missing skip line: %q", logs.String())
+	}
+}

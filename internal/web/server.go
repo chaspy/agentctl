@@ -190,6 +190,15 @@ func formatOptionalRFC3339(ts time.Time) string {
 	return ts.Format(time.RFC3339)
 }
 
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 type summaryRequest struct {
 	ID         string `json:"id"`
 	SessionKey string `json:"session_key,omitempty"`
@@ -210,7 +219,7 @@ func (s *Server) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := req.ID
 	if sessionID == "" {
-		detail, err := s.findSessionDetail(strings.TrimSpace(req.SessionKey))
+		detail, err := store.GetActiveSessionByKey(s.db, strings.TrimSpace(req.SessionKey))
 		if err == sql.ErrNoRows {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -222,8 +231,7 @@ func (s *Server) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 		sessionID = detail.ID
 	}
 
-	_, err := s.db.Exec("UPDATE sessions SET task_summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", req.Summary, sessionID)
-	if err != nil {
+	if err := store.UpdateTaskSummary(s.db, sessionID, req.Summary); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -267,6 +275,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 type sessionMarkDeadRequest struct {
 	ZellijSession string `json:"zellij_session"`
+	Reason        string `json:"reason,omitempty"`
+	LogAction     bool   `json:"log_action,omitempty"`
+	RouteReason   string `json:"route_reason,omitempty"`
+	Result        string `json:"result,omitempty"`
 }
 
 func (s *Server) handleSessionMarkDead(w http.ResponseWriter, r *http.Request) {
@@ -281,7 +293,17 @@ func (s *Server) handleSessionMarkDead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := store.MarkSessionDeadByZellijSession(s.db, strings.TrimSpace(req.ZellijSession))
+	session, err := store.GetActiveSessionByKey(s.db, strings.TrimSpace(req.ZellijSession))
+	if err == sql.ErrNoRows {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := store.MarkSessionDeadByZellijSession(s.db, strings.TrimSpace(session.ZellijSession))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -289,6 +311,19 @@ func (s *Server) handleSessionMarkDead(w http.ResponseWriter, r *http.Request) {
 	if rows == 0 {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
+	}
+	if req.LogAction {
+		action := &store.Action{
+			SessionID:   session.ID,
+			ActionType:  "kill",
+			Content:     firstNonEmptyText(strings.TrimSpace(req.Reason), "session marked dead"),
+			Result:      firstNonEmptyText(strings.TrimSpace(req.Result), "session_mark_dead"),
+			RouteReason: strings.TrimSpace(req.RouteReason),
+		}
+		if err := store.LogAction(s.db, action); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	writeJSON(w, map[string]any{
 		"ok":           true,

@@ -77,16 +77,19 @@ func runJobSchedulerOnce(db *sql.DB, now time.Time) (int, int, error) {
 		if !due {
 			continue
 		}
-		if err := runScheduledJob(db, &job); err != nil {
+		didRun, err := runScheduledJob(db, &job)
+		if err != nil {
 			return checked, executed, err
 		}
-		executed++
+		if didRun {
+			executed++
+		}
 	}
 
 	return checked, executed, nil
 }
 
-func runScheduledJob(db *sql.DB, job *store.Job) error {
+func runScheduledJob(db *sql.DB, job *store.Job) (bool, error) {
 	target := job.Repo
 	switch job.Action {
 	case "send":
@@ -98,23 +101,16 @@ func runScheduledJob(db *sql.DB, job *store.Job) error {
 	}
 	jobSchedulerLogger("executing job %q (action=%s, target=%s)\n", job.Name, job.Action, target)
 
-	lockedBy, err := schedulerLockOwner()
-	if err != nil {
-		return err
-	}
-	if err := store.AcquireJobLock(db, job.ID, lockedBy); err != nil {
-		if isUniqueConstraintError(err) {
-			return nil
-		}
-		return fmt.Errorf("acquiring job lock for %q: %w", job.Name, err)
-	}
-	defer store.ReleaseJobLock(db, job.ID)
-
 	if _, err := runStoredJob(db, job); err != nil {
-		return err
+		var lockedErr *jobLockedError
+		if errors.As(err, &lockedErr) {
+			jobSchedulerLogger("skipping job %q because it is already running\n", job.Name)
+			return false, nil
+		}
+		return false, err
 	}
 	jobSchedulerLogger("job %q executed successfully\n", job.Name)
-	return nil
+	return true, nil
 }
 
 func isJobDue(db *sql.DB, job store.Job, now time.Time) (bool, error) {
@@ -145,7 +141,7 @@ func normalizeCronBase(ts time.Time) time.Time {
 	return base
 }
 
-func schedulerLockOwner() (string, error) {
+func jobLockOwner() (string, error) {
 	host, err := os.Hostname()
 	if err != nil {
 		return "", fmt.Errorf("resolving hostname: %w", err)

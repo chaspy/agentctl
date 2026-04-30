@@ -245,6 +245,49 @@ func TestRunJobRunStateSync(t *testing.T) {
 	}
 }
 
+func TestRunJobRunRejectsAlreadyLockedJob(t *testing.T) {
+	dbPath := withJobTestDB(t)
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	job := &store.Job{
+		Name:        "locked-job",
+		Schedule:    "*/5 * * * *",
+		Action:      "send",
+		Session:     "manager",
+		Instruction: "ping",
+		Enabled:     true,
+	}
+	if err := store.CreateJob(db, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := store.AcquireJobLock(db, job.ID, "scheduler:123"); err != nil {
+		t.Fatalf("AcquireJobLock: %v", err)
+	}
+
+	var out bytes.Buffer
+	jobRunCmd.SetOut(&out)
+
+	err = runJobRun(jobRunCmd, []string{job.Name})
+	if err == nil {
+		t.Fatal("runJobRun: expected already running error")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("runJobRun error = %v", err)
+	}
+
+	runs, err := store.ListJobRuns(db, job.ID, 10)
+	if err != nil {
+		t.Fatalf("ListJobRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs len = %d, want 0", len(runs))
+	}
+}
+
 func TestValidateJob(t *testing.T) {
 	err := validateJob(&store.Job{
 		Name:        "invalid",

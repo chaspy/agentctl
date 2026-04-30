@@ -240,6 +240,21 @@ func GetSessionAny(db *sql.DB, id string) (*Session, error) {
 	return &sessions[0], nil
 }
 
+// GetActiveSessionByKey retrieves an active session by manager ID, provider session ID, or zellij session name.
+func GetActiveSessionByKey(db *sql.DB, key string) (*Session, error) {
+	if s, err := GetSession(db, key); err == nil {
+		return s, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	if s, err := getSessionBySessionIDFromTable(db, "sessions", key); err == nil {
+		return s, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	return getSessionByZellijSessionFromTable(db, "sessions", key)
+}
+
 // GetSessionBySessionID retrieves the most recent session with the given provider session ID.
 func GetSessionBySessionID(db *sql.DB, sessionID string) (*Session, error) {
 	if s, err := getSessionBySessionIDFromTable(db, "sessions", sessionID); err == nil {
@@ -409,6 +424,17 @@ func TouchSessionLastSeenAliveByZellijSession(db *sql.DB, zellijSession string, 
 func UpdateTaskSummary(db *sql.DB, id, summary string) error {
 	_, err := db.Exec("UPDATE sessions SET task_summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", summary, id)
 	return err
+}
+
+// ClearTaskSummariesForActiveSessions clears task_summary for non-archived sessions that are not already dead.
+func ClearTaskSummariesForActiveSessions(db *sql.DB) (int64, error) {
+	result, err := db.Exec(`UPDATE sessions
+		SET task_summary = '', updated_at = CURRENT_TIMESTAMP
+		WHERE archived = 0 AND status != 'dead'`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // DeleteSession removes a session by ID.
