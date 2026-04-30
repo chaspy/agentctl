@@ -1,7 +1,15 @@
 # Built binary
 agentctl
 
+# Local git worktrees
+worktree-*
+
 # Runtime state files
+.claude/*.db
+.claude/*-state.json
+.claude/*-summary.json
+.claude/*-last-run
+.claude/github-rate-limit.json
 .claude/status-last-run
 .claude/status-no-change-count
 .claude/status-patrol-last-run
