@@ -32,13 +32,34 @@ var (
 )
 
 var (
-	jobSpawnExecutor   = executeJobSpawn
-	jobSendExecutor    = executeJobSend
-	jobCommandExecutor = executeJobCommand
-	nowFunc            = time.Now
+	jobSpawnExecutor     = executeJobSpawn
+	jobSendExecutor      = executeJobSend
+	jobCommandExecutor   = executeJobCommand
+	jobStateSyncExecutor = executeJobStateSync
+	nowFunc              = time.Now
 )
 
 const jobTestModeEnv = "AGENTCTL_JOB_TEST_MODE"
+
+type jobLockedError struct {
+	JobName  string
+	LockedBy string
+	LockedAt *time.Time
+}
+
+func (e *jobLockedError) Error() string {
+	if e == nil {
+		return "job is already running"
+	}
+	if e.LockedBy != "" && e.LockedAt != nil {
+		return fmt.Sprintf("job %q is already running (locked by %s at %s)",
+			e.JobName,
+			e.LockedBy,
+			e.LockedAt.Format(time.RFC3339),
+		)
+	}
+	return fmt.Sprintf("job %q is already running", e.JobName)
+}
 
 var jobCmd = &cobra.Command{
 	Use:   "job",
@@ -84,18 +105,17 @@ func init() {
 
 	jobAddCmd.Flags().StringVar(&jobAddName, "name", "", "Job name")
 	jobAddCmd.Flags().StringVar(&jobAddSchedule, "schedule", "", "Cron schedule")
-	jobAddCmd.Flags().StringVar(&jobAddAction, "action", "", "Job action: spawn, send, or command")
+	jobAddCmd.Flags().StringVar(&jobAddAction, "action", "", "Job action: spawn, send, command, or state-sync")
 	jobAddCmd.Flags().StringVar(&jobAddRepo, "repo", "", "Target repo for spawn jobs")
 	jobAddCmd.Flags().StringVar(&jobAddSession, "session", "", "Target session for send jobs")
 	jobAddCmd.Flags().StringVar(&jobAddBranch, "branch", "", "Branch for spawn jobs")
-	jobAddCmd.Flags().StringVar(&jobAddAgent, "agent", "", "Agent for spawn jobs")
-	jobAddCmd.Flags().StringVar(&jobAddInstruction, "instruction", "", "Instruction to execute")
+	jobAddCmd.Flags().StringVar(&jobAddAgent, "agent", "", "Agent for spawn jobs or state-sync filter")
+	jobAddCmd.Flags().StringVar(&jobAddInstruction, "instruction", "", "Instruction to execute for spawn, send, or command jobs")
 	jobAddCmd.Flags().StringVar(&jobAddCwd, "cwd", "", "Working directory for command jobs")
 	jobAddCmd.Flags().IntVar(&jobAddTimeout, "timeout", 600, "Timeout in seconds for command jobs")
 	jobAddCmd.MarkFlagRequired("name")
 	jobAddCmd.MarkFlagRequired("schedule")
 	jobAddCmd.MarkFlagRequired("action")
-	jobAddCmd.MarkFlagRequired("instruction")
 
 	jobLogsCmd.Flags().IntVar(&jobLogsLimit, "limit", 10, "Number of recent runs to show")
 }
@@ -157,6 +177,8 @@ func runJobList(cmd *cobra.Command, args []string) error {
 			target = job.Session
 		case "command":
 			target = job.Instruction
+		case "state-sync":
+			target = firstNonEmpty(job.Agent, "all")
 		}
 		enabled := "no"
 		if job.Enabled {
@@ -249,6 +271,11 @@ func runJobLogs(cmd *cobra.Command, args []string) error {
 }
 
 func runStoredJob(db *sql.DB, job *store.Job) (string, error) {
+	if err := acquireStoredJobLock(db, job); err != nil {
+		return "", err
+	}
+	defer store.ReleaseJobLock(db, job.ID)
+
 	startedAt := nowFunc().UTC()
 	run := &store.JobRun{
 		JobID:     job.ID,
@@ -259,7 +286,7 @@ func runStoredJob(db *sql.DB, job *store.Job) (string, error) {
 		return "", fmt.Errorf("creating job run: %w", err)
 	}
 
-	output, runErr := executeStoredJob(job)
+	output, runErr := executeStoredJob(db, job)
 	finishedAt := nowFunc().UTC()
 	run.FinishedAt = &finishedAt
 	run.Output = output
@@ -277,7 +304,30 @@ func runStoredJob(db *sql.DB, job *store.Job) (string, error) {
 	return output, nil
 }
 
-func executeStoredJob(job *store.Job) (string, error) {
+func acquireStoredJobLock(db *sql.DB, job *store.Job) error {
+	lockedBy, err := jobLockOwner()
+	if err != nil {
+		return err
+	}
+	if err := store.AcquireJobLock(db, job.ID, lockedBy); err != nil {
+		if isUniqueConstraintError(err) {
+			lock, lockErr := store.GetJobLock(db, job.ID)
+			if lockErr == nil {
+				lockedAt := lock.LockedAt.UTC()
+				return &jobLockedError{
+					JobName:  job.Name,
+					LockedBy: lock.LockedBy,
+					LockedAt: &lockedAt,
+				}
+			}
+			return &jobLockedError{JobName: job.Name}
+		}
+		return fmt.Errorf("acquiring job lock for %q: %w", job.Name, err)
+	}
+	return nil
+}
+
+func executeStoredJob(db *sql.DB, job *store.Job) (string, error) {
 	switch job.Action {
 	case "spawn":
 		return jobSpawnExecutor(job)
@@ -285,6 +335,8 @@ func executeStoredJob(job *store.Job) (string, error) {
 		return jobSendExecutor(job)
 	case "command":
 		return jobCommandExecutor(job)
+	case "state-sync":
+		return jobStateSyncExecutor(db, job)
 	default:
 		return "", fmt.Errorf("unsupported job action %q", job.Action)
 	}
@@ -372,6 +424,18 @@ func executeJobCommand(job *store.Job) (string, error) {
 	return buf.String(), nil
 }
 
+func executeJobStateSync(db *sql.DB, job *store.Job) (string, error) {
+	agentFilter := strings.TrimSpace(job.Agent)
+	if agentFilter == "" {
+		agentFilter = "all"
+	}
+	count, err := syncSessionsToDB(db, agentFilter, 24, false)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Synced %d sessions to database\n", count), nil
+}
+
 func captureStdout(fn func() error) (string, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -420,24 +484,46 @@ func validateJob(job *store.Job) error {
 	if job.Schedule == "" {
 		return fmt.Errorf("--schedule is required")
 	}
-	if job.Instruction == "" {
-		return fmt.Errorf("--instruction is required")
-	}
+	job.Action = normalizeJobAction(job.Action)
 
 	switch job.Action {
 	case "spawn":
 		if job.Repo == "" {
 			return fmt.Errorf("--repo is required for action=spawn")
 		}
+		if job.Instruction == "" {
+			return fmt.Errorf("--instruction is required for action=spawn")
+		}
 	case "send":
 		if job.Session == "" {
 			return fmt.Errorf("--session is required for action=send")
 		}
+		if job.Instruction == "" {
+			return fmt.Errorf("--instruction is required for action=send")
+		}
 	case "command":
-		// instruction is already required globally
+		if job.Instruction == "" {
+			return fmt.Errorf("--instruction is required for action=command")
+		}
+	case "state-sync":
+		if job.Agent == "" {
+			job.Agent = "all"
+		}
+		if _, err := selectedAgents(job.Agent); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("--action must be spawn, send, or command")
+		return fmt.Errorf("--action must be spawn, send, command, or state-sync")
 	}
 
 	return nil
+}
+
+func normalizeJobAction(action string) string {
+	switch strings.TrimSpace(action) {
+	case "state_sync":
+		return "state-sync"
+	default:
+		return strings.TrimSpace(action)
+	}
 }

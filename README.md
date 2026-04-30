@@ -12,7 +12,8 @@ A CLI tool for managing multiple coding agent sessions (Claude Code, Codex CLI) 
 - **State persistence** - SQLite-backed state with session sync, task tracking, and action logging
 - **Protected adoption queue** - Stage unmanaged Codex sessions for later safe adoption without touching the live session immediately
 - **Handoff telemetry** - Persist route reason, handoff summary, and token burn for completed worker sessions
-- **PWA dashboard** - Web-based dashboard for mobile monitoring
+- **PWA dashboard** - Web-based dashboard for mobile monitoring, including control-plane observed state for applied ManagedRepo resources
+- **Integrated observability exporter** - Built-in Prometheus `/metrics` and MCP `/mcp` surfaces for agent activity
 
 ## Requirements
 
@@ -56,14 +57,29 @@ agentctl spawn owner/repo --branch feature/foo --task-type research --agent auto
 # Pin a repository to Codex workers by default
 agentctl config set owner/repo --agent codex
 
+# Import a ManagedRepo manifest into the local DB
+agentctl apply -f ~/go/src/github.com/chaspy/myassistant/ops/repos/book-assistant.yaml
+
+# Validate a self-hosting spec in read-only mode
+agentctl validate -f ~/go/src/github.com/chaspy/myassistant/ops/system/ecosystem.yaml --json
+
+# Read applied ManagedRepo desired state from the local DB
+agentctl state managed-repo list --json
+
+# Compare applied desired state against observed local checkouts
+agentctl reconcile once --read-only --json
+
 # Kill a session (with safety checks)
 agentctl kill <session-name>
 
 # Monitor all sessions for changes
 agentctl monitor --target <your-session> --interval 30
 
-# Start PWA dashboard
+# Start PWA dashboard (Dashboard / Control Plane / Database tabs)
 agentctl serve
+
+# Start the integrated Prometheus / MCP exporter
+agentctl exporter
 ```
 
 ## Commands
@@ -81,14 +97,19 @@ agentctl serve
 | `resume <name>` | Resume a stopped session |
 | `preview <PR>` | Preview a pull request in a temporary worktree |
 | `serve` | Start PWA dashboard (default: port 8080) |
+| `exporter` | Start the integrated Prometheus / MCP observability exporter |
 | `state sync` | Sync live session data to SQLite and back up the DB |
 | `state adopt <zellij-session>` | Queue a protected adoption plan for an unmanaged Codex session |
 | `state import-from-zellij` | Rebuild DB session records from current zellij sessions |
 | `state show` | Show saved state from SQLite |
+| `state managed-repo` | Inspect applied ManagedRepo desired state from SQLite |
 | `state log` | Record or view action logs |
 | `state log handoff <session-id>` | Record route reason, handoff summary, and token burn |
 | `state task` | Manage tasks (add, complete, list) |
 | `config` | Manage per-repository configuration |
+| `apply` | Import a desired-state manifest into the local control-plane DB |
+| `validate` | Validate desired-state manifests without mutating runtime state |
+| `reconcile once --read-only` | Compare applied ManagedRepo desired state against observed local clones and repo contracts |
 | `repos <query>` | Search for repositories on disk |
 
 ## Session Status Detection
@@ -122,6 +143,7 @@ See [docs/protected-codex-adoption.md](docs/protected-codex-adoption.md) for the
 cmd/              CLI commands (cobra)
 internal/
   mux/            tmux/zellij abstraction
+  observability/  Prometheus collector, exporter server, MCP server
   process/        Process detection (PID, CWD matching)
   provider/       Claude/Codex session scanning, rate limits
   session/        JSONL parser, status detection

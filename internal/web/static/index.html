@@ -409,6 +409,70 @@ header h1 { font-size: 20px; font-weight: 700; }
   border: 1px solid var(--border);
   margin-bottom: 16px;
 }
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.metric-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+.metric-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.metric-value {
+  font-size: 22px;
+  font-weight: 700;
+}
+.repo-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.repo-summary strong {
+  color: var(--text);
+}
+.status-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.status-chip {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.status-chip.ok {
+  color: var(--green);
+  border-color: rgba(74,222,128,0.4);
+  background: rgba(74,222,128,0.1);
+}
+.status-chip.warn {
+  color: var(--orange);
+  border-color: rgba(251,146,60,0.4);
+  background: rgba(251,146,60,0.12);
+}
+.repo-issues {
+  margin-top: 8px;
+  padding-left: 18px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.repo-issues li + li {
+  margin-top: 4px;
+}
 </style>
 </head>
 <body>
@@ -420,6 +484,7 @@ header h1 { font-size: 20px; font-weight: 700; }
 
 <div class="tab-nav">
   <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
+  <button class="tab-btn" onclick="switchTab('control-plane')">Control Plane</button>
   <button class="tab-btn" onclick="switchTab('database')">Database</button>
 </div>
 
@@ -432,6 +497,10 @@ header h1 { font-size: 20px; font-weight: 700; }
   <div id="tasks"></div>
   <div class="section-title" id="actions-title" style="display:none">Recent Actions</div>
   <div id="actions"></div>
+</div>
+
+<div id="tab-control-plane" class="tab-content">
+  <div id="control-plane-content"><div class="loading">Loading...</div></div>
 </div>
 
 <div id="tab-database" class="tab-content">
@@ -462,6 +531,7 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.querySelector(`.tab-btn[onclick*="${tab}"]`).classList.add('active');
   $('tab-' + tab).classList.add('active');
+  if (tab === 'control-plane') refresh();
   if (tab === 'database') loadDatabase();
 }
 
@@ -488,6 +558,115 @@ function truncate(s, n) {
 function escapeHTML(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
           .replace(/"/g,'&quot;').replace(/`/g,'&#96;').replace(/\$/g,'&#36;');
+}
+
+function renderControlPlane(report) {
+  const el = $('control-plane-content');
+  if (!report) {
+    el.innerHTML = '<div class="empty">No reconcile data.</div>';
+    return;
+  }
+
+  const summary = report.summary || {};
+  const repos = (report.repos || []).slice().sort((a, b) => {
+    if ((b.needsAttention ? 1 : 0) !== (a.needsAttention ? 1 : 0)) {
+      return (b.needsAttention ? 1 : 0) - (a.needsAttention ? 1 : 0);
+    }
+    return (a.name || '').localeCompare(b.name || '', 'ja');
+  });
+
+  let html = `<div class="metrics-grid">
+    <div class="metric-card"><div class="metric-label">Managed Repos</div><div class="metric-value">${summary.managedRepos ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Local Clones</div><div class="metric-value">${summary.localClonesFound ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Repo Contracts</div><div class="metric-value">${summary.repoContractsFound ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Remote URLs</div><div class="metric-value">${summary.remoteURLsResolved ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Remote Reachable</div><div class="metric-value">${summary.remoteReachable ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Default Branches</div><div class="metric-value">${summary.remoteDefaultBranchesResolved ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Task Proposals</div><div class="metric-value">${summary.taskProposals ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Approval Required</div><div class="metric-value">${summary.approvalRequiredProposals ?? 0}</div></div>
+    <div class="metric-card"><div class="metric-label">Needs Attention</div><div class="metric-value">${summary.needsAttention ?? 0}</div></div>
+  </div>`;
+
+  if (repos.length === 0) {
+    html += '<div class="empty">No managed repos. Run `agentctl apply -f ...` first.</div>';
+    el.innerHTML = html;
+    return;
+  }
+
+  html += '<div class="section-title">Observed State</div>';
+  html += repos.map(repo => {
+    const issues = repo.issues || [];
+    const tier = repo.tier || '-';
+    const localPath = repo.localPath || '-';
+    const remoteSource = repo.remoteSource || '-';
+    const remoteURL = repo.remoteURL || '-';
+    const remoteRepo = repo.observedRemoteRepository || '-';
+    const defaultBranch = repo.remoteDefaultBranch || '-';
+    const contractPath = repo.repoContractPath || '-';
+    return `
+      <div class="card ${repo.needsAttention ? 'blocked' : 'idle'}">
+        <div class="card-header">
+          <span class="project">${escapeHTML(repo.name || '')}</span>
+          <span class="badge ${repo.needsAttention ? 'blocked' : 'idle'}">${repo.needsAttention ? 'attention' : 'ok'}</span>
+        </div>
+        <div class="repo-summary">
+          <strong>${escapeHTML(repo.repository || '')}</strong><br>
+          tier: ${escapeHTML(tier)}<br>
+          localPath: ${escapeHTML(localPath)}<br>
+          remoteSource: ${escapeHTML(remoteSource)}<br>
+          remoteURL: ${escapeHTML(remoteURL)}<br>
+          observedRemoteRepository: ${escapeHTML(remoteRepo)}<br>
+          remoteDefaultBranch: ${escapeHTML(defaultBranch)}<br>
+          repoContractPath: ${escapeHTML(contractPath)}
+        </div>
+        <div class="status-row">
+          <span class="status-chip ${repo.localCloneFound ? 'ok' : 'warn'}">local clone: ${repo.localCloneFound ? 'found' : 'missing'}</span>
+          <span class="status-chip ${repo.remoteReachable ? 'ok' : 'warn'}">remote: ${repo.remoteReachable ? 'reachable' : 'unknown/unreachable'}</span>
+          <span class="status-chip ${repo.hasRepoContract ? 'ok' : 'warn'}">repo contract: ${repo.hasRepoContract ? 'found' : 'missing'}</span>
+        </div>
+        ${issues.length > 0 ? `<ul class="repo-issues">${issues.map(issue => `<li>${escapeHTML(issue)}</li>`).join('')}</ul>` : ''}
+      </div>`;
+  }).join('');
+
+  const proposals = (report.proposals || []).slice().sort((a, b) => {
+    const approvalRank = { required: 0, unknown: 1, not_required: 2 };
+    const left = approvalRank[a.approval?.status] ?? 3;
+    const right = approvalRank[b.approval?.status] ?? 3;
+    if (left !== right) return left - right;
+    return (a.id || '').localeCompare(b.id || '', 'ja');
+  });
+  if (proposals.length > 0) {
+    html += '<div class="section-title">Task Proposals</div>';
+    html += proposals.map(proposal => {
+      const approval = proposal.approval || {};
+      const desiredOutcome = proposal.desiredOutcome || [];
+      const triggerIssues = proposal.triggerIssues || [];
+      const approvalClass = approval.status === 'required' ? 'warn' : approval.status === 'unknown' ? 'blocked' : 'ok';
+      return `
+        <div class="card ${approval.status === 'required' ? 'blocked' : 'idle'}">
+          <div class="card-header">
+            <span class="project">${escapeHTML(proposal.repoRef || '')}</span>
+            <span class="badge ${approval.status === 'required' ? 'blocked' : 'idle'}">${escapeHTML(proposal.category || '')}</span>
+          </div>
+          <div class="repo-summary">
+            <strong>${escapeHTML(proposal.title || '')}</strong><br>
+            taskType: ${escapeHTML(proposal.taskType || '-')}<br>
+            risk: ${escapeHTML(proposal.risk || '-')}<br>
+            reviewPolicyRef: ${escapeHTML(proposal.reviewPolicyRef || '-')}<br>
+            approvalPolicyRef: ${escapeHTML(proposal.approvalPolicyRef || '-')}<br>
+            objective: ${escapeHTML(proposal.objective || '-')}
+          </div>
+          <div class="status-row">
+            <span class="status-chip ${approvalClass}">approval: ${escapeHTML(approval.status || 'unknown')}</span>
+          </div>
+          ${approval.reason ? `<div class="repo-summary">approvalReason: ${escapeHTML(approval.reason)}</div>` : ''}
+          ${desiredOutcome.length > 0 ? `<ul class="repo-issues">${desiredOutcome.map(item => `<li>${escapeHTML(item)}</li>`).join('')}</ul>` : ''}
+          ${triggerIssues.length > 0 ? `<ul class="repo-issues">${triggerIssues.map(item => `<li>${escapeHTML(item)}</li>`).join('')}</ul>` : ''}
+        </div>`;
+    }).join('');
+  }
+
+  el.innerHTML = html;
 }
 
 function renderSessionCard(s, showResume) {
@@ -650,11 +829,12 @@ async function refresh() {
   }
 
   try {
-    const [sessions, tasks, actions, rate] = await Promise.all([
+    const [sessions, tasks, actions, rate, reconcile] = await Promise.all([
       fetchJSON('/api/sessions'),
       fetchJSON('/api/tasks'),
       fetchJSON('/api/actions?limit=10'),
       fetchJSON('/api/rate'),
+      fetchJSON('/api/reconcile'),
     ]);
 
     const timeStr = new Date().toLocaleTimeString('ja-JP');
@@ -745,6 +925,8 @@ async function refresh() {
       $('actions-title').style.display = 'none';
       $('actions').innerHTML = '';
     }
+
+    renderControlPlane(reconcile);
   } finally {
     isRefreshing = false;
   }
@@ -755,11 +937,19 @@ async function loadDatabase() {
   const el = $('db-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
 
-  const [allSessions, tasks, actions, state] = await Promise.all([
+  const [allSessions, tasks, actions, state, reconcile, controlPlaneResources, proposals, proposalAdoptions, agentTasks, agentTaskDecisions, agentTaskAttempts, agentTaskOutcomes] = await Promise.all([
     fetchJSON('/api/sessions?all=true'),
     fetchJSON('/api/tasks'),
     fetchJSON('/api/actions?limit=50'),
     fetchJSON('/api/state'),
+    fetchJSON('/api/reconcile'),
+    fetchJSON('/api/control-plane-resources'),
+    fetchJSON('/api/proposals'),
+    fetchJSON('/api/proposal-adoptions'),
+    fetchJSON('/api/agent-tasks'),
+    fetchJSON('/api/agent-task-decisions'),
+    fetchJSON('/api/agent-task-attempts'),
+    fetchJSON('/api/agent-task-outcomes'),
   ]);
 
   let html = '';
@@ -831,6 +1021,177 @@ async function loadDatabase() {
     html += '<div class="db-table-wrap"><table class="db-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
     for (const [k, v] of Object.entries(state)) {
       html += `<tr><td>${escapeHTML(k)}</td><td>${escapeHTML(String(v))}</td></tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (reconcile && reconcile.repos && reconcile.repos.length > 0) {
+    html += `<div class="db-section-title">Managed Repos / Reconcile <span class="db-count">(${reconcile.repos.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>Name</th><th>Repository</th><th>Tier</th><th>Local Clone</th><th>Remote</th><th>Default Branch</th><th>Repo Contract</th><th>Attention</th><th>Issues</th>';
+    html += '</tr></thead><tbody>';
+    for (const repo of reconcile.repos) {
+      html += `<tr>
+        <td>${escapeHTML(repo.name || '')}</td>
+        <td>${escapeHTML(repo.repository || '')}</td>
+        <td>${escapeHTML(repo.tier || '-')}</td>
+        <td>${repo.localCloneFound ? 'yes' : 'no'}</td>
+        <td>${repo.remoteReachable ? 'yes' : 'no'}</td>
+        <td>${escapeHTML(repo.remoteDefaultBranch || '-')}</td>
+        <td>${repo.hasRepoContract ? 'yes' : 'no'}</td>
+        <td>${repo.needsAttention ? 'yes' : 'no'}</td>
+        <td title="${escapeHTML((repo.issues || []).join('; '))}">${truncate((repo.issues || []).join('; '), 60)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (controlPlaneResources && controlPlaneResources.length > 0) {
+    html += `<div class="db-section-title">Control Plane Resources <span class="db-count">(${controlPlaneResources.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>Kind</th><th>Name</th><th>API Version</th><th>Updated</th><th>Source</th></tr></thead><tbody>';
+    for (const resource of controlPlaneResources) {
+      html += `<tr>
+        <td>${escapeHTML(resource.kind || '')}</td>
+        <td>${escapeHTML(resource.name || '')}</td>
+        <td>${escapeHTML(resource.apiVersion || '-')}</td>
+        <td>${escapeHTML(resource.updatedAt || '-')}</td>
+        <td title="${escapeHTML(resource.sourcePath || '')}">${truncate(resource.sourcePath || '-', 60)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (reconcile && reconcile.proposals && reconcile.proposals.length > 0) {
+    html += `<div class="db-section-title">Task Proposals <span class="db-count">(${reconcile.proposals.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Repo</th><th>Category</th><th>Task Type</th><th>Risk</th><th>Approval</th><th>Title</th></tr></thead><tbody>';
+    for (const proposal of reconcile.proposals) {
+      html += `<tr>
+        <td>${escapeHTML(proposal.id || '')}</td>
+        <td>${escapeHTML(proposal.repoRef || '')}</td>
+        <td>${escapeHTML(proposal.category || '')}</td>
+        <td>${escapeHTML(proposal.taskType || '')}</td>
+        <td>${escapeHTML(proposal.risk || '')}</td>
+        <td title="${escapeHTML(proposal.approval?.reason || '')}">${escapeHTML(proposal.approval?.status || 'unknown')}</td>
+        <td>${escapeHTML(proposal.title || '')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (proposals && proposals.length > 0) {
+    html += `<div class="db-section-title">Persisted Proposal Snapshots <span class="db-count">(${proposals.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Source</th><th>Repo</th><th>Category</th><th>Task Type</th><th>Risk</th><th>Approval</th><th>Updated</th></tr></thead><tbody>';
+    for (const proposal of proposals) {
+      html += `<tr>
+        <td>${escapeHTML(proposal.id || '')}</td>
+        <td>${escapeHTML(proposal.source || '')}</td>
+        <td>${escapeHTML(proposal.repoRef || '')}</td>
+        <td>${escapeHTML(proposal.category || '')}</td>
+        <td>${escapeHTML(proposal.taskType || '')}</td>
+        <td>${escapeHTML(proposal.risk || '')}</td>
+        <td title="${escapeHTML(proposal.approvalReason || '')}">${escapeHTML(proposal.approvalStatus || 'unknown')}</td>
+        <td>${escapeHTML(proposal.updatedAt || '-')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (proposalAdoptions && proposalAdoptions.length > 0) {
+    html += `<div class="db-section-title">Proposal Adoptions <span class="db-count">(${proposalAdoptions.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Snapshot</th><th>Repo</th><th>Category</th><th>Task Type</th><th>Risk</th><th>Status</th><th>Note</th><th>Created</th></tr></thead><tbody>';
+    for (const adoption of proposalAdoptions) {
+      html += `<tr>
+        <td>#${escapeHTML(String(adoption.id || ''))}</td>
+        <td>${escapeHTML(adoption.proposalSnapshotId || '')}</td>
+        <td>${escapeHTML(adoption.repoRef || '')}</td>
+        <td>${escapeHTML(adoption.category || '')}</td>
+        <td>${escapeHTML(adoption.taskType || '')}</td>
+        <td>${escapeHTML(adoption.risk || '')}</td>
+        <td title="${escapeHTML(adoption.approvalReason || '')}">${escapeHTML(adoption.status || 'queued')}</td>
+        <td>${escapeHTML(adoption.operatorNote || '-')}</td>
+        <td>${escapeHTML(adoption.createdAt || '-')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTasks && agentTasks.length > 0) {
+    html += `<div class="db-section-title">Agent Tasks <span class="db-count">(${agentTasks.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>Name</th><th>Repo</th><th>Task Type</th><th>Risk</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>';
+    for (const task of agentTasks) {
+      html += `<tr>
+        <td>${escapeHTML(task.name || '')}</td>
+        <td>${escapeHTML(task.repoRef || '')}</td>
+        <td>${escapeHTML(task.taskType || '')}</td>
+        <td>${escapeHTML(task.risk || '')}</td>
+        <td>${escapeHTML(task.status || '')}</td>
+        <td>${escapeHTML(task.sourceKind || '')}</td>
+        <td>${escapeHTML(task.updatedAt || '-')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTaskDecisions && agentTaskDecisions.length > 0) {
+    html += `<div class="db-section-title">Agent Task Decisions <span class="db-count">(${agentTaskDecisions.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Agent Task</th><th>Repo</th><th>Task Type</th><th>Risk</th><th>Selected Agent</th><th>Repo Mode</th><th>Status</th><th>Route Reason</th></tr></thead><tbody>';
+    for (const decision of agentTaskDecisions) {
+      html += `<tr>
+        <td>#${escapeHTML(String(decision.id || ''))}</td>
+        <td>${escapeHTML(decision.agentTaskName || '')}</td>
+        <td>${escapeHTML(decision.repoRef || '')}</td>
+        <td>${escapeHTML(decision.taskType || '')}</td>
+        <td>${escapeHTML(decision.risk || '')}</td>
+        <td>${escapeHTML(decision.selectedAgent || '')}</td>
+        <td>${escapeHTML(decision.selectedRepoMode || '-')}</td>
+        <td>${escapeHTML(decision.status || '')}</td>
+        <td title="${escapeHTML(decision.routeReason || '')}">${truncate(decision.routeReason, 60)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTaskAttempts && agentTaskAttempts.length > 0) {
+    html += `<div class="db-section-title">Agent Task Attempts <span class="db-count">(${agentTaskAttempts.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Decision</th><th>Agent Task</th><th>Agent</th><th>Repo Mode</th><th>Status</th><th>Session</th><th>Failure</th></tr></thead><tbody>';
+    for (const attempt of agentTaskAttempts) {
+      html += `<tr>
+        <td>#${escapeHTML(String(attempt.id || ''))}</td>
+        <td>#${escapeHTML(String(attempt.decisionId || ''))}</td>
+        <td>${escapeHTML(attempt.agentTaskName || '')}</td>
+        <td>${escapeHTML(attempt.agent || '')}</td>
+        <td>${escapeHTML(attempt.repoMode || '-')}</td>
+        <td>${escapeHTML(attempt.status || '')}</td>
+        <td>${escapeHTML(attempt.sessionName || '-')}</td>
+        <td title="${escapeHTML(attempt.failureReason || '')}">${truncate(attempt.failureReason, 60)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (agentTaskOutcomes && agentTaskOutcomes.length > 0) {
+    html += `<div class="db-section-title">Agent Task Outcomes <span class="db-count">(${agentTaskOutcomes.length})</span></div>`;
+    html += '<div class="db-table-wrap"><table class="db-table"><thead><tr>';
+    html += '<th>ID</th><th>Attempt</th><th>Agent Task</th><th>Status</th><th>PR State</th><th>PR</th><th>Commit</th><th>Failure</th><th>Source</th></tr></thead><tbody>';
+    for (const outcome of agentTaskOutcomes) {
+      html += `<tr>
+        <td>#${escapeHTML(String(outcome.id || ''))}</td>
+        <td>#${escapeHTML(String(outcome.attemptId || ''))}</td>
+        <td>${escapeHTML(outcome.agentTaskName || '')}</td>
+        <td>${escapeHTML(outcome.status || '')}</td>
+        <td>${escapeHTML(outcome.prState || '-')}</td>
+        <td title="${escapeHTML(outcome.prUrl || '')}">${truncate(outcome.prUrl, 60)}</td>
+        <td>${escapeHTML(outcome.commitSha || '-')}</td>
+        <td title="${escapeHTML(outcome.failureReason || '')}">${truncate(outcome.failureReason || outcome.failureCategory, 60)}</td>
+        <td>${escapeHTML(outcome.source || '-')}</td>
+      </tr>`;
     }
     html += '</tbody></table></div>';
   }

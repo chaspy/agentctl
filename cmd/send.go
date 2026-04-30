@@ -59,6 +59,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 		if err := sendInstruction(adapter, sessionName, instruction, inferSendAgent(resolvedSessionName, nil)); err != nil {
 			return err
 		}
+		recordSessionLastSent(resolvedSessionName)
 		fmt.Printf("Sent instruction to %s session %q\n", adapter.Name(), sessionName)
 		logSendAction(sessionName, instruction, "(no-wait)")
 		return nil
@@ -77,6 +78,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 		if err := sendInstruction(adapter, sessionName, instruction, targetAgent); err != nil {
 			return err
 		}
+		recordSessionLastSent(resolvedSessionName)
 		fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q (no JSONL session found for monitoring)\n", adapter.Name(), sessionName)
 		logSendAction(sessionName, instruction, "(sent, no monitoring)")
 		return nil
@@ -95,6 +97,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	if err := sendInstruction(adapter, sessionName, instruction, targetAgent); err != nil {
 		return err
 	}
+	recordSessionLastSent(resolvedSessionName)
 	fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q. Waiting for response...\n", adapter.Name(), sessionName)
 
 	// Poll all matching sessions for a new assistant message
@@ -340,6 +343,16 @@ func logSendAction(sessionName, instruction, result string) {
 			Content:    instruction,
 			Result:     result,
 		})
+	}
+}
+
+func recordSessionLastSent(zellijSession string) {
+	if strings.TrimSpace(zellijSession) == "" {
+		return
+	}
+	if db, err := store.Open(""); err == nil {
+		defer db.Close()
+		_, _ = store.TouchSessionLastSentByZellijSession(db, zellijSession, time.Now())
 	}
 }
 

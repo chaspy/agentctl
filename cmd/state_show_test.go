@@ -15,6 +15,118 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now()
+	if err := store.UpsertManagedRepo(db, &store.ManagedRepo{
+		Name:        "myassistant",
+		Repository:  "chaspy/myassistant",
+		Role:        "personal-ops-console",
+		Visibility:  "private",
+		RawSpecJSON: `{"repo":"github.com/chaspy/myassistant","tier":"control-plane","role":"personal-ops-console","visibility":"private"}`,
+	}); err != nil {
+		t.Fatalf("UpsertManagedRepo: %v", err)
+	}
+	if err := store.UpsertControlPlaneResource(db, &store.ControlPlaneResource{
+		Kind:        "RoutingPolicy",
+		Name:        "control-plane-default",
+		APIVersion:  "myassistant.dev/v1alpha1",
+		RawSpecJSON: `{"version":"2026-04-25","rules":[{"prefer":"codex"}]}`,
+	}); err != nil {
+		t.Fatalf("UpsertControlPlaneResource: %v", err)
+	}
+	if err := store.ReplaceTaskProposalSnapshots(db, "reconcile", []store.TaskProposalSnapshot{
+		{
+			ID:             "myassistant-create-repo-contract",
+			RepoRef:        "myassistant",
+			Repository:     "chaspy/myassistant",
+			Category:       "create_repo_contract",
+			Title:          "Create repo contract",
+			Objective:      "Add .agent/repo.yaml",
+			TaskType:       "docs",
+			Risk:           "low",
+			ApprovalStatus: "not_required",
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceTaskProposalSnapshots: %v", err)
+	}
+	if err := store.CreateTaskProposalAdoption(db, &store.TaskProposalAdoption{
+		ProposalSnapshotID: "myassistant-create-repo-contract",
+		Source:             "reconcile",
+		ReportMode:         "read-only",
+		RepoRef:            "myassistant",
+		Repository:         "chaspy/myassistant",
+		Category:           "create_repo_contract",
+		Title:              "Create repo contract",
+		Objective:          "Add .agent/repo.yaml",
+		TaskType:           "docs",
+		Risk:               "low",
+		ApprovalStatus:     "not_required",
+		OperatorNote:       "carry forward after review",
+	}); err != nil {
+		t.Fatalf("CreateTaskProposalAdoption: %v", err)
+	}
+	if err := store.UpsertAgentTask(db, &store.AgentTask{
+		Name:       "myassistant-create-repo-contract-adoption-1",
+		RepoRef:    "myassistant",
+		Repository: "chaspy/myassistant",
+		Objective:  "Add .agent/repo.yaml",
+		TaskType:   "docs",
+		Risk:       "low",
+		SourceKind: "proposal_adoption",
+		SourceRef:  "1",
+		Status:     "planned",
+	}); err != nil {
+		t.Fatalf("UpsertAgentTask: %v", err)
+	}
+	if err := store.CreateAgentTaskDecision(db, &store.AgentTaskDecision{
+		AgentTaskName:     "myassistant-create-repo-contract-adoption-1",
+		RepoRef:           "myassistant",
+		Repository:        "chaspy/myassistant",
+		TaskType:          "docs",
+		Risk:              "low",
+		SelectionMode:     "auto_task_type",
+		SelectedAgent:     "codex",
+		SelectedRepoMode:  "branch",
+		RepoProfileSource: "managed_repo",
+		ModeSource:        "managed_repo",
+		AgentSource:       "default",
+		EligibleAgents:    []string{"codex", "claude"},
+		RouteReason:       "task-type docs prefers codex",
+		Status:            "recorded",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskDecision: %v", err)
+	}
+	if err := store.CreateAgentTaskAttempt(db, &store.AgentTaskAttempt{
+		DecisionID:       1,
+		AgentTaskName:    "myassistant-create-repo-contract-adoption-1",
+		RepoRef:          "myassistant",
+		Repository:       "chaspy/myassistant",
+		TaskType:         "docs",
+		Risk:             "low",
+		Agent:            "codex",
+		RepoMode:         "branch",
+		SessionName:      "myassistant-myassistant-create-repo-contract",
+		ManagedSessionID: "codex:chaspy/myassistant:zellij-myassistant-myassistant-create-repo-contract",
+		Status:           "spawned",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskAttempt: %v", err)
+	}
+	if err := store.CreateAgentTaskOutcome(db, &store.AgentTaskOutcome{
+		AttemptID:        1,
+		DecisionID:       1,
+		AgentTaskName:    "myassistant-create-repo-contract-adoption-1",
+		RepoRef:          "myassistant",
+		Repository:       "chaspy/myassistant",
+		TaskType:         "docs",
+		Risk:             "low",
+		Agent:            "codex",
+		SessionName:      "myassistant-myassistant-create-repo-contract",
+		ManagedSessionID: "codex:chaspy/myassistant:zellij-myassistant-myassistant-create-repo-contract",
+		Status:           "completed",
+		PRURL:            "https://github.com/chaspy/myassistant/pull/12",
+		PRState:          "OPEN",
+		Source:           "session",
+	}); err != nil {
+		t.Fatalf("CreateAgentTaskOutcome: %v", err)
+	}
 	_ = store.UpsertSession(db, &store.Session{
 		ID:            "claude:a/b:blocked",
 		Agent:         "claude",
@@ -80,6 +192,30 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	if report.Summary.ActiveSessions != 5 {
 		t.Fatalf("active_sessions = %d, want 5", report.Summary.ActiveSessions)
 	}
+	if report.Summary.ManagedRepos != 1 {
+		t.Fatalf("managed_repos = %d, want 1", report.Summary.ManagedRepos)
+	}
+	if report.Summary.ControlPlaneResources != 1 {
+		t.Fatalf("control_plane_resources = %d, want 1", report.Summary.ControlPlaneResources)
+	}
+	if report.Summary.TaskProposals != 1 {
+		t.Fatalf("task_proposals = %d, want 1", report.Summary.TaskProposals)
+	}
+	if report.Summary.QueuedProposalAdoptions != 1 {
+		t.Fatalf("queued_proposal_adoptions = %d, want 1", report.Summary.QueuedProposalAdoptions)
+	}
+	if report.Summary.AgentTasks != 1 {
+		t.Fatalf("agent_tasks = %d, want 1", report.Summary.AgentTasks)
+	}
+	if report.Summary.AgentTaskDecisions != 1 {
+		t.Fatalf("agent_task_decisions = %d, want 1", report.Summary.AgentTaskDecisions)
+	}
+	if report.Summary.AgentTaskAttempts != 1 {
+		t.Fatalf("agent_task_attempts = %d, want 1", report.Summary.AgentTaskAttempts)
+	}
+	if report.Summary.AgentTaskOutcomes != 1 {
+		t.Fatalf("agent_task_outcomes = %d, want 1", report.Summary.AgentTaskOutcomes)
+	}
 	if report.Summary.BlockedSessions != 2 {
 		t.Fatalf("blocked_sessions = %d, want 2", report.Summary.BlockedSessions)
 	}
@@ -136,6 +272,45 @@ func TestBuildStateShowReportSummarizesHealth(t *testing.T) {
 	}
 	if dup1.DuplicateGroup != "dup-session" || dup2.DuplicateGroup != "dup-session" {
 		t.Fatalf("duplicate group mismatch: dup1=%q dup2=%q", dup1.DuplicateGroup, dup2.DuplicateGroup)
+	}
+	if len(report.ProposalAdoptionQueue) != 1 {
+		t.Fatalf("proposal_adoption_queue len = %d, want 1", len(report.ProposalAdoptionQueue))
+	}
+	if len(report.ControlPlaneResources) != 1 {
+		t.Fatalf("control_plane_resources len = %d, want 1", len(report.ControlPlaneResources))
+	}
+	if report.ControlPlaneResources[0].Name != "control-plane-default" {
+		t.Fatalf("control plane resource name = %q", report.ControlPlaneResources[0].Name)
+	}
+	if report.ProposalAdoptionQueue[0].ProposalSnapshot != "myassistant-create-repo-contract" {
+		t.Fatalf("proposal_snapshot_id = %q", report.ProposalAdoptionQueue[0].ProposalSnapshot)
+	}
+	if len(report.AgentTasks) != 1 {
+		t.Fatalf("agent_tasks len = %d, want 1", len(report.AgentTasks))
+	}
+	if report.AgentTasks[0].Name != "myassistant-create-repo-contract-adoption-1" {
+		t.Fatalf("agent task name = %q", report.AgentTasks[0].Name)
+	}
+	if len(report.AgentTaskDecisions) != 1 {
+		t.Fatalf("agent_task_decisions len = %d, want 1", len(report.AgentTaskDecisions))
+	}
+	if report.AgentTaskDecisions[0].SelectedAgent != "codex" {
+		t.Fatalf("selected_agent = %q", report.AgentTaskDecisions[0].SelectedAgent)
+	}
+	if len(report.AgentTaskAttempts) != 1 {
+		t.Fatalf("agent_task_attempts len = %d, want 1", len(report.AgentTaskAttempts))
+	}
+	if report.AgentTaskAttempts[0].SessionName != "myassistant-myassistant-create-repo-contract" {
+		t.Fatalf("attempt session_name = %q", report.AgentTaskAttempts[0].SessionName)
+	}
+	if len(report.AgentTaskOutcomes) != 1 {
+		t.Fatalf("agent_task_outcomes len = %d, want 1", len(report.AgentTaskOutcomes))
+	}
+	if report.AgentTaskOutcomes[0].PRURL != "https://github.com/chaspy/myassistant/pull/12" {
+		t.Fatalf("outcome pr_url = %q", report.AgentTaskOutcomes[0].PRURL)
+	}
+	if report.AgentTaskOutcomes[0].PRState != "OPEN" {
+		t.Fatalf("outcome pr_state = %q", report.AgentTaskOutcomes[0].PRState)
 	}
 }
 

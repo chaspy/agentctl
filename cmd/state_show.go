@@ -14,36 +14,48 @@ import (
 )
 
 type stateShowSummary struct {
-	ActiveSessions    int `json:"active_sessions"`
-	ArchivedSessions  int `json:"archived_sessions"`
-	QueuedAdoptions   int `json:"queued_adoptions"`
-	BlockedSessions   int `json:"blocked_sessions"`
-	ErrorSessions     int `json:"error_sessions"`
-	GhostSessions     int `json:"ghost_sessions"`
-	DuplicateSessions int `json:"duplicate_sessions"`
-	DuplicateGroups   int `json:"duplicate_groups"`
-	DeadSessions      int `json:"dead_sessions"`
+	ActiveSessions          int `json:"active_sessions"`
+	ArchivedSessions        int `json:"archived_sessions"`
+	QueuedAdoptions         int `json:"queued_adoptions"`
+	ManagedRepos            int `json:"managed_repos"`
+	ControlPlaneResources   int `json:"control_plane_resources"`
+	TaskProposals           int `json:"task_proposals"`
+	QueuedProposalAdoptions int `json:"queued_proposal_adoptions"`
+	AgentTasks              int `json:"agent_tasks"`
+	AgentTaskDecisions      int `json:"agent_task_decisions"`
+	AgentTaskAttempts       int `json:"agent_task_attempts"`
+	AgentTaskOutcomes       int `json:"agent_task_outcomes"`
+	BlockedSessions         int `json:"blocked_sessions"`
+	ErrorSessions           int `json:"error_sessions"`
+	GhostSessions           int `json:"ghost_sessions"`
+	DuplicateSessions       int `json:"duplicate_sessions"`
+	DuplicateGroups         int `json:"duplicate_groups"`
+	DeadSessions            int `json:"dead_sessions"`
 }
 
 type stateShowSession struct {
-	ID             string    `json:"id"`
-	Agent          string    `json:"agent"`
-	Repository     string    `json:"repository"`
-	Branch         string    `json:"branch"`
-	Status         string    `json:"status"`
-	BlockedReason  string    `json:"blocked_reason,omitempty"`
-	DesiredState   string    `json:"desired_state"`
-	Alive          bool      `json:"alive"`
-	RuntimeStatus  string    `json:"runtime_status"`
-	ZellijSession  string    `json:"zellij_session,omitempty"`
-	TaskSummary    string    `json:"task_summary,omitempty"`
-	PRURL          string    `json:"pr_url,omitempty"`
-	LastActive     time.Time `json:"last_active"`
-	Ghost          bool      `json:"ghost"`
-	Duplicate      bool      `json:"duplicate"`
-	DuplicateGroup string    `json:"duplicate_group,omitempty"`
-	DuplicateCount int       `json:"duplicate_count,omitempty"`
-	Health         []string  `json:"health,omitempty"`
+	ID              string    `json:"id"`
+	Agent           string    `json:"agent"`
+	Repository      string    `json:"repository"`
+	Branch          string    `json:"branch"`
+	Status          string    `json:"status"`
+	BlockedReason   string    `json:"blocked_reason,omitempty"`
+	DesiredState    string    `json:"desired_state"`
+	Alive           bool      `json:"alive"`
+	RuntimeStatus   string    `json:"runtime_status"`
+	ZellijSession   string    `json:"zellij_session,omitempty"`
+	TaskSummary     string    `json:"task_summary,omitempty"`
+	PRURL           string    `json:"pr_url,omitempty"`
+	LastActive      time.Time `json:"last_active"`
+	LastSentAt      time.Time `json:"last_sent_at"`
+	LastMessageAt   time.Time `json:"last_message_at"`
+	LastSeenAliveAt time.Time `json:"last_seen_alive_at"`
+	LastObservedAt  time.Time `json:"last_observed_at"`
+	Ghost           bool      `json:"ghost"`
+	Duplicate       bool      `json:"duplicate"`
+	DuplicateGroup  string    `json:"duplicate_group,omitempty"`
+	DuplicateCount  int       `json:"duplicate_count,omitempty"`
+	Health          []string  `json:"health,omitempty"`
 }
 
 type stateShowAction struct {
@@ -56,6 +68,14 @@ type stateShowAction struct {
 	HandoffSummary string    `json:"handoff_summary,omitempty"`
 	TokenBurn      int       `json:"token_burn,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+}
+
+type stateShowControlPlaneResource struct {
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	APIVersion string `json:"api_version,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	SourcePath string `json:"source_path,omitempty"`
 }
 
 type stateShowAdoption struct {
@@ -74,11 +94,101 @@ type stateShowAdoption struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+type stateShowProposalAdoption struct {
+	ID               int64    `json:"id"`
+	ProposalSnapshot string   `json:"proposal_snapshot_id"`
+	RepoRef          string   `json:"repo_ref"`
+	Repository       string   `json:"repository"`
+	Category         string   `json:"category"`
+	TaskType         string   `json:"task_type"`
+	Risk             string   `json:"risk"`
+	Status           string   `json:"status"`
+	ApprovalStatus   string   `json:"approval_status"`
+	OperatorNote     string   `json:"operator_note,omitempty"`
+	DesiredOutcome   []string `json:"desired_outcome,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+}
+
+type stateShowAgentTask struct {
+	Name        string   `json:"name"`
+	RepoRef     string   `json:"repo_ref"`
+	Repository  string   `json:"repository"`
+	TaskType    string   `json:"task_type"`
+	Risk        string   `json:"risk"`
+	Status      string   `json:"status"`
+	SourceKind  string   `json:"source_kind"`
+	ContextRefs []string `json:"context_refs,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+}
+
+type stateShowAgentTaskDecision struct {
+	ID               int64    `json:"id"`
+	AgentTaskName    string   `json:"agent_task_name"`
+	RepoRef          string   `json:"repo_ref"`
+	Repository       string   `json:"repository"`
+	TaskType         string   `json:"task_type"`
+	Risk             string   `json:"risk"`
+	SelectedAgent    string   `json:"selected_agent"`
+	SelectedRepoMode string   `json:"selected_repo_mode"`
+	Status           string   `json:"status"`
+	EligibleAgents   []string `json:"eligible_agents,omitempty"`
+	RouteReason      string   `json:"route_reason,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+}
+
+type stateShowAgentTaskAttempt struct {
+	ID               int64  `json:"id"`
+	DecisionID       int64  `json:"decision_id"`
+	AgentTaskName    string `json:"agent_task_name"`
+	RepoRef          string `json:"repo_ref"`
+	Repository       string `json:"repository"`
+	TaskType         string `json:"task_type"`
+	Risk             string `json:"risk"`
+	Agent            string `json:"agent"`
+	RepoMode         string `json:"repo_mode"`
+	Branch           string `json:"branch"`
+	SessionName      string `json:"session_name"`
+	ManagedSessionID string `json:"managed_session_id"`
+	Status           string `json:"status"`
+	FailureReason    string `json:"failure_reason,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
+type stateShowAgentTaskOutcome struct {
+	ID               int64  `json:"id"`
+	AttemptID        int64  `json:"attempt_id"`
+	DecisionID       int64  `json:"decision_id"`
+	AgentTaskName    string `json:"agent_task_name"`
+	RepoRef          string `json:"repo_ref"`
+	Repository       string `json:"repository"`
+	TaskType         string `json:"task_type"`
+	Risk             string `json:"risk"`
+	Agent            string `json:"agent"`
+	Branch           string `json:"branch"`
+	SessionName      string `json:"session_name"`
+	ManagedSessionID string `json:"managed_session_id"`
+	Status           string `json:"status"`
+	ResultSummary    string `json:"result_summary,omitempty"`
+	PRURL            string `json:"pr_url,omitempty"`
+	PRState          string `json:"pr_state,omitempty"`
+	CommitSHA        string `json:"commit_sha,omitempty"`
+	FailureCategory  string `json:"failure_category,omitempty"`
+	FailureReason    string `json:"failure_reason,omitempty"`
+	Source           string `json:"source,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
 type stateShowReport struct {
-	Summary       stateShowSummary    `json:"summary"`
-	Sessions      []stateShowSession  `json:"sessions"`
-	AdoptionQueue []stateShowAdoption `json:"adoption_queue,omitempty"`
-	RecentActions []stateShowAction   `json:"recent_actions,omitempty"`
+	Summary               stateShowSummary                `json:"summary"`
+	Sessions              []stateShowSession              `json:"sessions"`
+	ControlPlaneResources []stateShowControlPlaneResource `json:"control_plane_resources,omitempty"`
+	AdoptionQueue         []stateShowAdoption             `json:"adoption_queue,omitempty"`
+	ProposalAdoptionQueue []stateShowProposalAdoption     `json:"proposal_adoption_queue,omitempty"`
+	AgentTasks            []stateShowAgentTask            `json:"agent_tasks,omitempty"`
+	AgentTaskDecisions    []stateShowAgentTaskDecision    `json:"agent_task_decisions,omitempty"`
+	AgentTaskAttempts     []stateShowAgentTaskAttempt     `json:"agent_task_attempts,omitempty"`
+	AgentTaskOutcomes     []stateShowAgentTaskOutcome     `json:"agent_task_outcomes,omitempty"`
+	RecentActions         []stateShowAction               `json:"recent_actions,omitempty"`
 }
 
 var stateShowCmd = &cobra.Command{
@@ -115,15 +225,15 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions) ===\n",
-		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions)
+	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d control-plane resources, %d task proposals, %d queued proposal adoptions, %d agent tasks, %d decisions, %d attempts, %d outcomes) ===\n",
+		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.ControlPlaneResources, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions, report.Summary.AgentTasks, report.Summary.AgentTaskDecisions, report.Summary.AgentTaskAttempts, report.Summary.AgentTaskOutcomes)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST OBSERVED\tLAST MESSAGE\tLAST SENT\tLAST ALIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
-		age := "-"
-		if !s.LastActive.IsZero() {
-			age = formatAge(time.Since(s.LastActive))
-		}
+		observed := formatOptionalAge(s.LastObservedAt)
+		lastMessageAt := formatOptionalAge(s.LastMessageAt)
+		lastSentAt := formatOptionalAge(s.LastSentAt)
+		lastSeenAliveAt := formatOptionalAge(s.LastSeenAliveAt)
 		task := s.TaskSummary
 		if task == "" {
 			task = "-"
@@ -150,8 +260,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if pr == "" {
 			pr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			s.Agent, s.Repository, branch, status, s.DesiredState, s.RuntimeStatus, health, age, pr, task)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.Agent, s.Repository, branch, status, s.DesiredState, s.RuntimeStatus, health, observed, lastMessageAt, lastSentAt, lastSeenAliveAt, pr, task)
 	}
 	w.Flush()
 
@@ -174,6 +284,99 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				a.ID, a.Agent, a.Mux, a.ZellijSession, repository, branch, a.Strategy, a.TargetPermission, note)
+		}
+		w.Flush()
+	}
+
+	if len(report.ProposalAdoptionQueue) > 0 {
+		fmt.Println("\n=== Queued Proposal Adoptions ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tSNAPSHOT\tREPO\tCATEGORY\tTASK_TYPE\tRISK\tAPPROVAL\tNOTE")
+		for _, a := range report.ProposalAdoptionQueue {
+			note := a.OperatorNote
+			if note == "" {
+				note = "-"
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				a.ID, a.ProposalSnapshot, a.RepoRef, a.Category, a.TaskType, a.Risk, a.ApprovalStatus, note)
+		}
+		w.Flush()
+	}
+
+	if len(report.ControlPlaneResources) > 0 {
+		fmt.Println("\n=== Control Plane Resources ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "KIND\tNAME\tAPI_VERSION\tUPDATED\tSOURCE_PATH")
+		for _, resource := range report.ControlPlaneResources {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				resource.Kind,
+				resource.Name,
+				dashIfEmpty(resource.APIVersion),
+				dashIfEmpty(resource.UpdatedAt),
+				dashIfEmpty(resource.SourcePath))
+		}
+		w.Flush()
+	}
+
+	if len(report.AgentTasks) > 0 {
+		fmt.Println("\n=== Agent Tasks ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NAME\tREPO\tTASK_TYPE\tRISK\tSTATUS\tSOURCE_KIND")
+		for _, a := range report.AgentTasks {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				a.Name, a.RepoRef, a.TaskType, a.Risk, a.Status, a.SourceKind)
+		}
+		w.Flush()
+	}
+
+	if len(report.AgentTaskDecisions) > 0 {
+		fmt.Println("\n=== Agent Task Decisions ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tAGENT_TASK\tREPO\tTASK_TYPE\tRISK\tAGENT\tREPO_MODE\tSTATUS")
+		for _, decision := range report.AgentTaskDecisions {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				decision.ID,
+				decision.AgentTaskName,
+				decision.RepoRef,
+				decision.TaskType,
+				decision.Risk,
+				decision.SelectedAgent,
+				decision.SelectedRepoMode,
+				decision.Status)
+		}
+		w.Flush()
+	}
+
+	if len(report.AgentTaskAttempts) > 0 {
+		fmt.Println("\n=== Agent Task Attempts ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tDECISION\tAGENT_TASK\tAGENT\tREPO_MODE\tSTATUS\tSESSION")
+		for _, attempt := range report.AgentTaskAttempts {
+			fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\t%s\t%s\n",
+				attempt.ID,
+				attempt.DecisionID,
+				attempt.AgentTaskName,
+				attempt.Agent,
+				attempt.RepoMode,
+				attempt.Status,
+				dashIfEmpty(attempt.SessionName))
+		}
+		w.Flush()
+	}
+
+	if len(report.AgentTaskOutcomes) > 0 {
+		fmt.Println("\n=== Agent Task Outcomes ===")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tATTEMPT\tAGENT_TASK\tSTATUS\tPR_STATE\tPR\tSOURCE")
+		for _, outcome := range report.AgentTaskOutcomes {
+			fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\t%s\t%s\n",
+				outcome.ID,
+				outcome.AttemptID,
+				outcome.AgentTaskName,
+				outcome.Status,
+				dashIfEmpty(outcome.PRState),
+				dashIfEmpty(outcome.PRURL),
+				dashIfEmpty(outcome.Source))
 		}
 		w.Flush()
 	}
@@ -300,24 +503,28 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			branch = "-"
 		}
 		report.Sessions = append(report.Sessions, stateShowSession{
-			ID:             s.ID,
-			Agent:          s.Agent,
-			Repository:     s.Repository,
-			Branch:         branch,
-			Status:         s.Status,
-			BlockedReason:  s.BlockedReason,
-			DesiredState:   s.DesiredState,
-			Alive:          s.WantsRunning(),
-			RuntimeStatus:  s.RuntimeStatus,
-			ZellijSession:  s.ZellijSession,
-			TaskSummary:    s.TaskSummary,
-			PRURL:          s.PRURL,
-			LastActive:     s.LastActive,
-			Ghost:          ghost,
-			Duplicate:      duplicate,
-			DuplicateGroup: dupGroup,
-			DuplicateCount: dupCount,
-			Health:         health,
+			ID:              s.ID,
+			Agent:           s.Agent,
+			Repository:      s.Repository,
+			Branch:          branch,
+			Status:          s.Status,
+			BlockedReason:   s.BlockedReason,
+			DesiredState:    s.DesiredState,
+			Alive:           s.WantsRunning(),
+			RuntimeStatus:   s.RuntimeStatus,
+			ZellijSession:   s.ZellijSession,
+			TaskSummary:     s.TaskSummary,
+			PRURL:           s.PRURL,
+			LastActive:      s.LastActive,
+			LastSentAt:      s.LastSentAt,
+			LastMessageAt:   s.LastMessageAt,
+			LastSeenAliveAt: s.LastSeenAliveAt,
+			LastObservedAt:  s.ObservedActivityAt(),
+			Ghost:           ghost,
+			Duplicate:       duplicate,
+			DuplicateGroup:  dupGroup,
+			DuplicateCount:  dupCount,
+			Health:          health,
 		})
 	}
 
@@ -365,6 +572,152 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			Status:           adoption.Status,
 			Note:             adoption.Note,
 			CreatedAt:        adoption.CreatedAt,
+		})
+	}
+
+	queuedProposalAdoptions, err := store.ListQueuedTaskProposalAdoptions(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing queued task proposal adoptions: %w", err)
+	}
+	report.Summary.QueuedProposalAdoptions = len(queuedProposalAdoptions)
+	for _, adoption := range queuedProposalAdoptions {
+		report.ProposalAdoptionQueue = append(report.ProposalAdoptionQueue, stateShowProposalAdoption{
+			ID:               adoption.ID,
+			ProposalSnapshot: adoption.ProposalSnapshotID,
+			RepoRef:          adoption.RepoRef,
+			Repository:       adoption.Repository,
+			Category:         adoption.Category,
+			TaskType:         adoption.TaskType,
+			Risk:             adoption.Risk,
+			Status:           adoption.Status,
+			ApprovalStatus:   adoption.ApprovalStatus,
+			OperatorNote:     adoption.OperatorNote,
+			DesiredOutcome:   adoption.DesiredOutcome,
+			CreatedAt:        adoption.CreatedAt,
+		})
+	}
+
+	managedRepos, err := store.ListManagedRepos(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing managed repos: %w", err)
+	}
+	report.Summary.ManagedRepos = len(managedRepos)
+
+	controlPlaneResources, err := store.ListControlPlaneResources(db, "")
+	if err != nil {
+		return nil, fmt.Errorf("listing control plane resources: %w", err)
+	}
+	report.Summary.ControlPlaneResources = len(controlPlaneResources)
+	for _, resource := range controlPlaneResources {
+		report.ControlPlaneResources = append(report.ControlPlaneResources, stateShowControlPlaneResource{
+			Kind:       resource.Kind,
+			Name:       resource.Name,
+			APIVersion: resource.APIVersion,
+			UpdatedAt:  resource.UpdatedAt,
+			SourcePath: resource.SourcePath,
+		})
+	}
+
+	taskProposals, err := store.CountTaskProposalSnapshots(db)
+	if err != nil {
+		return nil, fmt.Errorf("counting task proposal snapshots: %w", err)
+	}
+	report.Summary.TaskProposals = taskProposals
+
+	agentTasks, err := store.ListAgentTasks(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent tasks: %w", err)
+	}
+	report.Summary.AgentTasks = len(agentTasks)
+	for _, task := range agentTasks {
+		report.AgentTasks = append(report.AgentTasks, stateShowAgentTask{
+			Name:        task.Name,
+			RepoRef:     task.RepoRef,
+			Repository:  task.Repository,
+			TaskType:    task.TaskType,
+			Risk:        task.Risk,
+			Status:      task.Status,
+			SourceKind:  task.SourceKind,
+			ContextRefs: task.ContextRefs,
+			CreatedAt:   task.CreatedAt,
+		})
+	}
+
+	decisions, err := store.ListAgentTaskDecisions(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent task decisions: %w", err)
+	}
+	report.Summary.AgentTaskDecisions = len(decisions)
+	for _, decision := range decisions {
+		report.AgentTaskDecisions = append(report.AgentTaskDecisions, stateShowAgentTaskDecision{
+			ID:               decision.ID,
+			AgentTaskName:    decision.AgentTaskName,
+			RepoRef:          decision.RepoRef,
+			Repository:       decision.Repository,
+			TaskType:         decision.TaskType,
+			Risk:             decision.Risk,
+			SelectedAgent:    decision.SelectedAgent,
+			SelectedRepoMode: decision.SelectedRepoMode,
+			Status:           decision.Status,
+			EligibleAgents:   decision.EligibleAgents,
+			RouteReason:      decision.RouteReason,
+			CreatedAt:        decision.CreatedAt,
+		})
+	}
+
+	attempts, err := store.ListAgentTaskAttempts(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent task attempts: %w", err)
+	}
+	report.Summary.AgentTaskAttempts = len(attempts)
+	for _, attempt := range attempts {
+		report.AgentTaskAttempts = append(report.AgentTaskAttempts, stateShowAgentTaskAttempt{
+			ID:               attempt.ID,
+			DecisionID:       attempt.DecisionID,
+			AgentTaskName:    attempt.AgentTaskName,
+			RepoRef:          attempt.RepoRef,
+			Repository:       attempt.Repository,
+			TaskType:         attempt.TaskType,
+			Risk:             attempt.Risk,
+			Agent:            attempt.Agent,
+			RepoMode:         attempt.RepoMode,
+			Branch:           attempt.Branch,
+			SessionName:      attempt.SessionName,
+			ManagedSessionID: attempt.ManagedSessionID,
+			Status:           attempt.Status,
+			FailureReason:    attempt.FailureReason,
+			CreatedAt:        attempt.CreatedAt,
+		})
+	}
+
+	outcomes, err := store.ListAgentTaskOutcomes(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent task outcomes: %w", err)
+	}
+	report.Summary.AgentTaskOutcomes = len(outcomes)
+	for _, outcome := range outcomes {
+		report.AgentTaskOutcomes = append(report.AgentTaskOutcomes, stateShowAgentTaskOutcome{
+			ID:               outcome.ID,
+			AttemptID:        outcome.AttemptID,
+			DecisionID:       outcome.DecisionID,
+			AgentTaskName:    outcome.AgentTaskName,
+			RepoRef:          outcome.RepoRef,
+			Repository:       outcome.Repository,
+			TaskType:         outcome.TaskType,
+			Risk:             outcome.Risk,
+			Agent:            outcome.Agent,
+			Branch:           outcome.Branch,
+			SessionName:      outcome.SessionName,
+			ManagedSessionID: outcome.ManagedSessionID,
+			Status:           outcome.Status,
+			ResultSummary:    outcome.ResultSummary,
+			PRURL:            outcome.PRURL,
+			PRState:          outcome.PRState,
+			CommitSHA:        outcome.CommitSHA,
+			FailureCategory:  outcome.FailureCategory,
+			FailureReason:    outcome.FailureReason,
+			Source:           outcome.Source,
+			CreatedAt:        outcome.CreatedAt,
 		})
 	}
 

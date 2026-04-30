@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,50 @@ func TestRunJobAddListDelete(t *testing.T) {
 	}
 }
 
+func TestRunJobAddStateSyncWithoutInstruction(t *testing.T) {
+	dbPath := withJobTestDB(t)
+	var out bytes.Buffer
+	jobAddCmd.SetOut(&out)
+	jobListCmd.SetOut(&out)
+
+	jobAddName = "agentctl-state-sync"
+	jobAddSchedule = "*/5 * * * *"
+	jobAddAction = "state_sync"
+	jobAddRepo = ""
+	jobAddSession = ""
+	jobAddBranch = ""
+	jobAddAgent = "codex"
+	jobAddInstruction = ""
+	jobAddCwd = ""
+	jobAddTimeout = 600
+
+	if err := runJobAdd(jobAddCmd, nil); err != nil {
+		t.Fatalf("runJobAdd: %v", err)
+	}
+
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	job, err := store.GetJobByName(db, "agentctl-state-sync")
+	if err != nil {
+		t.Fatalf("GetJobByName: %v", err)
+	}
+	if job.Action != "state-sync" || job.Agent != "codex" {
+		t.Fatalf("job = %+v", job)
+	}
+
+	out.Reset()
+	if err := runJobList(jobListCmd, nil); err != nil {
+		t.Fatalf("runJobList: %v", err)
+	}
+	if !strings.Contains(out.String(), "state-sync") || !strings.Contains(out.String(), "codex") {
+		t.Fatalf("runJobList output = %q", out.String())
+	}
+}
+
 func TestRunJobRunAndLogs(t *testing.T) {
 	dbPath := withJobTestDB(t)
 	db, err := store.Open(dbPath)
@@ -143,6 +188,106 @@ func TestRunJobRunAndLogs(t *testing.T) {
 	}
 }
 
+func TestRunJobRunStateSync(t *testing.T) {
+	dbPath := withJobTestDB(t)
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	job := &store.Job{
+		Name:     "agentctl-state-sync",
+		Schedule: "*/5 * * * *",
+		Action:   "state-sync",
+		Agent:    "all",
+		Enabled:  true,
+	}
+	if err := store.CreateJob(db, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	origStateSyncExecutor := jobStateSyncExecutor
+	origNowFunc := nowFunc
+	t.Cleanup(func() {
+		jobStateSyncExecutor = origStateSyncExecutor
+		nowFunc = origNowFunc
+	})
+
+	jobStateSyncExecutor = func(db *sql.DB, job *store.Job) (string, error) {
+		if job.Agent != "all" {
+			t.Fatalf("job.Agent = %q, want all", job.Agent)
+		}
+		return "Synced 2 sessions to database\n", nil
+	}
+	nowTick := time.Date(2026, 4, 6, 10, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time {
+		nowTick = nowTick.Add(1 * time.Second)
+		return nowTick
+	}
+
+	var out bytes.Buffer
+	jobRunCmd.SetOut(&out)
+
+	if err := runJobRun(jobRunCmd, []string{job.Name}); err != nil {
+		t.Fatalf("runJobRun: %v", err)
+	}
+	if !strings.Contains(out.String(), "Synced 2 sessions") {
+		t.Fatalf("runJobRun output = %q", out.String())
+	}
+
+	runs, err := store.ListJobRuns(db, job.ID, 10)
+	if err != nil {
+		t.Fatalf("ListJobRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != "success" {
+		t.Fatalf("runs = %+v", runs)
+	}
+}
+
+func TestRunJobRunRejectsAlreadyLockedJob(t *testing.T) {
+	dbPath := withJobTestDB(t)
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+
+	job := &store.Job{
+		Name:        "locked-job",
+		Schedule:    "*/5 * * * *",
+		Action:      "send",
+		Session:     "manager",
+		Instruction: "ping",
+		Enabled:     true,
+	}
+	if err := store.CreateJob(db, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := store.AcquireJobLock(db, job.ID, "scheduler:123"); err != nil {
+		t.Fatalf("AcquireJobLock: %v", err)
+	}
+
+	var out bytes.Buffer
+	jobRunCmd.SetOut(&out)
+
+	err = runJobRun(jobRunCmd, []string{job.Name})
+	if err == nil {
+		t.Fatal("runJobRun: expected already running error")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("runJobRun error = %v", err)
+	}
+
+	runs, err := store.ListJobRuns(db, job.ID, 10)
+	if err != nil {
+		t.Fatalf("ListJobRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs len = %d, want 0", len(runs))
+	}
+}
+
 func TestValidateJob(t *testing.T) {
 	err := validateJob(&store.Job{
 		Name:        "invalid",
@@ -152,5 +297,14 @@ func TestValidateJob(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("validateJob should fail without session")
+	}
+
+	err = validateJob(&store.Job{
+		Name:     "state-sync",
+		Schedule: "* * * * *",
+		Action:   "state_sync",
+	})
+	if err != nil {
+		t.Fatalf("validateJob state-sync: %v", err)
 	}
 }

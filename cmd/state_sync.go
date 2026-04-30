@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -197,35 +198,18 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 	// Normalize known incorrect repository names in existing records
 	normalizeExistingRepoNames(db)
 
+	prMetadataBySessionID, err := syncSessionPRMetadata(db)
+	if err != nil {
+		return 0, err
+	}
+
 	// Auto-archive dead/error sessions to sessions_archive table
 	if archived, err := store.ArchiveDeadSessions(db); err == nil && archived > 0 {
 		fmt.Printf("Auto-archived %d dead/error session(s)\n", archived)
 	}
 
-	// Fetch PR URLs for alive sessions that don't have one yet
-	aliveAfterSync, _ := store.ListSessionsByAlive(db, true)
-	for _, s := range aliveAfterSync {
-		if s.GitBranch == "" || s.GitBranch == "main" || s.GitBranch == "master" {
-			continue
-		}
-		if s.PRURL != "" {
-			continue
-		}
-		repo := repoFromRepository(s.Repository)
-		if repo == "" {
-			continue
-		}
-		noPRKey := "no_pr_checked:" + repo + ":" + s.GitBranch
-		if lastChecked, _ := store.GetState(db, noPRKey); lastChecked != "" {
-			if t, err := time.Parse(time.RFC3339, lastChecked); err == nil && time.Since(t) < 5*time.Minute {
-				continue
-			}
-		}
-		if prURL := lookupPRURL(repo, s.GitBranch); prURL != "" {
-			db.Exec("UPDATE sessions SET pr_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", prURL, s.ID)
-		} else {
-			_ = store.SetState(db, noPRKey, time.Now().Format(time.RFC3339))
-		}
+	if err := syncAgentTaskOutcomes(db, prMetadataBySessionID); err != nil {
+		return 0, err
 	}
 
 	// Check PR conflicts and send rebase instructions (throttled to every 5 minutes)
@@ -243,6 +227,288 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 	}
 
 	return discovered + enriched, nil
+}
+
+type prMetadata struct {
+	URL        string `json:"url"`
+	State      string `json:"state"`
+	HeadRefOID string `json:"headRefOid"`
+}
+
+func syncSessionPRMetadata(db *sql.DB) (map[string]prMetadata, error) {
+	sessions, err := store.ListSessions(db)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions for pr metadata sync: %w", err)
+	}
+
+	metadataBySessionID := make(map[string]prMetadata)
+	for _, s := range sessions {
+		repo := repoFromRepository(s.Repository)
+		if repo == "" {
+			continue
+		}
+
+		prURL := s.PRURL
+		prNumber := s.PRNumber
+		prState := s.PRState
+
+		if prURL == "" {
+			if s.GitBranch == "" || s.GitBranch == "main" || s.GitBranch == "master" {
+				continue
+			}
+			noPRKey := "no_pr_checked:" + repo + ":" + s.GitBranch
+			if lastChecked, _ := store.GetState(db, noPRKey); lastChecked != "" {
+				if t, err := time.Parse(time.RFC3339, lastChecked); err == nil && time.Since(t) < 5*time.Minute {
+					continue
+				}
+			}
+
+			prURL = lookupPRURL(repo, s.GitBranch)
+			if prURL == "" {
+				_ = store.SetState(db, noPRKey, time.Now().Format(time.RFC3339))
+				continue
+			}
+		}
+
+		if prNumber == 0 {
+			if n, err := strconv.Atoi(extractPRNumber(prURL)); err == nil {
+				prNumber = n
+			}
+		}
+
+		meta := prMetadata{URL: prURL, State: prState}
+		if prNumber > 0 {
+			fetched := lookupPRMetadata(repo, strconv.Itoa(prNumber))
+			if fetched.URL != "" {
+				meta.URL = fetched.URL
+			}
+			if fetched.State != "" {
+				meta.State = fetched.State
+			}
+			if fetched.HeadRefOID != "" {
+				meta.HeadRefOID = fetched.HeadRefOID
+			}
+		}
+
+		if meta.URL == "" {
+			continue
+		}
+		if err := updateSessionPRTracking(db, s.ID, prNumber, meta.URL, meta.State); err != nil {
+			return nil, fmt.Errorf("updating pr metadata for session %s: %w", s.ID, err)
+		}
+		metadataBySessionID[s.ID] = meta
+	}
+
+	return metadataBySessionID, nil
+}
+
+func syncAgentTaskOutcomes(db *sql.DB, prMetadataBySessionID map[string]prMetadata) error {
+	existingOutcomes, err := store.ListAgentTaskOutcomes(db)
+	if err != nil {
+		return fmt.Errorf("listing outcomes for outcome sync: %w", err)
+	}
+	prMetadataCache := make(map[string]prMetadata)
+	for i := range existingOutcomes {
+		if !shouldRefreshOutcomePRMetadata(&existingOutcomes[i]) {
+			continue
+		}
+		meta := resolveOutcomePRMetadata(&existingOutcomes[i], prMetadataBySessionID, prMetadataCache)
+		if meta.URL == "" && meta.State == "" && meta.HeadRefOID == "" {
+			continue
+		}
+		if !applyOutcomePRMetadata(&existingOutcomes[i], meta) {
+			continue
+		}
+		if err := store.UpdateAgentTaskOutcome(db, &existingOutcomes[i]); err != nil {
+			return fmt.Errorf("updating outcome #%d metadata: %w", existingOutcomes[i].ID, err)
+		}
+		if err := store.LogAction(db, &store.Action{
+			SessionID:   existingOutcomes[i].ManagedSessionID,
+			ActionType:  "outcome_refresh",
+			Content:     fmt.Sprintf("Refreshed outcome #%d metadata for %s", existingOutcomes[i].ID, existingOutcomes[i].AgentTaskName),
+			Result:      firstNonEmpty(existingOutcomes[i].PRState, existingOutcomes[i].PRURL, existingOutcomes[i].Status),
+			RouteReason: "",
+		}); err != nil {
+			return fmt.Errorf("logging outcome refresh for outcome #%d: %w", existingOutcomes[i].ID, err)
+		}
+	}
+
+	attempts, err := store.ListAgentTaskAttempts(db)
+	if err != nil {
+		return fmt.Errorf("listing attempts for outcome sync: %w", err)
+	}
+
+	for _, attempt := range attempts {
+		existing, err := store.GetAgentTaskOutcomeByAttemptID(db, attempt.ID)
+		if err != nil {
+			return fmt.Errorf("checking outcome for attempt %d: %w", attempt.ID, err)
+		}
+		if existing != nil {
+			continue
+		}
+
+		status, failureCategory, failureReason := inferOutcomeForAttemptAutoSync(db, &attempt)
+		if status == "" {
+			continue
+		}
+
+		plan, err := buildAgentTaskOutcomePlan(
+			db,
+			&attempt,
+			status,
+			"",
+			0,
+			"",
+			"",
+			"",
+			failureCategory,
+			failureReason,
+			"sync",
+		)
+		if err != nil {
+			return fmt.Errorf("building auto outcome for attempt %d: %w", attempt.ID, err)
+		}
+		meta := resolveOutcomePRMetadata(plan.Outcome, prMetadataBySessionID, prMetadataCache)
+		applyOutcomePRMetadata(plan.Outcome, meta)
+
+		if err := store.CreateAgentTaskOutcome(db, plan.Outcome); err != nil {
+			return fmt.Errorf("creating auto outcome for attempt %d: %w", attempt.ID, err)
+		}
+		if err := store.UpdateAgentTaskDecisionStatus(db, attempt.DecisionID, plan.Outcome.Status); err != nil {
+			return fmt.Errorf("marking decision %d %s: %w", attempt.DecisionID, plan.Outcome.Status, err)
+		}
+		if err := store.UpdateAgentTaskStatus(db, attempt.AgentTaskName, plan.Outcome.Status); err != nil {
+			return fmt.Errorf("marking agent task %s %s: %w", attempt.AgentTaskName, plan.Outcome.Status, err)
+		}
+
+		routeReason := ""
+		decision, err := store.GetAgentTaskDecision(db, attempt.DecisionID)
+		if err == nil && decision != nil {
+			routeReason = decision.RouteReason
+		}
+		result := plan.Outcome.Status
+		if plan.Outcome.PRURL != "" {
+			result = plan.Outcome.PRURL
+		}
+		if err := store.LogAction(db, &store.Action{
+			SessionID:   plan.Outcome.ManagedSessionID,
+			ActionType:  "outcome_sync",
+			Content:     fmt.Sprintf("Auto-recorded outcome #%d from attempt #%d for %s", plan.Outcome.ID, attempt.ID, attempt.AgentTaskName),
+			Result:      result,
+			RouteReason: routeReason,
+		}); err != nil {
+			return fmt.Errorf("logging auto outcome for attempt %d: %w", attempt.ID, err)
+		}
+	}
+
+	return nil
+}
+
+func shouldRefreshOutcomePRMetadata(outcome *store.AgentTaskOutcome) bool {
+	hasPRReference := outcome.PRURL != "" || (outcome.PRNumber != 0 && repoFromRepository(outcome.Repository) != "")
+	if !hasPRReference {
+		return false
+	}
+	if outcome.PRURL == "" || outcome.PRState == "" || outcome.PRState == "OPEN" {
+		return true
+	}
+	return outcome.CommitSHA == ""
+}
+
+func resolveOutcomePRMetadata(outcome *store.AgentTaskOutcome, prMetadataBySessionID map[string]prMetadata, cache map[string]prMetadata) prMetadata {
+	if outcome.ManagedSessionID != "" {
+		if meta, ok := prMetadataBySessionID[outcome.ManagedSessionID]; ok {
+			return meta
+		}
+	}
+
+	repo := repoFromRepository(outcome.Repository)
+	if repo == "" {
+		return prMetadata{}
+	}
+	prNumber := outcome.PRNumber
+	if prNumber == 0 {
+		if n, err := strconv.Atoi(extractPRNumber(outcome.PRURL)); err == nil {
+			prNumber = n
+		}
+	}
+	if prNumber == 0 {
+		return prMetadata{}
+	}
+
+	cacheKey := repo + "#" + strconv.Itoa(prNumber)
+	if meta, ok := cache[cacheKey]; ok {
+		return meta
+	}
+	meta := lookupPRMetadata(repo, strconv.Itoa(prNumber))
+	cache[cacheKey] = meta
+	return meta
+}
+
+func applyOutcomePRMetadata(outcome *store.AgentTaskOutcome, meta prMetadata) bool {
+	changed := false
+	if meta.URL != "" && outcome.PRURL != meta.URL {
+		outcome.PRURL = meta.URL
+		changed = true
+	}
+	if meta.State != "" && outcome.PRState != meta.State {
+		outcome.PRState = meta.State
+		changed = true
+	}
+	if meta.HeadRefOID != "" && outcome.CommitSHA != meta.HeadRefOID {
+		outcome.CommitSHA = meta.HeadRefOID
+		changed = true
+	}
+	return changed
+}
+
+func inferOutcomeForAttemptAutoSync(db *sql.DB, attempt *store.AgentTaskAttempt) (status, failureCategory, failureReason string) {
+	switch attempt.Status {
+	case "failed":
+		return "failed", "spawn_failed", attempt.FailureReason
+	case "cancelled":
+		return "cancelled", "", attempt.FailureReason
+	}
+
+	if attempt.ManagedSessionID == "" {
+		return "", "", ""
+	}
+	session, err := store.GetSessionAny(db, attempt.ManagedSessionID)
+	if err != nil || session == nil {
+		return "", "", ""
+	}
+
+	if session.WantsRunning() {
+		return "", "", ""
+	}
+	if session.PRURL != "" {
+		return "completed", "", ""
+	}
+	switch session.Status {
+	case "error":
+		return "failed", "session_error", firstNonEmpty(session.LastMessage, "session ended with error status before recording PR")
+	case "dead":
+		return "failed", "session_dead", "session ended before recording PR"
+	default:
+		return "cancelled", "", "session stopped before recording PR"
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func updateSessionPRTracking(db *sql.DB, sessionID string, prNumber int, prURL, prState string) error {
+	_, err := db.Exec(`UPDATE sessions
+		SET pr_number = ?, pr_url = ?, pr_state = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`,
+		prNumber, prURL, prState, sessionID)
+	return err
 }
 
 // checkPRConflicts checks mergeable state for alive sessions with PRs
@@ -464,6 +730,7 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 				db.Exec("UPDATE sessions SET runtime_status = 'exited', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			} else {
 				db.Exec("UPDATE sessions SET runtime_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+				_, _ = store.TouchSessionLastSeenAliveByZellijSession(db, s.ZellijSession, time.Now())
 			}
 		} else {
 			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
@@ -573,13 +840,26 @@ var listZellijDetailed = func() ([]mux.ZellijSessionState, error) {
 	return mux.ListZellijSessionsDetailed()
 }
 
-func lookupPRURL(repo, branch string) string {
+var lookupPRURL = func(repo, branch string) string {
 	cmd := exec.Command("gh", "pr", "list", "--head", branch, "--repo", repo, "--json", "url", "--jq", ".[0].url")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+var lookupPRMetadata = func(repo, prNumber string) prMetadata {
+	cmd := exec.Command("gh", "pr", "view", prNumber, "--repo", repo, "--json", "url,state,headRefOid")
+	out, err := cmd.Output()
+	if err != nil {
+		return prMetadata{}
+	}
+	var result prMetadata
+	if err := json.Unmarshal(out, &result); err != nil {
+		return prMetadata{}
+	}
+	return result
 }
 
 func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bool) {
@@ -613,18 +893,19 @@ func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bo
 
 	return discoveredSession{
 		Session: store.Session{
-			ID:            sessionID,
-			Agent:         string(agent),
-			Repository:    repo,
-			SessionID:     "zellij-" + zs.Name,
-			CWD:           cwd,
-			GitBranch:     branch,
-			ZellijSession: zs.Name,
-			Status:        status,
-			DesiredState:  store.DesiredStateRunning,
-			LastActive:    time.Now(),
-			Role:          "worker",
-			RuntimeStatus: runtimeStatus,
+			ID:              sessionID,
+			Agent:           string(agent),
+			Repository:      repo,
+			SessionID:       "zellij-" + zs.Name,
+			CWD:             cwd,
+			GitBranch:       branch,
+			ZellijSession:   zs.Name,
+			Status:          status,
+			DesiredState:    store.DesiredStateRunning,
+			LastActive:      time.Now(),
+			LastSeenAliveAt: time.Now(),
+			Role:            "worker",
+			RuntimeStatus:   runtimeStatus,
 		},
 	}, true
 }
@@ -676,28 +957,6 @@ func backupDatabaseFile(db *sql.DB, path string) error {
 	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		return fmt.Errorf("checkpointing database before backup: %w", err)
 	}
-
-	src, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("opening database for backup: %w", err)
-	}
-	defer src.Close()
-
 	dstPath := path + ".bak"
-	tmpPath := dstPath + ".tmp"
-	dst, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("creating backup file: %w", err)
-	}
-	if _, err := dst.ReadFrom(src); err != nil {
-		dst.Close()
-		return fmt.Errorf("copying database backup: %w", err)
-	}
-	if err := dst.Close(); err != nil {
-		return fmt.Errorf("closing backup file: %w", err)
-	}
-	if err := os.Rename(tmpPath, dstPath); err != nil {
-		return fmt.Errorf("installing backup file: %w", err)
-	}
-	return nil
+	return copyDatabaseFile(path, dstPath)
 }

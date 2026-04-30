@@ -879,6 +879,167 @@ func TestListAllSessionsWithArchive(t *testing.T) {
 	}
 }
 
+func TestListAllSessionsWithArchiveHandlesIntegerLastActive(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_ = UpsertSession(db, &Session{
+		ID: "claude:legacy:s1", Agent: "claude", Repository: "legacy", SessionID: "s1",
+		Status: "dead", Alive: false, LastActive: time.Now(),
+	})
+	if err := MoveToArchive(db, "claude:legacy:s1"); err != nil {
+		t.Fatalf("MoveToArchive: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE sessions_archive SET last_active = 0, pr_number = '', role = '2026-03-29 23:47:58', archived = 'worker', created_at = '2026-03-29 23:47:58.123456789 +0900 JST', updated_at = '2026-03-29 23:47:59.123456789 +0900 JST' WHERE id = ?`, "claude:legacy:s1"); err != nil {
+		t.Fatalf("seed legacy archive values: %v", err)
+	}
+
+	all, err := ListAllSessionsWithArchive(db)
+	if err != nil {
+		t.Fatalf("ListAllSessionsWithArchive: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(all))
+	}
+	if !all[0].LastActive.IsZero() {
+		t.Fatalf("expected zero last_active for legacy value 0, got %s", all[0].LastActive)
+	}
+	if all[0].PRNumber != 0 {
+		t.Fatalf("expected empty pr_number to remain unset, got %d", all[0].PRNumber)
+	}
+	if !all[0].Archived {
+		t.Fatalf("expected archive select to mark legacy row archived")
+	}
+	if all[0].Role != "worker" {
+		t.Fatalf("expected invalid legacy role to default to worker, got %q", all[0].Role)
+	}
+	if all[0].CreatedAt.IsZero() || all[0].UpdatedAt.IsZero() {
+		t.Fatalf("expected legacy created_at/updated_at strings to scan, got created=%s updated=%s", all[0].CreatedAt, all[0].UpdatedAt)
+	}
+}
+
+func TestNullableSessionTimeIgnoresInvalidLegacyText(t *testing.T) {
+	var got nullableSessionTime
+	if err := got.Scan("awaiting_approval"); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if got.Valid || !got.Time.IsZero() {
+		t.Fatalf("expected invalid legacy text to become zero time, got valid=%v time=%s", got.Valid, got.Time)
+	}
+}
+
+func TestObservedActivityAtPrefersNewestExplicitTimestamp(t *testing.T) {
+	now := time.Now()
+	session := Session{
+		LastActive:      now.Add(-3 * time.Hour),
+		LastMessageAt:   now.Add(-2 * time.Hour),
+		LastSentAt:      now.Add(-90 * time.Minute),
+		LastSeenAliveAt: now.Add(-15 * time.Minute),
+	}
+
+	if got, want := session.ObservedActivityAt(), session.LastSeenAliveAt; !got.Equal(want) {
+		t.Fatalf("ObservedActivityAt = %s, want %s", got, want)
+	}
+}
+
+func TestUpdateSessionMetadataPreservesActivityWhenTimestampMissing(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := UpsertSession(db, &Session{
+		ID:            "codex:test:s1",
+		Agent:         "codex",
+		Repository:    "test",
+		SessionID:     "s1",
+		ZellijSession: "test-session",
+		Status:        "idle",
+		LastActive:    now,
+		LastMessageAt: now,
+		LastMessage:   "before",
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	if err := UpdateSessionMetadata(db, &Session{
+		ID:          "codex:test:s1",
+		Status:      "active",
+		GitBranch:   "feat/x",
+		LastMessage: "after",
+		LastRole:    "assistant",
+		Role:        "worker",
+	}); err != nil {
+		t.Fatalf("UpdateSessionMetadata: %v", err)
+	}
+
+	got, err := GetSession(db, "codex:test:s1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !got.LastActive.Equal(now) {
+		t.Fatalf("last_active = %s, want %s", got.LastActive, now)
+	}
+	if !got.LastMessageAt.Equal(now) {
+		t.Fatalf("last_message_at = %s, want %s", got.LastMessageAt, now)
+	}
+	if got.LastMessage != "after" {
+		t.Fatalf("last_message = %q, want after", got.LastMessage)
+	}
+}
+
+func TestTouchSessionTimestampsByZellijSession(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := UpsertSession(db, &Session{
+		ID:            "codex:test:s2",
+		Agent:         "codex",
+		Repository:    "test",
+		SessionID:     "s2",
+		ZellijSession: "worker-s2",
+		Status:        "idle",
+		LastActive:    base,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	sentAt := base.Add(30 * time.Minute)
+	if _, err := TouchSessionLastSentByZellijSession(db, "worker-s2", sentAt); err != nil {
+		t.Fatalf("TouchSessionLastSentByZellijSession: %v", err)
+	}
+	aliveAt := base.Add(90 * time.Minute)
+	if _, err := TouchSessionLastSeenAliveByZellijSession(db, "worker-s2", aliveAt); err != nil {
+		t.Fatalf("TouchSessionLastSeenAliveByZellijSession: %v", err)
+	}
+
+	got, err := GetSession(db, "codex:test:s2")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !got.LastSentAt.Equal(sentAt) {
+		t.Fatalf("last_sent_at = %s, want %s", got.LastSentAt, sentAt)
+	}
+	if !got.LastSeenAliveAt.Equal(aliveAt) {
+		t.Fatalf("last_seen_alive_at = %s, want %s", got.LastSeenAliveAt, aliveAt)
+	}
+	if !got.LastActive.Equal(aliveAt) {
+		t.Fatalf("last_active = %s, want %s", got.LastActive, aliveAt)
+	}
+	if !got.ObservedActivityAt().Equal(aliveAt) {
+		t.Fatalf("observed_activity_at = %s, want %s", got.ObservedActivityAt(), aliveAt)
+	}
+}
+
 func TestMigrationArchivesExisting(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

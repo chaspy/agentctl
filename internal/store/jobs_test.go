@@ -93,6 +93,33 @@ func TestJobCRUDAndRuns(t *testing.T) {
 	}
 }
 
+func TestStateSyncJobCanBeStored(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	job := &Job{
+		Name:     "agentctl-state-sync",
+		Schedule: "*/5 * * * *",
+		Action:   "state-sync",
+		Agent:    "all",
+		Enabled:  true,
+	}
+	if err := CreateJob(db, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	got, err := GetJobByName(db, job.Name)
+	if err != nil {
+		t.Fatalf("GetJobByName: %v", err)
+	}
+	if got.Action != "state-sync" || got.Agent != "all" {
+		t.Fatalf("state-sync job mismatch: %+v", got)
+	}
+}
+
 func TestJobLocks(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

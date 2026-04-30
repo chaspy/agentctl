@@ -4,12 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/chaspy/agentctl/internal/provider"
+	"github.com/chaspy/agentctl/internal/controlplane"
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -58,22 +56,32 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	workDir := repo.FullPath
-	repoBaseName := filepath.Base(repo.FullPath)
 	sessionName := spawnName
 	repoMode := "branch"
 	repoAgent := spawnAgentAuto
+	profileSource := controlplane.RepoProfileSourceDefault
 
 	if db, err := store.Open(""); err == nil {
-		if cfg, err := store.GetRepoFullConfig(db, repo.ShortName); err == nil && cfg != nil {
-			if cfg.Mode != "" {
-				repoMode = cfg.Mode
+		if profile, err := controlplane.GetRepoProfile(db, repo.ShortName); err == nil && profile != nil {
+			if profile.Mode != "" {
+				repoMode = profile.Mode
 			}
-			if cfg.Agent != "" {
-				repoAgent = cfg.Agent
+			if profile.Agent != "" {
+				repoAgent = profile.Agent
 			}
+			profileSource = profile.PrimarySource
+			fmt.Fprintf(os.Stderr, "Using repo profile %s: mode=%s(%s) agent=%s(%s)\n",
+				profile.PrimarySource,
+				profile.Mode,
+				profile.ModeSource,
+				profile.Agent,
+				profile.AgentSource,
+			)
 		}
 		db.Close()
+	}
+	if profileSource == controlplane.RepoProfileSourceDefault {
+		fmt.Fprintf(os.Stderr, "Using default repo profile: mode=%s(default) agent=%s(default)\n", repoMode, repoAgent)
 	}
 
 	agentPref := spawnAgent
@@ -86,183 +94,17 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Selected agent %q (%s)\n", selectedAgent, reason)
 
-	// If mode=main and no branch specified, work directly on main
-	if repoMode == "main" && spawnBranch == "" {
-		if sessionName == "" {
-			sessionName = repoBaseName
-		}
-	} else if spawnBranch != "" {
-		// Check if the branch is already checked out somewhere (main dir or existing worktree)
-		existingPath, err := findExistingWorktree(repo.FullPath, spawnBranch)
-		if err != nil {
-			return err
-		}
-		if existingPath != "" {
-			fmt.Fprintf(os.Stderr, "Reusing existing checkout: %s\n", existingPath)
-			workDir = existingPath
-		} else {
-			worktreeName := "worktree-" + sanitizeBranchName(spawnBranch)
-			worktreePath := filepath.Join(repo.FullPath, worktreeName)
-
-			if _, err := os.Stat(worktreePath); err == nil {
-				fmt.Fprintf(os.Stderr, "Reusing existing worktree: %s\n", worktreePath)
-			} else {
-				// Create worktree — try -b (new branch) first, then existing branch
-				gitCmd := exec.Command("git", "-C", repo.FullPath, "worktree", "add", worktreePath, "-b", spawnBranch)
-				output, err := gitCmd.CombinedOutput()
-				if err != nil {
-					gitCmd = exec.Command("git", "-C", repo.FullPath, "worktree", "add", worktreePath, spawnBranch)
-					output, err = gitCmd.CombinedOutput()
-					if err != nil {
-						return fmt.Errorf("git worktree add failed: %w\n%s", err, strings.TrimSpace(string(output)))
-					}
-				}
-				fmt.Fprintf(os.Stderr, "Created worktree: %s\n", worktreePath)
-			}
-			workDir = worktreePath
-		}
-
-		if sessionName == "" {
-			sessionName = repoBaseName + "-" + sanitizeBranchName(spawnBranch)
-		}
-	} else {
-		if sessionName == "" {
-			sessionName = repoBaseName
-		}
-	}
-
-	// Check if session already exists
-	existing, _ := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	for _, line := range strings.Split(strings.TrimSpace(string(existing)), "\n") {
-		if strings.TrimSpace(line) == sessionName {
-			return fmt.Errorf("zellij session %q already exists", sessionName)
-		}
-	}
-
-	// Pre-register session with lifecycle_state='spawning' so syncRuntimeStatus
-	// does not flag it as dead before zellij has started.
-	sessionID := fmt.Sprintf("%s:%s:zellij-%s", selectedAgent, repo.ShortName, sessionName)
-	if db, err := store.Open(""); err == nil {
-		_ = store.UpsertSession(db, &store.Session{
-			ID:             sessionID,
-			Agent:          string(selectedAgent),
-			Repository:     repo.ShortName,
-			SessionID:      "zellij-" + sessionName,
-			CWD:            workDir,
-			GitBranch:      spawnBranch,
-			ZellijSession:  sessionName,
-			Status:         "active",
-			DesiredState:   store.DesiredStateRunning,
-			LifecycleState: store.LifecycleStateSpawning,
-			Role:           "worker",
-			IsLoop:         spawnLoop,
-		})
-		db.Close()
-	}
-
-	// Create a new zellij session in the background.
-	// Uses `script` to allocate a PTY (zellij requires one) and
-	// `env -u ZELLIJ` to avoid "already inside zellij" errors.
-	bgCmd := exec.Command("script", "-q", "/dev/null",
-		"env", "-u", "ZELLIJ", "-u", "CLAUDECODE",
-		"zellij", "-s", sessionName)
-	bgCmd.Dir = workDir
-	bgCmd.Stdin = nil
-	bgCmd.Stdout = nil
-	bgCmd.Stderr = nil
-	bgCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := bgCmd.Start(); err != nil {
-		return fmt.Errorf("failed to create zellij session: %w", err)
-	}
-
-	// Wait for the session to be ready
-	fmt.Fprintf(os.Stderr, "Creating zellij session %q in %s...\n", sessionName, workDir)
-	if err := waitForSession(sessionName, 10*time.Second); err != nil {
-		return err
-	}
-
-	// Dismiss any Zellij tip overlay that may intercept keystrokes
-	dismissTip := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write", "27") // ESC
-	_ = dismissTip.Run()
-	time.Sleep(500 * time.Millisecond)
-
-	// Start the selected agent in the new session.
-	writeChars := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write-chars", agentLaunchCommand(selectedAgent))
-	if out, err := writeChars.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send %s command: %w\n%s", selectedAgent, err, string(out))
-	}
-	writeEnter := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write", "13")
-	if out, err := writeEnter.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send enter: %w\n%s", err, string(out))
-	}
-
-	fmt.Fprintf(os.Stderr, "Spawned session %q in %s\n", sessionName, workDir)
-
-	// Log spawn to database and register session immediately (fire-and-forget)
-	if db, err := store.Open(""); err == nil {
-		defer db.Close()
-		_ = store.LogAction(db, &store.Action{
-			SessionID:  sessionName,
-			ActionType: "spawn",
-			Content:    fmt.Sprintf("Spawned %s in %s (branch: %s)", sessionName, workDir, spawnBranch),
-		})
-
-		// Update session to lifecycle_state='running' now that zellij session is up.
-		_ = store.UpsertSession(db, &store.Session{
-			ID:             sessionID,
-			Agent:          string(selectedAgent),
-			Repository:     repo.ShortName,
-			SessionID:      "zellij-" + sessionName,
-			CWD:            workDir,
-			GitBranch:      spawnBranch,
-			ZellijSession:  sessionName,
-			Status:         "active",
-			DesiredState:   store.DesiredStateRunning,
-			LifecycleState: store.LifecycleStateRunning,
-			Role:           "worker",
-			IsLoop:         spawnLoop,
-		})
-
-		if spawnLoop {
-			_ = store.SetState(db, "loop:cwd:"+workDir, "1")
-		}
-		if spawnSummary != "" {
-			_ = store.SetState(db, "spawn_summary:cwd:"+workDir, spawnSummary)
-		}
-	}
-
-	if selectedAgent == provider.AgentCodex {
-		fmt.Fprintf(os.Stderr, "Waiting for codex to become ready...\n")
-		if err := waitForCodexReady(sessionName, 20*time.Second); err != nil {
-			return err
-		}
-	}
-
-	// Send initial message if specified
-	if spawnMessage != "" {
-		initialMessage := withVersionBumpReminder(spawnMessage)
-		if selectedAgent != provider.AgentCodex {
-			fmt.Fprintf(os.Stderr, "Waiting for %s to start...\n", selectedAgent)
-			time.Sleep(5 * time.Second)
-		}
-		writeMsg := exec.Command("env", "-u", "ZELLIJ",
-			"zellij", "-s", sessionName, "action", "write-chars", initialMessage)
-		if out, err := writeMsg.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to send initial message: %w\n%s", err, string(out))
-		}
-		writeMsgEnter := exec.Command("env", "-u", "ZELLIJ",
-			"zellij", "-s", sessionName, "action", "write", "13")
-		if out, err := writeMsgEnter.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to send enter for message: %w\n%s", err, string(out))
-		}
-		fmt.Fprintf(os.Stderr, "Sent initial message to %q\n", sessionName)
-	}
-
-	return nil
+	_, err = executeSpawnRequest(spawnExecutionRequest{
+		Repo:          repo,
+		RepoMode:      repoMode,
+		Branch:        spawnBranch,
+		SessionName:   sessionName,
+		Message:       spawnMessage,
+		Summary:       spawnSummary,
+		Loop:          spawnLoop,
+		SelectedAgent: selectedAgent,
+	})
+	return err
 }
 
 func waitForSession(name string, timeout time.Duration) error {
