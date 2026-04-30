@@ -921,6 +921,35 @@ func TestListAllSessionsWithArchiveHandlesIntegerLastActive(t *testing.T) {
 	}
 }
 
+func TestListArchivedSessionsPreservesLeadRole(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := UpsertSession(db, &Session{
+		ID: "codex:research:s1", Agent: "codex", Repository: "research", SessionID: "s1",
+		Status: "dead", Alive: false, Role: "lead", LastActive: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	if err := MoveToArchive(db, "codex:research:s1"); err != nil {
+		t.Fatalf("MoveToArchive: %v", err)
+	}
+
+	archived, err := ListArchivedSessions(db)
+	if err != nil {
+		t.Fatalf("ListArchivedSessions: %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("expected 1 archived session, got %d", len(archived))
+	}
+	if archived[0].Role != "lead" {
+		t.Fatalf("expected archived role to remain lead, got %q", archived[0].Role)
+	}
+}
+
 func TestNullableSessionTimeIgnoresInvalidLegacyText(t *testing.T) {
 	var got nullableSessionTime
 	if err := got.Scan("awaiting_approval"); err != nil {

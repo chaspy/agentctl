@@ -94,7 +94,7 @@ const sessionSelectArchiveColumns = `id, agent, repository, session_id, cwd, git
 	zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 	last_sent_at, last_message_at, last_seen_alive_at,
 	pr_number, pr_url, pr_state, task_summary,
-	CASE WHEN role IN ('worker', 'director', 'secretary') THEN role ELSE 'worker' END AS role,
+	CASE WHEN role IN ('worker', 'director', 'secretary', 'lead') THEN role ELSE 'worker' END AS role,
 	1 AS archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at`
 
 const sessionSelectFromSessions = "SELECT " + sessionSelectColumns + " FROM sessions"
