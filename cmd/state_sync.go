@@ -957,28 +957,6 @@ func backupDatabaseFile(db *sql.DB, path string) error {
 	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		return fmt.Errorf("checkpointing database before backup: %w", err)
 	}
-
-	src, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("opening database for backup: %w", err)
-	}
-	defer src.Close()
-
 	dstPath := path + ".bak"
-	tmpPath := dstPath + ".tmp"
-	dst, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("creating backup file: %w", err)
-	}
-	if _, err := dst.ReadFrom(src); err != nil {
-		dst.Close()
-		return fmt.Errorf("copying database backup: %w", err)
-	}
-	if err := dst.Close(); err != nil {
-		return fmt.Errorf("closing backup file: %w", err)
-	}
-	if err := os.Rename(tmpPath, dstPath); err != nil {
-		return fmt.Errorf("installing backup file: %w", err)
-	}
-	return nil
+	return copyDatabaseFile(path, dstPath)
 }
