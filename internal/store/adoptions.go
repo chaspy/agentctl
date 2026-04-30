@@ -113,6 +113,29 @@ func GetQueuedSessionAdoptionByZellijSession(db *sql.DB, muxName, zellijSession 
 	return &items[0], nil
 }
 
+// GetSessionAdoption returns one adoption by id.
+func GetSessionAdoption(db *sql.DB, id int64) (*SessionAdoption, error) {
+	items, err := querySessionAdoptions(db, `SELECT id, agent, mux, zellij_session, external_session_id,
+		repository, cwd, git_branch, strategy, target_permission_level, status, managed_session_id,
+		note, created_at, updated_at
+		FROM session_adoptions
+		WHERE id = ?
+		LIMIT 1`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &items[0], nil
+}
+
+// UpdateSessionAdoptionStatus updates a queued adoption lifecycle state.
+func UpdateSessionAdoptionStatus(db *sql.DB, id int64, status string) error {
+	_, err := db.Exec(`UPDATE session_adoptions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, id)
+	return err
+}
+
 func querySessionAdoptions(db *sql.DB, query string, args ...any) ([]SessionAdoption, error) {
 	rows, err := db.Query(query, args...)
 	if err != nil {
