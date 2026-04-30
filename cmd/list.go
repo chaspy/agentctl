@@ -79,31 +79,16 @@ func runListFromDB() error {
 		return nil
 	}
 
-	// Filter by hours
-	cutoff := time.Now().Add(-time.Duration(listHours) * time.Hour)
-	var filtered []store.Session
-	for _, s := range sessions {
-		if s.LastActive.After(cutoff) {
-			filtered = append(filtered, s)
-		}
-	}
-
-	// Filter by agent
-	if listAgent != "" && listAgent != "all" {
-		var agentFiltered []store.Session
-		for _, s := range filtered {
-			if s.Agent == listAgent {
-				agentFiltered = append(agentFiltered, s)
-			}
-		}
-		filtered = agentFiltered
-	}
+	filtered := filterSessionsForList(sessions, time.Now())
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST ACTIVE\tDESIRED\tRUNTIME\tSTATUS\tROLE\tPR\tPROT\tLAST MESSAGE")
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST OBSERVED\tLAST MESSAGE\tLAST SENT\tLAST ALIVE\tDESIRED\tRUNTIME\tSTATUS\tROLE\tPR\tPROT\tLAST MESSAGE TEXT")
 
 	for _, s := range filtered {
-		age := formatAge(time.Since(s.LastActive))
+		observed := formatOptionalAge(s.ObservedActivityAt())
+		lastMessageAt := formatOptionalAge(s.LastMessageAt)
+		lastSentAt := formatOptionalAge(s.LastSentAt)
+		lastSeenAliveAt := formatOptionalAge(s.LastSeenAliveAt)
 		msg := s.LastMessage
 		if msg == "" {
 			msg = "-"
@@ -136,11 +121,14 @@ func runListFromDB() error {
 			protected = "yes"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent,
 			s.Repository,
 			branch,
-			age,
+			observed,
+			lastMessageAt,
+			lastSentAt,
+			lastSeenAliveAt,
 			desiredState,
 			s.RuntimeStatus,
 			status,
@@ -152,6 +140,42 @@ func runListFromDB() error {
 	}
 
 	return w.Flush()
+}
+
+func filterSessionsForList(sessions []store.Session, now time.Time) []store.Session {
+	filtered := make([]store.Session, 0, len(sessions))
+	if listAll {
+		filtered = append(filtered, sessions...)
+	} else {
+		cutoff := now.Add(-time.Duration(listHours) * time.Hour)
+		for _, s := range sessions {
+			if s.ObservedActivityAt().After(cutoff) {
+				filtered = append(filtered, s)
+			}
+		}
+	}
+
+	if listAgent != "" && listAgent != "all" {
+		var agentFiltered []store.Session
+		for _, s := range filtered {
+			if s.Agent == listAgent {
+				agentFiltered = append(agentFiltered, s)
+			}
+		}
+		filtered = agentFiltered
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].ObservedActivityAt().After(filtered[j].ObservedActivityAt())
+	})
+	return filtered
+}
+
+func formatOptionalAge(ts time.Time) string {
+	if ts.IsZero() {
+		return "-"
+	}
+	return formatAge(time.Since(ts))
 }
 
 // runSyncToDB performs two-stage sync (same as syncSessionsToDB) via list --sync.

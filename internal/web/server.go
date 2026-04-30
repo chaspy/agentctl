@@ -69,28 +69,32 @@ func (s *Server) Handler() http.Handler {
 }
 
 type sessionJSON struct {
-	ID            string `json:"id"`
-	Agent         string `json:"agent"`
-	Repository    string `json:"repository"`
-	SessionID     string `json:"session_id"`
-	CWD           string `json:"cwd"`
-	GitBranch     string `json:"git_branch"`
-	ZellijSession string `json:"zellij_session"`
-	Status        string `json:"status"`
-	BlockedReason string `json:"blocked_reason,omitempty"`
-	DesiredState  string `json:"desired_state"`
-	RuntimeStatus string `json:"runtime_status"`
-	Alive         bool   `json:"alive"`
-	LastMessage   string `json:"last_message"`
-	LastActive    string `json:"last_active"`
-	TaskSummary   string `json:"task_summary"`
-	Role          string `json:"role"`
-	Archived      bool   `json:"archived"`
-	IsLoop        bool   `json:"is_loop"`
-	IsProtected   bool   `json:"is_protected"`
-	PRNumber      int    `json:"pr_number,omitempty"`
-	PRURL         string `json:"pr_url,omitempty"`
-	PRState       string `json:"pr_state,omitempty"`
+	ID              string `json:"id"`
+	Agent           string `json:"agent"`
+	Repository      string `json:"repository"`
+	SessionID       string `json:"session_id"`
+	CWD             string `json:"cwd"`
+	GitBranch       string `json:"git_branch"`
+	ZellijSession   string `json:"zellij_session"`
+	Status          string `json:"status"`
+	BlockedReason   string `json:"blocked_reason,omitempty"`
+	DesiredState    string `json:"desired_state"`
+	RuntimeStatus   string `json:"runtime_status"`
+	Alive           bool   `json:"alive"`
+	LastMessage     string `json:"last_message"`
+	LastActive      string `json:"last_active"`
+	LastSentAt      string `json:"last_sent_at"`
+	LastMessageAt   string `json:"last_message_at"`
+	LastSeenAliveAt string `json:"last_seen_alive_at"`
+	LastObservedAt  string `json:"last_observed_at"`
+	TaskSummary     string `json:"task_summary"`
+	Role            string `json:"role"`
+	Archived        bool   `json:"archived"`
+	IsLoop          bool   `json:"is_loop"`
+	IsProtected     bool   `json:"is_protected"`
+	PRNumber        int    `json:"pr_number,omitempty"`
+	PRURL           string `json:"pr_url,omitempty"`
+	PRState         string `json:"pr_state,omitempty"`
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -150,29 +154,40 @@ func (s *Server) findSessionDetail(key string) (*store.Session, error) {
 
 func sessionToJSON(sess store.Session) sessionJSON {
 	return sessionJSON{
-		ID:            sess.ID,
-		Agent:         sess.Agent,
-		Repository:    sess.Repository,
-		SessionID:     sess.SessionID,
-		CWD:           sess.CWD,
-		GitBranch:     sess.GitBranch,
-		ZellijSession: sess.ZellijSession,
-		Status:        sess.Status,
-		BlockedReason: sess.BlockedReason,
-		DesiredState:  sess.DesiredState,
-		RuntimeStatus: sess.RuntimeStatus,
-		Alive:         sess.WantsRunning(),
-		LastMessage:   sess.LastMessage,
-		LastActive:    sess.LastActive.Format(time.RFC3339),
-		TaskSummary:   sess.TaskSummary,
-		Role:          sess.Role,
-		Archived:      sess.Archived,
-		IsLoop:        sess.IsLoop,
-		IsProtected:   sess.IsProtected,
-		PRNumber:      sess.PRNumber,
-		PRURL:         sess.PRURL,
-		PRState:       sess.PRState,
+		ID:              sess.ID,
+		Agent:           sess.Agent,
+		Repository:      sess.Repository,
+		SessionID:       sess.SessionID,
+		CWD:             sess.CWD,
+		GitBranch:       sess.GitBranch,
+		ZellijSession:   sess.ZellijSession,
+		Status:          sess.Status,
+		BlockedReason:   sess.BlockedReason,
+		DesiredState:    sess.DesiredState,
+		RuntimeStatus:   sess.RuntimeStatus,
+		Alive:           sess.WantsRunning(),
+		LastMessage:     sess.LastMessage,
+		LastActive:      sess.LastActive.Format(time.RFC3339),
+		LastSentAt:      formatOptionalRFC3339(sess.LastSentAt),
+		LastMessageAt:   formatOptionalRFC3339(sess.LastMessageAt),
+		LastSeenAliveAt: formatOptionalRFC3339(sess.LastSeenAliveAt),
+		LastObservedAt:  formatOptionalRFC3339(sess.ObservedActivityAt()),
+		TaskSummary:     sess.TaskSummary,
+		Role:            sess.Role,
+		Archived:        sess.Archived,
+		IsLoop:          sess.IsLoop,
+		IsProtected:     sess.IsProtected,
+		PRNumber:        sess.PRNumber,
+		PRURL:           sess.PRURL,
+		PRState:         sess.PRState,
 	}
+}
+
+func formatOptionalRFC3339(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.Format(time.RFC3339)
 }
 
 type summaryRequest struct {

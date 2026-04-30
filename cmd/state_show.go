@@ -34,24 +34,28 @@ type stateShowSummary struct {
 }
 
 type stateShowSession struct {
-	ID             string    `json:"id"`
-	Agent          string    `json:"agent"`
-	Repository     string    `json:"repository"`
-	Branch         string    `json:"branch"`
-	Status         string    `json:"status"`
-	BlockedReason  string    `json:"blocked_reason,omitempty"`
-	DesiredState   string    `json:"desired_state"`
-	Alive          bool      `json:"alive"`
-	RuntimeStatus  string    `json:"runtime_status"`
-	ZellijSession  string    `json:"zellij_session,omitempty"`
-	TaskSummary    string    `json:"task_summary,omitempty"`
-	PRURL          string    `json:"pr_url,omitempty"`
-	LastActive     time.Time `json:"last_active"`
-	Ghost          bool      `json:"ghost"`
-	Duplicate      bool      `json:"duplicate"`
-	DuplicateGroup string    `json:"duplicate_group,omitempty"`
-	DuplicateCount int       `json:"duplicate_count,omitempty"`
-	Health         []string  `json:"health,omitempty"`
+	ID              string    `json:"id"`
+	Agent           string    `json:"agent"`
+	Repository      string    `json:"repository"`
+	Branch          string    `json:"branch"`
+	Status          string    `json:"status"`
+	BlockedReason   string    `json:"blocked_reason,omitempty"`
+	DesiredState    string    `json:"desired_state"`
+	Alive           bool      `json:"alive"`
+	RuntimeStatus   string    `json:"runtime_status"`
+	ZellijSession   string    `json:"zellij_session,omitempty"`
+	TaskSummary     string    `json:"task_summary,omitempty"`
+	PRURL           string    `json:"pr_url,omitempty"`
+	LastActive      time.Time `json:"last_active"`
+	LastSentAt      time.Time `json:"last_sent_at"`
+	LastMessageAt   time.Time `json:"last_message_at"`
+	LastSeenAliveAt time.Time `json:"last_seen_alive_at"`
+	LastObservedAt  time.Time `json:"last_observed_at"`
+	Ghost           bool      `json:"ghost"`
+	Duplicate       bool      `json:"duplicate"`
+	DuplicateGroup  string    `json:"duplicate_group,omitempty"`
+	DuplicateCount  int       `json:"duplicate_count,omitempty"`
+	Health          []string  `json:"health,omitempty"`
 }
 
 type stateShowAction struct {
@@ -224,12 +228,12 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("=== Sessions (%d active, %d archived, %d queued adoptions, %d managed repos, %d control-plane resources, %d task proposals, %d queued proposal adoptions, %d agent tasks, %d decisions, %d attempts, %d outcomes) ===\n",
 		report.Summary.ActiveSessions, report.Summary.ArchivedSessions, report.Summary.QueuedAdoptions, report.Summary.ManagedRepos, report.Summary.ControlPlaneResources, report.Summary.TaskProposals, report.Summary.QueuedProposalAdoptions, report.Summary.AgentTasks, report.Summary.AgentTaskDecisions, report.Summary.AgentTaskAttempts, report.Summary.AgentTaskOutcomes)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST ACTIVE\tPR\tTASK")
+	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tSTATUS\tDESIRED\tRUNTIME\tHEALTH\tLAST OBSERVED\tLAST MESSAGE\tLAST SENT\tLAST ALIVE\tPR\tTASK")
 	for _, s := range report.Sessions {
-		age := "-"
-		if !s.LastActive.IsZero() {
-			age = formatAge(time.Since(s.LastActive))
-		}
+		observed := formatOptionalAge(s.LastObservedAt)
+		lastMessageAt := formatOptionalAge(s.LastMessageAt)
+		lastSentAt := formatOptionalAge(s.LastSentAt)
+		lastSeenAliveAt := formatOptionalAge(s.LastSeenAliveAt)
 		task := s.TaskSummary
 		if task == "" {
 			task = "-"
@@ -256,8 +260,8 @@ func runStateShow(cmd *cobra.Command, args []string) error {
 		if pr == "" {
 			pr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			s.Agent, s.Repository, branch, status, s.DesiredState, s.RuntimeStatus, health, age, pr, task)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.Agent, s.Repository, branch, status, s.DesiredState, s.RuntimeStatus, health, observed, lastMessageAt, lastSentAt, lastSeenAliveAt, pr, task)
 	}
 	w.Flush()
 
@@ -499,24 +503,28 @@ func buildStateShowReport(db *sql.DB) (*stateShowReport, error) {
 			branch = "-"
 		}
 		report.Sessions = append(report.Sessions, stateShowSession{
-			ID:             s.ID,
-			Agent:          s.Agent,
-			Repository:     s.Repository,
-			Branch:         branch,
-			Status:         s.Status,
-			BlockedReason:  s.BlockedReason,
-			DesiredState:   s.DesiredState,
-			Alive:          s.WantsRunning(),
-			RuntimeStatus:  s.RuntimeStatus,
-			ZellijSession:  s.ZellijSession,
-			TaskSummary:    s.TaskSummary,
-			PRURL:          s.PRURL,
-			LastActive:     s.LastActive,
-			Ghost:          ghost,
-			Duplicate:      duplicate,
-			DuplicateGroup: dupGroup,
-			DuplicateCount: dupCount,
-			Health:         health,
+			ID:              s.ID,
+			Agent:           s.Agent,
+			Repository:      s.Repository,
+			Branch:          branch,
+			Status:          s.Status,
+			BlockedReason:   s.BlockedReason,
+			DesiredState:    s.DesiredState,
+			Alive:           s.WantsRunning(),
+			RuntimeStatus:   s.RuntimeStatus,
+			ZellijSession:   s.ZellijSession,
+			TaskSummary:     s.TaskSummary,
+			PRURL:           s.PRURL,
+			LastActive:      s.LastActive,
+			LastSentAt:      s.LastSentAt,
+			LastMessageAt:   s.LastMessageAt,
+			LastSeenAliveAt: s.LastSeenAliveAt,
+			LastObservedAt:  s.ObservedActivityAt(),
+			Ghost:           ghost,
+			Duplicate:       duplicate,
+			DuplicateGroup:  dupGroup,
+			DuplicateCount:  dupCount,
+			Health:          health,
 		})
 	}
 

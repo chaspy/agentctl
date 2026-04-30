@@ -931,6 +931,115 @@ func TestNullableSessionTimeIgnoresInvalidLegacyText(t *testing.T) {
 	}
 }
 
+func TestObservedActivityAtPrefersNewestExplicitTimestamp(t *testing.T) {
+	now := time.Now()
+	session := Session{
+		LastActive:      now.Add(-3 * time.Hour),
+		LastMessageAt:   now.Add(-2 * time.Hour),
+		LastSentAt:      now.Add(-90 * time.Minute),
+		LastSeenAliveAt: now.Add(-15 * time.Minute),
+	}
+
+	if got, want := session.ObservedActivityAt(), session.LastSeenAliveAt; !got.Equal(want) {
+		t.Fatalf("ObservedActivityAt = %s, want %s", got, want)
+	}
+}
+
+func TestUpdateSessionMetadataPreservesActivityWhenTimestampMissing(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := UpsertSession(db, &Session{
+		ID:            "codex:test:s1",
+		Agent:         "codex",
+		Repository:    "test",
+		SessionID:     "s1",
+		ZellijSession: "test-session",
+		Status:        "idle",
+		LastActive:    now,
+		LastMessageAt: now,
+		LastMessage:   "before",
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	if err := UpdateSessionMetadata(db, &Session{
+		ID:          "codex:test:s1",
+		Status:      "active",
+		GitBranch:   "feat/x",
+		LastMessage: "after",
+		LastRole:    "assistant",
+		Role:        "worker",
+	}); err != nil {
+		t.Fatalf("UpdateSessionMetadata: %v", err)
+	}
+
+	got, err := GetSession(db, "codex:test:s1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !got.LastActive.Equal(now) {
+		t.Fatalf("last_active = %s, want %s", got.LastActive, now)
+	}
+	if !got.LastMessageAt.Equal(now) {
+		t.Fatalf("last_message_at = %s, want %s", got.LastMessageAt, now)
+	}
+	if got.LastMessage != "after" {
+		t.Fatalf("last_message = %q, want after", got.LastMessage)
+	}
+}
+
+func TestTouchSessionTimestampsByZellijSession(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := UpsertSession(db, &Session{
+		ID:            "codex:test:s2",
+		Agent:         "codex",
+		Repository:    "test",
+		SessionID:     "s2",
+		ZellijSession: "worker-s2",
+		Status:        "idle",
+		LastActive:    base,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	sentAt := base.Add(30 * time.Minute)
+	if _, err := TouchSessionLastSentByZellijSession(db, "worker-s2", sentAt); err != nil {
+		t.Fatalf("TouchSessionLastSentByZellijSession: %v", err)
+	}
+	aliveAt := base.Add(90 * time.Minute)
+	if _, err := TouchSessionLastSeenAliveByZellijSession(db, "worker-s2", aliveAt); err != nil {
+		t.Fatalf("TouchSessionLastSeenAliveByZellijSession: %v", err)
+	}
+
+	got, err := GetSession(db, "codex:test:s2")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !got.LastSentAt.Equal(sentAt) {
+		t.Fatalf("last_sent_at = %s, want %s", got.LastSentAt, sentAt)
+	}
+	if !got.LastSeenAliveAt.Equal(aliveAt) {
+		t.Fatalf("last_seen_alive_at = %s, want %s", got.LastSeenAliveAt, aliveAt)
+	}
+	if !got.LastActive.Equal(aliveAt) {
+		t.Fatalf("last_active = %s, want %s", got.LastActive, aliveAt)
+	}
+	if !got.ObservedActivityAt().Equal(aliveAt) {
+		t.Fatalf("observed_activity_at = %s, want %s", got.ObservedActivityAt(), aliveAt)
+	}
+}
+
 func TestMigrationArchivesExisting(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

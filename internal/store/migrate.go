@@ -33,6 +33,7 @@ var migrations = []string{
 	migrationV28,
 	migrationV29,
 	migrationV30,
+	migrationV31,
 }
 
 // Migrate applies all pending schema migrations.
@@ -757,4 +758,22 @@ CREATE TABLE IF NOT EXISTS control_plane_resources (
 
 CREATE INDEX IF NOT EXISTS idx_control_plane_resources_kind_updated_at
 	ON control_plane_resources(kind, updated_at DESC);
+`
+
+const migrationV31 = `
+ALTER TABLE sessions ADD COLUMN last_sent_at TIMESTAMP;
+ALTER TABLE sessions ADD COLUMN last_message_at TIMESTAMP;
+ALTER TABLE sessions ADD COLUMN last_seen_alive_at TIMESTAMP;
+
+ALTER TABLE sessions_archive ADD COLUMN last_sent_at TIMESTAMP;
+ALTER TABLE sessions_archive ADD COLUMN last_message_at TIMESTAMP;
+ALTER TABLE sessions_archive ADD COLUMN last_seen_alive_at TIMESTAMP;
+
+UPDATE sessions
+SET last_message_at = last_active
+WHERE last_message_at IS NULL AND last_active IS NOT NULL;
+
+UPDATE sessions_archive
+SET last_message_at = last_active
+WHERE last_message_at IS NULL AND last_active IS NOT NULL;
 `

@@ -730,6 +730,7 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 				db.Exec("UPDATE sessions SET runtime_status = 'exited', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
 			} else {
 				db.Exec("UPDATE sessions SET runtime_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
+				_, _ = store.TouchSessionLastSeenAliveByZellijSession(db, s.ZellijSession, time.Now())
 			}
 		} else {
 			db.Exec("UPDATE sessions SET runtime_status = 'gone', updated_at = CURRENT_TIMESTAMP WHERE id = ?", s.ID)
@@ -892,18 +893,19 @@ func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bo
 
 	return discoveredSession{
 		Session: store.Session{
-			ID:            sessionID,
-			Agent:         string(agent),
-			Repository:    repo,
-			SessionID:     "zellij-" + zs.Name,
-			CWD:           cwd,
-			GitBranch:     branch,
-			ZellijSession: zs.Name,
-			Status:        status,
-			DesiredState:  store.DesiredStateRunning,
-			LastActive:    time.Now(),
-			Role:          "worker",
-			RuntimeStatus: runtimeStatus,
+			ID:              sessionID,
+			Agent:           string(agent),
+			Repository:      repo,
+			SessionID:       "zellij-" + zs.Name,
+			CWD:             cwd,
+			GitBranch:       branch,
+			ZellijSession:   zs.Name,
+			Status:          status,
+			DesiredState:    store.DesiredStateRunning,
+			LastActive:      time.Now(),
+			LastSeenAliveAt: time.Now(),
+			Role:            "worker",
+			RuntimeStatus:   runtimeStatus,
 		},
 	}, true
 }
