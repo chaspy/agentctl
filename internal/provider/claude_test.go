@@ -16,9 +16,8 @@ func TestClaudeRateAllowedUsesFreshCCUsageCachedAt(t *testing.T) {
 
 	writeClaudeStatsCache(t, home)
 
-	loc := mustLoadLocation(t, "Asia/Tokyo")
-	now := time.Now().In(loc)
-	resetTime := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, loc)
+	now := time.Now()
+	resetTime := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
 	if resetTime.After(now) {
 		resetTime = resetTime.Add(-time.Hour)
 	}
@@ -66,8 +65,7 @@ func TestClaudeRateRateLimitedKeepsObservedLimitTimestamp(t *testing.T) {
 
 	writeClaudeStatsCache(t, home)
 
-	loc := mustLoadLocation(t, "Asia/Tokyo")
-	now := time.Now().In(loc)
+	now := time.Now()
 	resetTime := now.Add(time.Hour).Truncate(time.Hour)
 	if !resetTime.After(now) {
 		resetTime = resetTime.Add(time.Hour)
@@ -128,7 +126,7 @@ func writeClaudeObservedLimitSession(t *testing.T, home, sessionID string, hitTi
 	}
 
 	path := filepath.Join(projectDir, sessionID+".jsonl")
-	message := "You hit your limit. Please try again later. resets " + formatResetHour(resetTime) + " (Asia/Tokyo)"
+	message := "You hit your limit. Please try again later. resets " + formatResetHour(resetTime)
 	line := `{"type":"assistant","message":{"role":"assistant","content":"` + message + `"}}` + "\n"
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
 		t.Fatalf("write session file: %v", err)
@@ -149,14 +147,4 @@ func formatResetHour(t time.Time) string {
 		displayHour = 12
 	}
 	return strconv.Itoa(displayHour) + suffix
-}
-
-func mustLoadLocation(t *testing.T, name string) *time.Location {
-	t.Helper()
-
-	loc, err := time.LoadLocation(name)
-	if err != nil {
-		t.Fatalf("load location %q: %v", name, err)
-	}
-	return loc
 }
