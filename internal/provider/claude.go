@@ -101,8 +101,14 @@ func ClaudeRate() (RateInfo, error) {
 
 	// Get token usage from ccusage (most accurate source for 5h window)
 	tokenUsageStr := ""
+	allowedUpdatedAt := time.Time{}
 	remainingPct := -1 // track remaining percentage alongside token usage
-	if block := ccusageActiveBlock(); block != nil {
+	if snapshot := ccusageActiveSnapshot(); snapshot != nil && snapshot.Block != nil {
+		block := snapshot.Block
+		allowedUpdatedAt = snapshot.CachedAt
+		if allowedUpdatedAt.IsZero() {
+			allowedUpdatedAt = now
+		}
 		windowEnd := block.EndTime
 		windowStart := block.StartTime
 		remaining := time.Until(windowEnd)
@@ -133,6 +139,7 @@ func ClaudeRate() (RateInfo, error) {
 	} else {
 		// Fallback: use internal session token scanning
 		usage5h, _, _ := session.ScanAllTokenUsage(5 * time.Hour)
+		allowedUpdatedAt = now
 		outK := usage5h.OutputTokens / 1000
 		capacity := readRateLimitCapacity()
 		if capacity > 0 && usage5h.OutputTokens > 0 {
@@ -150,14 +157,18 @@ func ClaudeRate() (RateInfo, error) {
 
 	// Check observed rate limit from session logs (most reliable source)
 	if observed := latestClaudeObservedLimit(24 * time.Hour); observed != nil {
-		info.UpdatedAt = observed.Session.ModTime
 		if !observed.ResetTime.IsZero() {
 			if now.Before(observed.ResetTime) {
+				info.UpdatedAt = observed.Session.ModTime
 				remaining := observed.ResetTime.Sub(now).Truncate(time.Minute)
 				info.Summary = fmt.Sprintf("RATE LIMITED (resets %s, in %s)",
 					observed.ResetTime.Local().Format("15:04"), remaining)
 				remainingPct = 0
 			} else {
+				info.UpdatedAt = allowedUpdatedAt
+				if info.UpdatedAt.IsZero() {
+					info.UpdatedAt = now
+				}
 				windowEnd := observed.ResetTime.Add(5 * time.Hour)
 				if now.Before(windowEnd) {
 					remainingTime := windowEnd.Sub(now).Truncate(time.Minute)
@@ -185,6 +196,7 @@ func ClaudeRate() (RateInfo, error) {
 				}
 			}
 		} else {
+			info.UpdatedAt = observed.Session.ModTime
 			info.Summary = "hit limit (reset time unknown)"
 			remainingPct = 0
 		}
@@ -195,6 +207,9 @@ func ClaudeRate() (RateInfo, error) {
 		if staleHours > 6 {
 			if tokenUsageStr != "" {
 				info.Summary = fmt.Sprintf("allowed (%s)", tokenUsageStr)
+				if !allowedUpdatedAt.IsZero() {
+					info.UpdatedAt = allowedUpdatedAt
+				}
 			} else {
 				info.Summary = fmt.Sprintf("allowed (no limit hit, telemetry %.0fh old)", staleHours)
 			}
@@ -214,6 +229,9 @@ func ClaudeRate() (RateInfo, error) {
 			info.Summary = fmt.Sprintf("allowed (%s)", tokenUsageStr)
 		} else {
 			info.Summary = "allowed (no usage data)"
+		}
+		if !allowedUpdatedAt.IsZero() {
+			info.UpdatedAt = allowedUpdatedAt
 		}
 	}
 
@@ -535,22 +553,40 @@ type ccusageCache struct {
 	CachedAt int64         `json:"cached_at"`
 }
 
+type ccusageCacheSnapshot struct {
+	Block    *ccusageBlock
+	CachedAt time.Time
+}
+
 const ccusageCacheTTL = 5 * time.Minute
 
 // ccusageActiveBlock returns cached ccusage data and asks the background watcher
 // to refresh it when needed. It never shells out to ccusage directly from rate callers.
 func ccusageActiveBlock() *ccusageBlock {
-	if block, ok := readCCUsageCache(); ok {
+	if snapshot := ccusageActiveSnapshot(); snapshot != nil {
+		return snapshot.Block
+	}
+	return nil
+}
+
+func ccusageActiveSnapshot() *ccusageCacheSnapshot {
+	if snapshot, ok := readCCUsageCacheSnapshotWithMaxAge(ccusageCacheTTL); ok {
 		ensureCCUsageWatcher()
-		return block
+		return snapshot
 	}
 
 	ensureCCUsageWatcher()
 	if block, ok := waitForFreshCCUsageCache(ccusageWatcherStartupWait); ok {
-		return block
+		if snapshot, ok := readCCUsageCacheSnapshotWithMaxAge(ccusageCacheStaleMaxAge); ok {
+			return snapshot
+		}
+		return &ccusageCacheSnapshot{
+			Block:    block,
+			CachedAt: time.Now(),
+		}
 	}
-	if block, ok := readCCUsageCacheWithMaxAge(ccusageCacheStaleMaxAge); ok {
-		return block
+	if snapshot, ok := readCCUsageCacheSnapshotWithMaxAge(ccusageCacheStaleMaxAge); ok {
+		return snapshot
 	}
 	return nil
 }
@@ -586,6 +622,14 @@ func readCCUsageCache() (*ccusageBlock, bool) {
 }
 
 func readCCUsageCacheWithMaxAge(maxAge time.Duration) (*ccusageBlock, bool) {
+	snapshot, ok := readCCUsageCacheSnapshotWithMaxAge(maxAge)
+	if !ok {
+		return nil, false
+	}
+	return snapshot.Block, true
+}
+
+func readCCUsageCacheSnapshotWithMaxAge(maxAge time.Duration) (*ccusageCacheSnapshot, bool) {
 	path, err := ccusageCachePath()
 	if err != nil {
 		return nil, false
@@ -609,7 +653,10 @@ func readCCUsageCacheWithMaxAge(maxAge time.Duration) (*ccusageBlock, bool) {
 		return nil, false
 	}
 
-	return cache.Block, true
+	return &ccusageCacheSnapshot{
+		Block:    cache.Block,
+		CachedAt: cachedAt,
+	}, true
 }
 
 func writeCCUsageCache(block *ccusageBlock) {

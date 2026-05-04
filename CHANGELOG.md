@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.72] - 2026-05-01
+
+### Fixed
+
+- `agentctl rate` の Claude 表示で、`allowed` 時の `UPDATED` が過去の limit hit 時刻ではなく現在の利用状況ソース時刻を使うよう修正
+
 ## [0.2.71] - 2026-04-30
 
 ### Fixed
