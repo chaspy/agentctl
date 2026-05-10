@@ -114,6 +114,13 @@ func executeSpawnRequest(req spawnExecutionRequest) (*spawnExecutionResult, erro
 	if err := bgCmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to create zellij session: %w", err)
 	}
+	runtimePID := bgCmd.Process.Pid
+	runtimePGID, _ := syscall.Getpgid(runtimePID)
+	runtimeStartedAt := time.Now()
+	if db, err := store.Open(""); err == nil {
+		_, _ = store.UpdateSessionRuntimeProcessByZellijSession(db, sessionName, runtimePID, runtimePGID, runtimeStartedAt)
+		db.Close()
+	}
 
 	fmt.Fprintf(os.Stderr, "Creating zellij session %q in %s...\n", sessionName, workDir)
 	if err := waitForSession(sessionName, 10*time.Second); err != nil {
@@ -147,18 +154,21 @@ func executeSpawnRequest(req spawnExecutionRequest) (*spawnExecutionResult, erro
 		})
 
 		_ = store.UpsertSession(db, &store.Session{
-			ID:             sessionID,
-			Agent:          string(req.SelectedAgent),
-			Repository:     req.Repo.ShortName,
-			SessionID:      "zellij-" + sessionName,
-			CWD:            workDir,
-			GitBranch:      gitBranch,
-			ZellijSession:  sessionName,
-			Status:         "active",
-			DesiredState:   store.DesiredStateRunning,
-			LifecycleState: store.LifecycleStateRunning,
-			Role:           "worker",
-			IsLoop:         req.Loop,
+			ID:               sessionID,
+			Agent:            string(req.SelectedAgent),
+			Repository:       req.Repo.ShortName,
+			SessionID:        "zellij-" + sessionName,
+			CWD:              workDir,
+			GitBranch:        gitBranch,
+			ZellijSession:    sessionName,
+			Status:           "active",
+			DesiredState:     store.DesiredStateRunning,
+			LifecycleState:   store.LifecycleStateRunning,
+			Role:             "worker",
+			IsLoop:           req.Loop,
+			RuntimePID:       runtimePID,
+			RuntimePGID:      runtimePGID,
+			RuntimeStartedAt: runtimeStartedAt,
 		})
 
 		if req.Loop {

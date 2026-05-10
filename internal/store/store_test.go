@@ -113,6 +113,89 @@ func TestSessionCRUD(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeProcessOwnership(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	startedAt := time.Now().UTC()
+	s := &Session{
+		ID:               "codex:test:s1",
+		Agent:            "codex",
+		Repository:       "test",
+		SessionID:        "s1",
+		ZellijSession:    "test-session",
+		Status:           "active",
+		DesiredState:     DesiredStateRunning,
+		RuntimeStatus:    "running",
+		RuntimePID:       12345,
+		RuntimePGID:      12340,
+		RuntimeStartedAt: startedAt,
+	}
+	if err := UpsertSession(db, s); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	got, err := GetSession(db, s.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.RuntimePID != 12345 || got.RuntimePGID != 12340 || got.RuntimeStartedAt.IsZero() {
+		t.Fatalf("runtime ownership not persisted: %+v", got)
+	}
+
+	if err := UpsertSession(db, &Session{
+		ID:            s.ID,
+		Agent:         "codex",
+		Repository:    "test",
+		SessionID:     "s1",
+		ZellijSession: "test-session",
+		Status:        "idle",
+	}); err != nil {
+		t.Fatalf("UpsertSession(update): %v", err)
+	}
+	got, err = GetSession(db, s.ID)
+	if err != nil {
+		t.Fatalf("GetSession(update): %v", err)
+	}
+	if got.RuntimePID != 12345 || got.RuntimePGID != 12340 || got.RuntimeStartedAt.IsZero() {
+		t.Fatalf("runtime ownership should be preserved on partial upsert: %+v", got)
+	}
+
+	restartedAt := startedAt.Add(time.Minute)
+	rows, err := UpdateSessionRuntimeProcessByZellijSession(db, "test-session", 22345, 22340, restartedAt)
+	if err != nil {
+		t.Fatalf("UpdateSessionRuntimeProcessByZellijSession: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("expected one updated row, got %d", rows)
+	}
+	got, err = GetSession(db, s.ID)
+	if err != nil {
+		t.Fatalf("GetSession(after update): %v", err)
+	}
+	if got.RuntimePID != 22345 || got.RuntimePGID != 22340 || got.RuntimeStartedAt.IsZero() {
+		t.Fatalf("runtime ownership not updated: %+v", got)
+	}
+
+	rows, err = ClearSessionRuntimeProcessByZellijSession(db, "test-session")
+	if err != nil {
+		t.Fatalf("ClearSessionRuntimeProcessByZellijSession: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("expected one cleared row, got %d", rows)
+	}
+	got, err = GetSession(db, s.ID)
+	if err != nil {
+		t.Fatalf("GetSession(after clear): %v", err)
+	}
+	if got.RuntimePID != 0 || got.RuntimePGID != 0 || !got.RuntimeStartedAt.IsZero() {
+		t.Fatalf("runtime ownership not cleared: %+v", got)
+	}
+}
+
 func TestTaskCRUD(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

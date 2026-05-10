@@ -34,6 +34,7 @@ var migrations = []string{
 	migrationV29,
 	migrationV30,
 	migrationV31,
+	migrationV32,
 }
 
 // Migrate applies all pending schema migrations.
@@ -776,4 +777,14 @@ WHERE last_message_at IS NULL AND last_active IS NOT NULL;
 UPDATE sessions_archive
 SET last_message_at = last_active
 WHERE last_message_at IS NULL AND last_active IS NOT NULL;
+`
+
+const migrationV32 = `
+ALTER TABLE sessions ADD COLUMN runtime_pid INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN runtime_pgid INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN runtime_started_at TIMESTAMP;
+
+ALTER TABLE sessions_archive ADD COLUMN runtime_pid INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions_archive ADD COLUMN runtime_pgid INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions_archive ADD COLUMN runtime_started_at TIMESTAMP;
 `
