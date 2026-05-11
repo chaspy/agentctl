@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.73] - 2026-05-11
+
+### Fixed
+
+- Record runtime PID / PGID ownership for spawned sessions and clean the recorded process group during `agentctl kill`
+- Add migration V32 for runtime process ownership columns on active and archived sessions
+
 ## [0.2.72] - 2026-05-01
 
 ### Fixed

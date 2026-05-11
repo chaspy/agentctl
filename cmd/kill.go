@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/chaspy/agentctl/internal/store"
@@ -99,6 +101,8 @@ func runKill(cmd *cobra.Command, args []string) error {
 }
 
 func killSessionAndWorktree(name string) error {
+	runtimePGID := recordedRuntimePGID(name)
+
 	// 0. Graceful exit: send /exit to trigger Stop hook (e.g. sui-memory)
 	if !killDryRun {
 		exitCmd := exec.Command("env", "-u", "ZELLIJ", "zellij", "--session", name, "action", "write-chars", "/exit\n")
@@ -139,6 +143,8 @@ func killSessionAndWorktree(name string) error {
 			}
 		}
 	}
+
+	cleanupRecordedProcessGroup(name, runtimePGID)
 
 	// 2. Find and remove associated worktree
 	// Session naming convention: {RepoName}-{branch} maps to worktree-{branch}
@@ -217,7 +223,7 @@ func logKillAction(sessionName string) {
 	if db, err := store.Open(""); err == nil {
 		defer db.Close()
 		_, _ = db.Exec(
-			"UPDATE sessions SET desired_state = 'stopped', runtime_status = 'gone', status = 'dead', lifecycle_state = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE zellij_session = ?",
+			"UPDATE sessions SET desired_state = 'stopped', runtime_status = 'gone', status = 'dead', lifecycle_state = 'stopped', runtime_pid = 0, runtime_pgid = 0, runtime_started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE zellij_session = ?",
 			sessionName,
 		)
 		_ = store.LogAction(db, &store.Action{
@@ -226,6 +232,54 @@ func logKillAction(sessionName string) {
 			Content:    fmt.Sprintf("Killed session %s", sessionName),
 		})
 	}
+}
+
+func recordedRuntimePGID(sessionName string) int {
+	db, err := store.Open("")
+	if err != nil {
+		return 0
+	}
+	defer db.Close()
+
+	session, err := store.GetActiveSessionByKey(db, sessionName)
+	if err != nil {
+		return 0
+	}
+	return session.RuntimePGID
+}
+
+func cleanupRecordedProcessGroup(sessionName string, pgid int) {
+	if pgid <= 1 {
+		return
+	}
+	if current := syscall.Getpgrp(); current == pgid {
+		fmt.Fprintf(os.Stderr, "Warning: refusing to signal current process group %d for session %q\n", pgid, sessionName)
+		return
+	}
+	if killDryRun {
+		fmt.Printf("[dry-run] Would terminate recorded process group %d for session %q\n", pgid, sessionName)
+		return
+	}
+
+	fmt.Printf("Terminating recorded process group %d for session %q...\n", pgid, sessionName)
+	if err := signalProcessGroup(pgid, syscall.SIGTERM); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to SIGTERM process group %d for session %q: %v\n", pgid, sessionName, err)
+		return
+	}
+	time.Sleep(2 * time.Second)
+	if err := signalProcessGroup(pgid, syscall.SIGKILL); err != nil {
+		if !errors.Is(err, syscall.ESRCH) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to SIGKILL process group %d for session %q: %v\n", pgid, sessionName, err)
+		}
+	}
+}
+
+func signalProcessGroup(pgid int, sig syscall.Signal) error {
+	err := syscall.Kill(-pgid, sig)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
 }
 
 // checkWorktreeSafety reports the safety status of a worktree without modifying anything.

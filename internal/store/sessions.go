@@ -42,36 +42,39 @@ func PermissionLabel(level int) string {
 
 // Session represents a tracked agent session.
 type Session struct {
-	ID              string
-	Agent           string
-	Repository      string
-	SessionID       string
-	CWD             string
-	GitBranch       string
-	ZellijSession   string
-	Status          string
-	BlockedReason   string
-	DesiredState    string // "running", "stopped"
-	Alive           bool   // deprecated alias for DesiredState == "running"
-	LastMessage     string
-	LastRole        string
-	LastActive      time.Time
-	LastSentAt      time.Time
-	LastMessageAt   time.Time
-	LastSeenAliveAt time.Time
-	PRNumber        int
-	PRURL           string
-	PRState         string
-	TaskSummary     string
-	Role            string
-	Archived        bool
-	IsLoop          bool
-	IsProtected     bool
-	PermissionLevel int
-	RuntimeStatus   string // "running", "exited", "gone"
-	LifecycleState  string // "spawning", "running", "killing", "stopped"
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID               string
+	Agent            string
+	Repository       string
+	SessionID        string
+	CWD              string
+	GitBranch        string
+	ZellijSession    string
+	Status           string
+	BlockedReason    string
+	DesiredState     string // "running", "stopped"
+	Alive            bool   // deprecated alias for DesiredState == "running"
+	LastMessage      string
+	LastRole         string
+	LastActive       time.Time
+	LastSentAt       time.Time
+	LastMessageAt    time.Time
+	LastSeenAliveAt  time.Time
+	PRNumber         int
+	PRURL            string
+	PRState          string
+	TaskSummary      string
+	Role             string
+	Archived         bool
+	IsLoop           bool
+	IsProtected      bool
+	PermissionLevel  int
+	RuntimeStatus    string // "running", "exited", "gone"
+	LifecycleState   string // "spawning", "running", "killing", "stopped"
+	RuntimePID       int
+	RuntimePGID      int
+	RuntimeStartedAt time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 const (
@@ -89,13 +92,15 @@ const (
 const sessionSelectColumns = `id, agent, repository, session_id, cwd, git_branch,
 	zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 	last_sent_at, last_message_at, last_seen_alive_at,
-	pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at`
+	pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state,
+	runtime_pid, runtime_pgid, runtime_started_at, created_at, updated_at`
 const sessionSelectArchiveColumns = `id, agent, repository, session_id, cwd, git_branch,
 	zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 	last_sent_at, last_message_at, last_seen_alive_at,
 	pr_number, pr_url, pr_state, task_summary,
 	CASE WHEN role IN ('worker', 'director', 'secretary', 'lead') THEN role ELSE 'worker' END AS role,
-	1 AS archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at`
+	1 AS archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state,
+	runtime_pid, runtime_pgid, runtime_started_at, created_at, updated_at`
 
 const sessionSelectFromSessions = "SELECT " + sessionSelectColumns + " FROM sessions"
 const sessionSelectFromArchive = "SELECT " + sessionSelectArchiveColumns + " FROM sessions_archive"
@@ -145,8 +150,9 @@ func UpsertSession(db *sql.DB, s *Session) error {
 		INSERT INTO sessions (id, agent, repository, session_id, cwd, git_branch,
 			zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 			last_sent_at, last_message_at, last_seen_alive_at,
-			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state,
+			runtime_pid, runtime_pgid, runtime_started_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			agent=excluded.agent, repository=excluded.repository,
 			session_id=excluded.session_id, cwd=excluded.cwd,
@@ -170,11 +176,15 @@ func UpsertSession(db *sql.DB, s *Session) error {
 			permission_level=CASE WHEN excluded.permission_level > 1 THEN excluded.permission_level ELSE sessions.permission_level END,
 			runtime_status=excluded.runtime_status,
 			lifecycle_state=excluded.lifecycle_state,
+			runtime_pid=CASE WHEN excluded.runtime_pid != 0 THEN excluded.runtime_pid ELSE sessions.runtime_pid END,
+			runtime_pgid=CASE WHEN excluded.runtime_pgid != 0 THEN excluded.runtime_pgid ELSE sessions.runtime_pgid END,
+			runtime_started_at=CASE WHEN excluded.runtime_started_at IS NOT NULL THEN excluded.runtime_started_at ELSE sessions.runtime_started_at END,
 			updated_at=CURRENT_TIMESTAMP`,
 		s.ID, s.Agent, s.Repository, s.SessionID, s.CWD, s.GitBranch,
 		s.ZellijSession, s.Status, s.BlockedReason, desiredState, s.LastMessage, s.LastRole, nullableSessionTimeArg(legacyLastActive),
 		nullableSessionTimeArg(s.LastSentAt), nullableSessionTimeArg(s.LastMessageAt), nullableSessionTimeArg(s.LastSeenAliveAt),
-		s.PRNumber, s.PRURL, s.PRState, s.TaskSummary, role, s.Archived, s.IsLoop, s.IsProtected, permLevel, runtimeStatus, lifecycleState)
+		s.PRNumber, s.PRURL, s.PRState, s.TaskSummary, role, s.Archived, s.IsLoop, s.IsProtected, permLevel, runtimeStatus, lifecycleState,
+		s.RuntimePID, s.RuntimePGID, nullableSessionTimeArg(s.RuntimeStartedAt))
 	return err
 }
 
@@ -184,12 +194,14 @@ func GetSession(db *sql.DB, id string) (*Session, error) {
 	var archived, isLoop, isProtected int
 	var prNumber nullableSessionInt
 	var lastActive, lastSentAt, lastMessageAt, lastSeenAliveAt nullableSessionTime
+	var runtimeStartedAt nullableSessionTime
 	var createdAt, updatedAt nullableSessionTime
 	err := db.QueryRow(sessionSelectFromSessions+` WHERE id = ?`, id).Scan(
 		&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
 		&s.ZellijSession, &s.Status, &s.BlockedReason, &s.DesiredState, &s.LastMessage, &s.LastRole, &lastActive,
 		&lastSentAt, &lastMessageAt, &lastSeenAliveAt,
-		&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState, &createdAt, &updatedAt)
+		&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState,
+		&s.RuntimePID, &s.RuntimePGID, &runtimeStartedAt, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +223,9 @@ func GetSession(db *sql.DB, id string) (*Session, error) {
 	}
 	if lastSeenAliveAt.Valid {
 		s.LastSeenAliveAt = lastSeenAliveAt.Time
+	}
+	if runtimeStartedAt.Valid {
+		s.RuntimeStartedAt = runtimeStartedAt.Time
 	}
 	if createdAt.Valid {
 		s.CreatedAt = createdAt.Time
@@ -319,6 +334,9 @@ func MarkSessionDeadByZellijSession(db *sql.DB, zellijSession string) (int64, er
 		     blocked_reason = '',
 		     runtime_status = 'gone',
 		     lifecycle_state = 'stopped',
+		     runtime_pid = 0,
+		     runtime_pgid = 0,
+		     runtime_started_at = NULL,
 		     updated_at = CURRENT_TIMESTAMP
 		 WHERE zellij_session = ?`,
 		zellijSession,
@@ -331,6 +349,30 @@ func MarkSessionDeadByZellijSession(db *sql.DB, zellijSession string) (int64, er
 		return 0, err
 	}
 	return rows, nil
+}
+
+// UpdateSessionRuntimeProcessByZellijSession records the process group that owns a live runtime.
+func UpdateSessionRuntimeProcessByZellijSession(db *sql.DB, zellijSession string, pid, pgid int, startedAt time.Time) (int64, error) {
+	result, err := db.Exec(`UPDATE sessions
+		SET runtime_pid = ?, runtime_pgid = ?, runtime_started_at = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE zellij_session = ?`,
+		pid, pgid, nullableSessionTimeArg(startedAt), zellijSession)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// ClearSessionRuntimeProcessByZellijSession clears stale process ownership after a runtime is stopped.
+func ClearSessionRuntimeProcessByZellijSession(db *sql.DB, zellijSession string) (int64, error) {
+	result, err := db.Exec(`UPDATE sessions
+		SET runtime_pid = 0, runtime_pgid = 0, runtime_started_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE zellij_session = ?`,
+		zellijSession)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // UnarchiveSession restores a session so it appears in the default list.
@@ -476,11 +518,13 @@ func MoveToArchive(db *sql.DB, id string) error {
 	_, err = tx.Exec(`INSERT OR REPLACE INTO sessions_archive (id, agent, repository, session_id, cwd, git_branch,
 		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		last_sent_at, last_message_at, last_seen_alive_at,
-		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at, archived_at)
+		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state,
+		runtime_pid, runtime_pgid, runtime_started_at, created_at, updated_at, archived_at)
 		SELECT id, agent, repository, session_id, cwd, git_branch,
 			zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 			last_sent_at, last_message_at, last_seen_alive_at,
-			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at, CURRENT_TIMESTAMP
+			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state,
+			runtime_pid, runtime_pgid, runtime_started_at, created_at, updated_at, CURRENT_TIMESTAMP
 		FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -506,11 +550,13 @@ func ArchiveDeadSessions(db *sql.DB) (int, error) {
 	result, err := tx.Exec(`INSERT OR REPLACE INTO sessions_archive (id, agent, repository, session_id, cwd, git_branch,
 		zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 		last_sent_at, last_message_at, last_seen_alive_at,
-		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at, archived_at)
+		pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state,
+		runtime_pid, runtime_pgid, runtime_started_at, created_at, updated_at, archived_at)
 		SELECT id, agent, repository, session_id, cwd, git_branch,
 			zellij_session, status, blocked_reason, desired_state, last_message, last_role, last_active,
 			last_sent_at, last_message_at, last_seen_alive_at,
-			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state, created_at, updated_at, CURRENT_TIMESTAMP
+			pr_number, pr_url, pr_state, task_summary, role, archived, is_loop, is_protected, permission_level, runtime_status, lifecycle_state,
+			runtime_pid, runtime_pgid, runtime_started_at, created_at, updated_at, CURRENT_TIMESTAMP
 		FROM sessions WHERE desired_state = 'stopped' AND runtime_status = 'gone'`)
 	if err != nil {
 		return 0, err
@@ -559,12 +605,14 @@ func querySessions(db *sql.DB, query string, args ...any) ([]Session, error) {
 		var archived, isLoop, isProtected int
 		var prNumber nullableSessionInt
 		var lastActive, lastSentAt, lastMessageAt, lastSeenAliveAt nullableSessionTime
+		var runtimeStartedAt nullableSessionTime
 		var createdAt, updatedAt nullableSessionTime
 		if err := rows.Scan(
 			&s.ID, &s.Agent, &s.Repository, &s.SessionID, &s.CWD, &s.GitBranch,
 			&s.ZellijSession, &s.Status, &s.BlockedReason, &s.DesiredState, &s.LastMessage, &s.LastRole, &lastActive,
 			&lastSentAt, &lastMessageAt, &lastSeenAliveAt,
-			&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState, &createdAt, &updatedAt,
+			&prNumber, &s.PRURL, &s.PRState, &s.TaskSummary, &s.Role, &archived, &isLoop, &isProtected, &s.PermissionLevel, &s.RuntimeStatus, &s.LifecycleState,
+			&s.RuntimePID, &s.RuntimePGID, &runtimeStartedAt, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -586,6 +634,9 @@ func querySessions(db *sql.DB, query string, args ...any) ([]Session, error) {
 		}
 		if lastSeenAliveAt.Valid {
 			s.LastSeenAliveAt = lastSeenAliveAt.Time
+		}
+		if runtimeStartedAt.Valid {
+			s.RuntimeStartedAt = runtimeStartedAt.Time
 		}
 		if createdAt.Valid {
 			s.CreatedAt = createdAt.Time
