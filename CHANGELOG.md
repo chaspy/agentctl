@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.74] - 2026-05-11
+
+### Added
+
+- Add `agentctl runtime reconcile` to inspect recorded runtime PID / PGID ownership without mutating by default
+- Support `--apply` for stale ownership cleanup and `--apply --terminate-stopped` for stopped/gone/dead process group cleanup
+- Add a runtime reconcile lock with TTL to avoid overlapping janitor runs
+
 ## [0.2.73] - 2026-05-11
 
 ### Fixed
