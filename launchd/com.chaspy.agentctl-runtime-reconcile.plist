@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.chaspy.agentctl-runtime-reconcile</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/chaspy/go/bin/agentctl</string>
+    <string>runtime</string>
+    <string>reconcile</string>
+    <string>--json</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/chaspy/go/src/github.com/chaspy/myassistant</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/chaspy/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/agentctl-runtime-reconcile.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/agentctl-runtime-reconcile.err</string>
+</dict>
+</plist>
