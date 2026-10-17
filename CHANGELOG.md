@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.76] - 2026-10-17
+
+### Added
+
+- `internal/mux` Backend interface (`Spawn` / `Send` / `Read` / `Kill` / `List` / `Status`) with zellij and herdr implementations, selected by `AGENTCTL_MUX=zellij|herdr` (default `zellij`)
+- herdr backend: sessions map to herdr workspaces (label = session name); agents start through `herdr agent start`, prompts go through `herdr agent prompt`, screens come from `herdr pane read`, kills use `herdr workspace close`
+- herdr backend starts a headless `herdr server` automatically when none is running (`AGENTCTL_HERDR_AUTOSTART=0` disables); `AGENTCTL_HERDR_SESSION` targets a named herdr session
+- `agentctl send --verify-delivery` (alias of `--verify`); on herdr it is implemented with `herdr agent wait` instead of a 20 s screen check
+- `agentctl send` on herdr waits for the agent to settle via `herdr agent wait` and then reads the response from the session's JSONL, so freshly spawned sessions no longer time out
+- `list` / `state sync` prefer herdr's native agent state (`idle`/`working`/`blocked`/`done`) over JSONL heuristics when available
+- `docs/2026-10-17-herdr-mux-backend.md` migration guide
+
+### Changed
+
+- All direct `zellij` invocations in `cmd/` and `internal/web` (list-sessions / write / write-chars / dump-screen / kill-session / delete-session) now go through the mux backend
+- New session records use `session_id = "<backend>-<name>"` (`zellij-…` unchanged, `herdr-…` for herdr); the `zellij_session` column keeps holding the mux session name for both backends
 ## [0.2.74] - 2026-05-11
 
 ### Added

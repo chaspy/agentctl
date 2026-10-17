@@ -2,10 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
-	"syscall"
-	"time"
+	"github.com/chaspy/agentctl/internal/mux"
+	"os"
 
 	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/store"
@@ -64,51 +62,21 @@ func runWatchdogStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Clean up exited sessions
-	out, _ := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions").Output()
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, watchdogSessionName) && strings.Contains(line, "EXITED") {
-			fmt.Printf("Cleaning up exited session %q...\n", watchdogSessionName)
-			exec.Command("env", "-u", "ZELLIJ", "zellij", "delete-session", watchdogSessionName).Run()
-		}
-	}
+	cleanupExitedMuxSession(watchdogSessionName)
 
-	// Create a new zellij session
-	fmt.Printf("Starting watchdog session %q...\n", watchdogSessionName)
-
-	bgCmd := exec.Command("script", "-q", "/dev/null",
-		"env", "-u", "ZELLIJ", "-u", "CLAUDECODE",
-		"zellij", "-s", watchdogSessionName)
-	bgCmd.Dir = "/tmp"
-	bgCmd.Stdin = nil
-	bgCmd.Stdout = nil
-	bgCmd.Stderr = nil
-	bgCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := bgCmd.Start(); err != nil {
-		return fmt.Errorf("failed to create zellij session: %w", err)
-	}
-
-	// Wait for session to appear
-	if err := waitForSession(watchdogSessionName, 10*time.Second); err != nil {
+	backend, err := resolveMuxBackend()
+	if err != nil {
 		return err
 	}
 
-	// Dismiss any Zellij tip overlay
-	dismissTip := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", watchdogSessionName, "action", "write", "27")
-	_ = dismissTip.Run()
-	time.Sleep(500 * time.Millisecond)
-
-	// Send the while loop script
-	writeChars := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", watchdogSessionName, "action", "write-chars", watchdogScript)
-	if out, err := writeChars.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send watchdog script: %w\n%s", err, string(out))
-	}
-	writeEnter := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", watchdogSessionName, "action", "write", "13")
-	if out, err := writeEnter.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send enter: %w\n%s", err, string(out))
+	// Create a new mux session running the restart loop
+	fmt.Printf("Starting watchdog session %q...\n", watchdogSessionName)
+	if _, err := backend.Spawn(mux.SpawnOptions{
+		Name:    watchdogSessionName,
+		CWD:     os.TempDir(),
+		Command: watchdogScript,
+	}); err != nil {
+		return err
 	}
 
 	fmt.Printf("Watchdog started in session %q\n", watchdogSessionName)
@@ -128,7 +96,7 @@ func runWatchdogStart(cmd *cobra.Command, args []string) error {
 }
 
 func runWatchdogStatus(cmd *cobra.Command, args []string) error {
-	// Check zellij session
+	// Check mux session
 	if isWatchdogAlive() {
 		fmt.Printf("Watchdog session %q: running\n", watchdogSessionName)
 	} else {
@@ -148,10 +116,13 @@ func runWatchdogStop(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Kill the zellij session
-	killCmd := exec.Command("env", "-u", "ZELLIJ", "zellij", "delete-session", watchdogSessionName, "--force")
-	if out, err := killCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to stop watchdog: %w\n%s", err, string(out))
+	// Kill the mux session
+	backend, err := resolveMuxBackend()
+	if err != nil {
+		return err
+	}
+	if err := backend.Kill(watchdogSessionName); err != nil {
+		return fmt.Errorf("failed to stop watchdog: %w", err)
 	}
 
 	fmt.Printf("Watchdog session %q stopped\n", watchdogSessionName)
@@ -170,16 +141,7 @@ func runWatchdogStop(cmd *cobra.Command, args []string) error {
 }
 
 func isWatchdogAlive() bool {
-	out, err := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.TrimSpace(line) == watchdogSessionName {
-			return true
-		}
-	}
-	return false
+	return isMuxSessionRunning(watchdogSessionName)
 }
 
 func printRemoteControlStatus() {

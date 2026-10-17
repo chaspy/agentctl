@@ -25,6 +25,31 @@ type textLocator interface {
 	LocateText(session string, text string) (string, error)
 }
 
+// deliveryVerifier is implemented by backends that can confirm delivery natively
+// (herdr waits for the agent to report working/blocked instead of scraping).
+type deliveryVerifier interface {
+	VerifyDelivery(session, sentText string) (bool, error)
+}
+
+// PromptSender is implemented by backends that submit text and Enter as one
+// atomic operation (herdr `agent prompt`). Callers prefer it over TypeText+SendEnter.
+type PromptSender interface {
+	Prompt(session, text string) error
+}
+
+// StateWaiter is implemented by backends that can block until the agent in a
+// session reaches one of the given lifecycle states (herdr `agent wait`).
+type StateWaiter interface {
+	WaitForState(session string, timeout time.Duration, states ...AgentState) (AgentState, error)
+}
+
+// SettledStates are the states in which an agent is waiting for input.
+var SettledStates = []AgentState{StateIdle, StateDone, StateBlocked}
+
+// ActivityGateTimeout bounds how long callers wait for a freshly submitted
+// prompt to produce observable activity before waiting for it to settle.
+var ActivityGateTimeout = 5 * time.Second
+
 // VerifySend checks that the sent text is no longer pending on the terminal
 // input prompt. If the text still appears at the bottom of the screen (indicating
 // Enter was not processed), it retries sending Enter up to verifyMaxRetries times.
@@ -185,6 +210,10 @@ func AgentReady(screen, agent string) bool {
 // message is re-sent by clearing the prompt, typing again, and pressing Enter.
 // The returned bool reports whether a retry was performed.
 func VerifyDelivery(adapter Adapter, session, sentText string) (bool, error) {
+	if v, ok := adapter.(deliveryVerifier); ok {
+		return v.VerifyDelivery(session, sentText)
+	}
+
 	time.Sleep(DeliveryVerifyDelay)
 
 	screen, err := adapter.DumpScreen(session)

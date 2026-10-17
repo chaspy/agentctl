@@ -312,6 +312,9 @@ func runListLive() error {
 	claudeProcs, _ := process.FindClaudeProcesses()
 	codexProcs, _ := process.FindCodexProcesses()
 
+	// Backend-observed agent states (herdr) take precedence over JSONL heuristics.
+	_, muxStateByCWD := muxStatesByName()
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "AGENT\tREPOSITORY\tBRANCH\tLAST ACTIVE\tALIVE\tSTATUS\tLAST MESSAGE")
 
@@ -343,6 +346,12 @@ func runListLive() error {
 			statusMsg = s.LastMessage
 		}
 		status := session.DetectStatus(statusMsg, s.LastRole, alive == "yes", s.ErrorType, s.IsAPIError)
+		if muxState, ok := muxStateByCWD[s.CWD]; ok && status != session.StatusError {
+			if override := muxStatusOverride(muxState); override != "" {
+				status = override
+				alive = "yes"
+			}
+		}
 		if status == session.StatusBlocked {
 			if reason := session.DetectBlockedReason(statusMsg); reason != "" {
 				status = status + "(" + reason + ")"

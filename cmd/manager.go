@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
 
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
@@ -45,13 +43,7 @@ func runManagerStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check for EXITED sessions and clean them up
-	out, _ := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions").Output()
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, managerSessionName) && strings.Contains(line, "EXITED") {
-			fmt.Printf("Cleaning up exited session %q...\n", managerSessionName)
-			exec.Command("env", "-u", "ZELLIJ", "zellij", "delete-session", managerSessionName).Run()
-		}
-	}
+	cleanupExitedMuxSession(managerSessionName)
 
 	// Use the existing spawn logic but with fixed session name
 	fmt.Printf("Starting AI Manager session %q...\n", managerSessionName)
@@ -117,14 +109,5 @@ func runManagerStatus(cmd *cobra.Command, args []string) error {
 }
 
 func isManagerAlive() bool {
-	out, err := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.TrimSpace(line) == managerSessionName {
-			return true
-		}
-	}
-	return false
+	return isMuxSessionRunning(managerSessionName)
 }

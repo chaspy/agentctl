@@ -2,7 +2,7 @@
 
 ## Overview
 
-`agentctl` is a Go CLI tool for managing multiple coding agent sessions (Claude Code, Codex CLI) running in zellij or tmux terminal multiplexers.
+`agentctl` is a Go CLI tool for managing multiple coding agent sessions (Claude Code, Codex CLI) running in zellij, herdr, or tmux terminal multiplexers. The session backend is selected with `AGENTCTL_MUX=zellij|herdr` (default `zellij`); see `docs/2026-10-17-herdr-mux-backend.md`.
 
 ## Commands
 
@@ -75,7 +75,7 @@ Sessions are classified into 5 states:
 ```
 cmd/              CLI commands (cobra)
 internal/
-  mux/            tmux/zellij abstraction
+  mux/            tmux/zellij/herdr abstraction (Backend interface; AGENTCTL_MUX=zellij|herdr, default zellij)
   process/        Process detection (PID, CWD matching)
   provider/       Claude/Codex session scanning, rate limits
   session/        JSONL parser, status detection

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chaspy/agentctl/internal/controlplane"
+	agentmux "github.com/chaspy/agentctl/internal/mux"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
 	"github.com/chaspy/agentctl/internal/store"
@@ -936,14 +937,13 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build zellij session name
+	// Build mux session name
 	sessionName := fmt.Sprintf("resume-%s", req.SessionID[:8])
 
-	// Check if zellij session already exists
-	existing, _ := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	for _, line := range splitLines(string(existing)) {
-		if line == sessionName {
-			writeJSON(w, map[string]string{"error": "zellij session already exists", "session": sessionName})
+	// Check if the mux session already exists
+	if backend, err := agentmux.ResolveBackend(); err == nil {
+		if exists, err := agentmux.SessionExists(backend, sessionName); err == nil && exists {
+			writeJSON(w, map[string]string{"error": backend.Name() + " session already exists", "session": sessionName})
 			return
 		}
 	}

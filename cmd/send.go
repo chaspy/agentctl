@@ -33,12 +33,13 @@ var sendCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(sendCmd)
-	sendCmd.Flags().StringVar(&sendMux, "mux", "auto", "Mux backend: auto, tmux, zellij")
+	sendCmd.Flags().StringVar(&sendMux, "mux", "auto", "Mux backend: auto, tmux, zellij, herdr (auto honours AGENTCTL_MUX)")
 	sendCmd.Flags().StringVar(&sendAgent, "agent", "all", "Filter by agent: all, claude, codex")
 	sendCmd.Flags().IntVar(&sendHours, "hours", 24, "Search sessions active within the last N hours")
 	sendCmd.Flags().IntVar(&sendTimeout, "timeout", 30, "Timeout in seconds to wait for response")
 	sendCmd.Flags().BoolVar(&sendNoWait, "no-wait", false, "Send without waiting for a response")
-	sendCmd.Flags().BoolVar(&sendVerify, "verify", false, "Verify delivery after 20 seconds and retry if the prompt still contains the message")
+	sendCmd.Flags().BoolVar(&sendVerify, "verify", false, "Verify delivery and retry if the prompt still contains the message (zellij: screen check after 20s; herdr: agent wait)")
+	sendCmd.Flags().BoolVar(&sendVerify, "verify-delivery", false, "Alias for --verify")
 }
 
 func runSend(cmd *cobra.Command, args []string) error {
@@ -100,8 +101,20 @@ func runSend(cmd *cobra.Command, args []string) error {
 	recordSessionLastSent(resolvedSessionName)
 	fmt.Fprintf(os.Stderr, "Sent instruction to %s session %q. Waiting for response...\n", adapter.Name(), sessionName)
 
-	// Poll all matching sessions for a new assistant message
 	timeout := time.Duration(sendTimeout) * time.Second
+
+	// Backends that track agent state (herdr) can wait for the turn to settle
+	// instead of polling JSONL files, which also covers sessions whose JSONL
+	// did not exist yet when the baseline was taken.
+	if waiter, ok := adapter.(mux.StateWaiter); ok {
+		if result, ok := waitForResponseViaBackend(waiter, adapter, resolvedSessionName, timeout); ok {
+			fmt.Printf("[%s] %s (%s)\n\n%s\n", result.Agent, result.Repository, result.GitBranch, result.Message)
+			logSendAction(sessionName, instruction, result.Message)
+			return nil
+		}
+	}
+
+	// Poll all matching sessions for a new assistant message
 	pollInterval := 3 * time.Second
 	deadline := time.Now().Add(timeout)
 
@@ -150,15 +163,23 @@ func sendInstruction(adapter mux.Adapter, sessionName, instruction string, targe
 		fmt.Fprintf(os.Stderr, "Restarted %s in %s session %q before sending.\n", targetAgentLabel(targetAgent), adapter.Name(), sessionName)
 	}
 
-	if err := adapter.TypeText(sessionName, instruction); err != nil {
-		return fmt.Errorf("typing into %s session %q: %w", adapter.Name(), sessionName, err)
-	}
-	verifyErr := mux.VerifyTypedInputVisible(adapter, sessionName, instruction)
-	if err := adapter.SendEnter(sessionName); err != nil {
-		return fmt.Errorf("sending enter to %s session %q: %w", adapter.Name(), sessionName, err)
-	}
-	if verifyErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: typed input not visible in %s session %q (worker may be active): %v\n", adapter.Name(), sessionName, verifyErr)
+	if prompter, ok := adapter.(mux.PromptSender); ok {
+		// Backends with an atomic prompt surface (herdr `agent prompt`) submit
+		// text and Enter together, so the typed-input routing check is unnecessary.
+		if err := prompter.Prompt(sessionName, instruction); err != nil {
+			return fmt.Errorf("prompting %s session %q: %w", adapter.Name(), sessionName, err)
+		}
+	} else {
+		if err := adapter.TypeText(sessionName, instruction); err != nil {
+			return fmt.Errorf("typing into %s session %q: %w", adapter.Name(), sessionName, err)
+		}
+		verifyErr := mux.VerifyTypedInputVisible(adapter, sessionName, instruction)
+		if err := adapter.SendEnter(sessionName); err != nil {
+			return fmt.Errorf("sending enter to %s session %q: %w", adapter.Name(), sessionName, err)
+		}
+		if verifyErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: typed input not visible in %s session %q (worker may be active): %v\n", adapter.Name(), sessionName, verifyErr)
+		}
 	}
 	if err := mux.VerifySend(adapter, sessionName, instruction); err != nil {
 		return fmt.Errorf("send verification failed for %s session %q: %w", adapter.Name(), sessionName, err)
@@ -178,6 +199,88 @@ func sendInstruction(adapter mux.Adapter, sessionName, instruction string, targe
 
 	fmt.Println("送達確認: OK")
 	return nil
+}
+
+type backendResponse struct {
+	Agent      provider.Agent
+	Repository string
+	GitBranch  string
+	Message    string
+}
+
+// waitForResponseViaBackend waits until the backend reports the agent settled
+// (idle/done/blocked) and then returns the newest assistant message from the
+// JSONL session living in the mux session's CWD.
+func waitForResponseViaBackend(waiter mux.StateWaiter, adapter mux.Adapter, sessionName string, timeout time.Duration) (backendResponse, bool) {
+	// Gate on observed activity so a prompt that has not started its turn yet
+	// does not satisfy the settled wait with the previous idle state.
+	_, _ = waiter.WaitForState(sessionName, mux.ActivityGateTimeout, mux.StateWorking, mux.StateBlocked)
+
+	state, err := waiter.WaitForState(sessionName, timeout, mux.SettledStates...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s wait failed, falling back to JSONL polling: %v\n", adapter.Name(), err)
+		return backendResponse{}, false
+	}
+	if state == mux.StateBlocked {
+		fmt.Fprintf(os.Stderr, "%s reports the agent is blocked (waiting for approval or input)\n", adapter.Name())
+	}
+
+	backend, ok := adapter.(mux.Backend)
+	if !ok {
+		return backendResponse{}, false
+	}
+	sessions, err := backend.List()
+	if err != nil {
+		return backendResponse{}, false
+	}
+	var cwd string
+	for _, s := range sessions {
+		if s.Name == sessionName {
+			cwd = s.CWD
+			break
+		}
+	}
+	if cwd == "" {
+		return backendResponse{}, false
+	}
+
+	agents, err := selectedAgents(sendAgent)
+	if err != nil {
+		return backendResponse{}, false
+	}
+	var newest *provider.SessionInfo
+	for _, agent := range agents {
+		var items []provider.SessionInfo
+		switch agent {
+		case provider.AgentClaude:
+			items, _ = provider.ScanClaudeSessions(time.Duration(sendHours) * time.Hour)
+		case provider.AgentCodex:
+			items, _ = provider.ScanCodexSessions(time.Duration(sendHours) * time.Hour)
+		}
+		for i := range items {
+			if items[i].CWD != cwd {
+				continue
+			}
+			if newest == nil || items[i].ModTime.After(newest.ModTime) {
+				newest = &items[i]
+			}
+		}
+	}
+	if newest == nil {
+		return backendResponse{}, false
+	}
+
+	msg := newest.LastMessage
+	if newest.FilePath != "" {
+		raw := &session.SessionInfo{FilePath: newest.FilePath}
+		if full := session.LastAssistantMessage(raw); full != "" {
+			msg = full
+		}
+	}
+	if msg == "" {
+		return backendResponse{}, false
+	}
+	return backendResponse{Agent: newest.Agent, Repository: newest.Repository, GitBranch: newest.GitBranch, Message: msg}, true
 }
 
 func inferSendAgent(sessionName string, matched []provider.SessionInfo) provider.Agent {

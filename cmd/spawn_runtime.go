@@ -6,9 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/mux"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/store"
 )
@@ -76,20 +76,21 @@ func executeSpawnRequest(req spawnExecutionRequest) (*spawnExecutionResult, erro
 		sessionName = defaultSpawnSessionName(repoBaseName, "", "")
 	}
 
-	existing, _ := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	for _, line := range strings.Split(strings.TrimSpace(string(existing)), "\n") {
-		if strings.TrimSpace(line) == sessionName {
-			return nil, fmt.Errorf("zellij session %q already exists", sessionName)
-		}
+	backend, err := resolveMuxBackend()
+	if err != nil {
+		return nil, err
+	}
+	if muxSessionExists(sessionName) {
+		return nil, fmt.Errorf("%s session %q already exists", backend.Name(), sessionName)
 	}
 
-	sessionID := fmt.Sprintf("%s:%s:zellij-%s", req.SelectedAgent, req.Repo.ShortName, sessionName)
+	sessionID := fmt.Sprintf("%s:%s:%s%s", req.SelectedAgent, req.Repo.ShortName, muxSessionIDPrefix(), sessionName)
 	if db, err := store.Open(""); err == nil {
 		_ = store.UpsertSession(db, &store.Session{
 			ID:             sessionID,
 			Agent:          string(req.SelectedAgent),
 			Repository:     req.Repo.ShortName,
-			SessionID:      "zellij-" + sessionName,
+			SessionID:      muxSessionIDPrefix() + sessionName,
 			CWD:            workDir,
 			GitBranch:      gitBranch,
 			ZellijSession:  sessionName,
@@ -102,45 +103,20 @@ func executeSpawnRequest(req spawnExecutionRequest) (*spawnExecutionResult, erro
 		db.Close()
 	}
 
-	bgCmd := exec.Command("script", "-q", "/dev/null",
-		"env", "-u", "ZELLIJ", "-u", "CLAUDECODE",
-		"zellij", "-s", sessionName)
-	bgCmd.Dir = workDir
-	bgCmd.Stdin = nil
-	bgCmd.Stdout = nil
-	bgCmd.Stderr = nil
-	bgCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := bgCmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to create zellij session: %w", err)
+	launchCommand := agentLaunchCommand(req.SelectedAgent)
+	spawned, err := backend.Spawn(mux.SpawnOptions{
+		Name:    sessionName,
+		CWD:     workDir,
+		Command: launchCommand,
+		Agent:   string(req.SelectedAgent),
+	})
+	if err != nil {
+		return nil, err
 	}
-	runtimePID := bgCmd.Process.Pid
-	runtimePGID, _ := syscall.Getpgid(runtimePID)
-	runtimeStartedAt := time.Now()
+	runtimePID, runtimePGID, runtimeStartedAt := spawned.RuntimePID, spawned.RuntimePGID, spawned.StartedAt
 	if db, err := store.Open(""); err == nil {
 		_, _ = store.UpdateSessionRuntimeProcessByZellijSession(db, sessionName, runtimePID, runtimePGID, runtimeStartedAt)
 		db.Close()
-	}
-
-	fmt.Fprintf(os.Stderr, "Creating zellij session %q in %s...\n", sessionName, workDir)
-	if err := waitForSession(sessionName, 10*time.Second); err != nil {
-		return nil, err
-	}
-
-	dismissTip := exec.Command("env", "-u", "ZELLIJ", "zellij", "-s", sessionName, "action", "write", "27")
-	_ = dismissTip.Run()
-	time.Sleep(500 * time.Millisecond)
-
-	launchCommand := agentLaunchCommand(req.SelectedAgent)
-	writeChars := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write-chars", launchCommand)
-	if out, err := writeChars.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("failed to send %s command: %w\n%s", req.SelectedAgent, err, string(out))
-	}
-	writeEnter := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write", "13")
-	if out, err := writeEnter.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("failed to send enter: %w\n%s", err, string(out))
 	}
 
 	fmt.Fprintf(os.Stderr, "Spawned session %q in %s\n", sessionName, workDir)
@@ -157,7 +133,7 @@ func executeSpawnRequest(req spawnExecutionRequest) (*spawnExecutionResult, erro
 			ID:               sessionID,
 			Agent:            string(req.SelectedAgent),
 			Repository:       req.Repo.ShortName,
-			SessionID:        "zellij-" + sessionName,
+			SessionID:        muxSessionIDPrefix() + sessionName,
 			CWD:              workDir,
 			GitBranch:        gitBranch,
 			ZellijSession:    sessionName,
@@ -189,18 +165,13 @@ func executeSpawnRequest(req spawnExecutionRequest) (*spawnExecutionResult, erro
 	if req.Message != "" {
 		initialMessage := withVersionBumpReminder(req.Message)
 		if req.SelectedAgent != provider.AgentCodex {
-			fmt.Fprintf(os.Stderr, "Waiting for %s to start...\n", req.SelectedAgent)
-			time.Sleep(5 * time.Second)
+			if state, _ := backend.Status(sessionName); state == mux.StateNone {
+				fmt.Fprintf(os.Stderr, "Waiting for %s to start...\n", req.SelectedAgent)
+				time.Sleep(5 * time.Second)
+			}
 		}
-		writeMsg := exec.Command("env", "-u", "ZELLIJ",
-			"zellij", "-s", sessionName, "action", "write-chars", initialMessage)
-		if out, err := writeMsg.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("failed to send initial message: %w\n%s", err, string(out))
-		}
-		writeMsgEnter := exec.Command("env", "-u", "ZELLIJ",
-			"zellij", "-s", sessionName, "action", "write", "13")
-		if out, err := writeMsgEnter.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("failed to send enter for message: %w\n%s", err, string(out))
+		if err := backend.Send(sessionName, initialMessage); err != nil {
+			return nil, fmt.Errorf("failed to send initial message: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "Sent initial message to %q\n", sessionName)
 	}

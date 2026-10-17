@@ -24,7 +24,7 @@ var (
 
 var monitorCmd = &cobra.Command{
 	Use:   "monitor",
-	Short: "Watch all sessions and notify this zellij session on changes",
+	Short: "Watch all sessions and notify the given mux session on changes",
 	Long: `Runs as a long-lived process that polls all sessions for new assistant messages.
 When a change is detected, sends a notification message to the specified zellij session
 (typically the agentctl session itself) so the agent can react.`,
@@ -34,7 +34,7 @@ When a change is detected, sends a notification message to the specified zellij 
 func init() {
 	rootCmd.AddCommand(monitorCmd)
 	monitorCmd.Flags().IntVar(&monitorInterval, "interval", 30, "Poll interval in seconds")
-	monitorCmd.Flags().StringVar(&monitorTarget, "target", "", "Zellij session name to notify (required)")
+	monitorCmd.Flags().StringVar(&monitorTarget, "target", "", "Mux session name to notify (required)")
 	monitorCmd.Flags().StringVar(&monitorAgent, "agent", "all", "Filter by agent: all, claude, codex")
 	monitorCmd.Flags().IntVar(&monitorHours, "hours", 24, "Search sessions active within the last N hours")
 	monitorCmd.Flags().StringVar(&monitorExclude, "exclude", "", "Exclude sessions matching this project name (e.g. agentctl)")
@@ -47,9 +47,9 @@ type sessionSnapshot struct {
 }
 
 func runMonitor(cmd *cobra.Command, args []string) error {
-	adapter, err := mux.Resolve("zellij")
+	adapter, err := resolveMuxBackend()
 	if err != nil {
-		return fmt.Errorf("monitor requires zellij: %w", err)
+		return fmt.Errorf("monitor requires a mux backend (%s): %w", mux.BackendName(), err)
 	}
 
 	// Verify target session exists

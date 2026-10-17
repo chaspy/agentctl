@@ -23,7 +23,7 @@ var (
 	lookupExecutable = exec.LookPath
 	claudeRateFn     = provider.ClaudeRate
 	codexRateFn      = provider.CodexRate
-	resolveSpawnMux  = func() (mux.Adapter, error) { return mux.Resolve("zellij") }
+	resolveSpawnMux  = func() (mux.Adapter, error) { return resolveMuxBackend() }
 )
 
 type agentCandidate struct {

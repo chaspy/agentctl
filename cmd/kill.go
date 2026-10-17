@@ -21,8 +21,8 @@ var (
 
 var killCmd = &cobra.Command{
 	Use:   "kill <session>",
-	Short: "Kill a zellij session and clean up its worktree if applicable",
-	Long: `Kill a zellij session by name. If the session was spawned with a worktree,
+	Short: "Kill a mux session (zellij/herdr) and clean up its worktree if applicable",
+	Long: `Kill a mux session by name. If the session was spawned with a worktree,
 the worktree is also removed. Supports substring matching like other commands.
 
 Safety:
@@ -50,63 +50,29 @@ func init() {
 func runKill(cmd *cobra.Command, args []string) error {
 	query := args[0]
 
-	// List sessions and find match
-	out, err := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
+	name, err := resolveMuxSessionQuery(query)
 	if err != nil {
-		return fmt.Errorf("failed to list zellij sessions: %w", err)
-	}
-
-	var sessions []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			sessions = append(sessions, line)
-		}
-	}
-
-	// Exact match first
-	for _, s := range sessions {
-		if s == query {
-			markSessionKilling(s)
-			if err := killSessionAndWorktree(s); err != nil {
-				return err
-			}
-			logKillAction(s)
-			return nil
-		}
-	}
-
-	// Substring match
-	q := strings.ToLower(query)
-	var candidates []string
-	for _, s := range sessions {
-		if strings.Contains(strings.ToLower(s), q) {
-			candidates = append(candidates, s)
-		}
-	}
-
-	if len(candidates) == 0 {
-		return fmt.Errorf("no zellij session matching %q", query)
-	}
-	if len(candidates) > 1 {
-		return fmt.Errorf("ambiguous query %q, matches: %s", query, strings.Join(candidates, ", "))
-	}
-
-	markSessionKilling(candidates[0])
-	if err := killSessionAndWorktree(candidates[0]); err != nil {
 		return err
 	}
-	logKillAction(candidates[0])
+
+	markSessionKilling(name)
+	if err := killSessionAndWorktree(name); err != nil {
+		return err
+	}
+	logKillAction(name)
 	return nil
 }
 
 func killSessionAndWorktree(name string) error {
 	runtimePGID := recordedRuntimePGID(name)
+	backend, err := resolveMuxBackend()
+	if err != nil {
+		return err
+	}
 
 	// 0. Graceful exit: send /exit to trigger Stop hook (e.g. sui-memory)
 	if !killDryRun {
-		exitCmd := exec.Command("env", "-u", "ZELLIJ", "zellij", "--session", name, "action", "write-chars", "/exit\n")
-		if err := exitCmd.Run(); err == nil {
+		if err := backend.Send(name, "/exit"); err == nil {
 			fmt.Printf("Sent /exit to session %q, waiting for Stop hook...\n", name)
 			time.Sleep(10 * time.Second)
 		} else {
@@ -114,34 +80,14 @@ func killSessionAndWorktree(name string) error {
 		}
 	}
 
-	// 1. Kill the zellij session
-	// Try kill-session first (for active sessions), then delete-session (for EXITED sessions)
+	// 1. Kill the mux session
 	if killDryRun {
-		fmt.Printf("[dry-run] Would kill zellij session %q\n", name)
+		fmt.Printf("[dry-run] Would kill %s session %q\n", backend.Name(), name)
 	} else {
-		killExec := exec.Command("env", "-u", "ZELLIJ", "zellij", "kill-session", name)
-		output, err := killExec.CombinedOutput()
-		if err != nil {
-			// kill-session fails on EXITED sessions — try delete-session as fallback
-			delExec := exec.Command("env", "-u", "ZELLIJ", "zellij", "delete-session", name)
-			delOutput, delErr := delExec.CombinedOutput()
-			if delErr != nil {
-				return fmt.Errorf("failed to kill/delete session %q: kill: %s, delete: %s",
-					name, strings.TrimSpace(string(output)), strings.TrimSpace(string(delOutput)))
-			}
-			fmt.Printf("Deleted exited zellij session %q\n", name)
-		} else {
-			fmt.Printf("Killed zellij session %q\n", name)
-			// kill-session transitions the session to EXITED state but does not remove it.
-			// Always run delete-session afterward so the session name is freed for reuse.
-			delExec := exec.Command("env", "-u", "ZELLIJ", "zellij", "delete-session", name)
-			delOutput, delErr := delExec.CombinedOutput()
-			if delErr != nil {
-				// Non-fatal: session is dead, but the name may linger until zellij GCs it.
-				fmt.Fprintf(os.Stderr, "Warning: failed to delete session %q after kill: %s\n",
-					name, strings.TrimSpace(string(delOutput)))
-			}
+		if err := backend.Kill(name); err != nil {
+			return err
 		}
+		fmt.Printf("Killed %s session %q\n", backend.Name(), name)
 	}
 
 	cleanupRecordedProcessGroup(name, runtimePGID)

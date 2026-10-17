@@ -3,12 +3,11 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/mux"
 	"github.com/chaspy/agentctl/internal/process"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/session"
@@ -22,9 +21,9 @@ var (
 
 var resumeCmd = &cobra.Command{
 	Use:   "resume <project-or-session-id>",
-	Short: "Resume a dead Claude session in a new zellij session",
+	Short: "Resume a dead Claude session in a new mux session",
 	Long: `Finds a dead Claude session by project name or session UUID,
-creates a new zellij session, and starts claude --resume <session-id> in it.
+creates a new mux session (zellij/herdr), and starts claude --resume <session-id> in it.
 
 Examples:
   agentctl resume my-session
@@ -35,7 +34,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(resumeCmd)
-	resumeCmd.Flags().StringVar(&resumeName, "name", "", "Zellij session name (auto-generated if not set)")
+	resumeCmd.Flags().StringVar(&resumeName, "name", "", "Mux session name (auto-generated if not set)")
 }
 
 func runResume(cmd *cobra.Command, args []string) error {
@@ -95,7 +94,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("session CWD %s does not exist (worktree may have been deleted)", target.CWD)
 	}
 
-	// Determine zellij session name
+	// Determine mux session name
 	sessionName := resumeName
 	if sessionName == "" {
 		// Use project name with dashes
@@ -103,53 +102,25 @@ func runResume(cmd *cobra.Command, args []string) error {
 		sessionName = name + "-resumed"
 	}
 
-	// Check if session already exists
-	existing, _ := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	for _, line := range strings.Split(strings.TrimSpace(string(existing)), "\n") {
-		if strings.TrimSpace(line) == sessionName {
-			return fmt.Errorf("zellij session %q already exists", sessionName)
-		}
+	backend, err := resolveMuxBackend()
+	if err != nil {
+		return err
+	}
+	if muxSessionExists(sessionName) {
+		return fmt.Errorf("%s session %q already exists", backend.Name(), sessionName)
 	}
 
-	// Create a new zellij session
-	bgCmd := exec.Command("script", "-q", "/dev/null",
-		"env", "-u", "ZELLIJ", "-u", "CLAUDECODE",
-		"zellij", "-s", sessionName)
-	bgCmd.Dir = target.CWD
-	bgCmd.Stdin = nil
-	bgCmd.Stdout = nil
-	bgCmd.Stderr = nil
-	bgCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := bgCmd.Start(); err != nil {
-		return fmt.Errorf("failed to create zellij session: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Creating zellij session %q in %s...\n", sessionName, target.CWD)
-	if err := waitForSession(sessionName, 10*time.Second); err != nil {
+	resumeCommand := fmt.Sprintf("claude --resume %s", target.SessionID)
+	if _, err := backend.Spawn(mux.SpawnOptions{
+		Name:    sessionName,
+		CWD:     target.CWD,
+		Command: resumeCommand,
+		Agent:   string(provider.AgentClaude),
+	}); err != nil {
 		return err
 	}
 
-	// Dismiss any Zellij tip overlay
-	dismissTip := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write", "27") // ESC
-	_ = dismissTip.Run()
-	time.Sleep(500 * time.Millisecond)
-
-	// Start claude --resume <session-id>
-	resumeCommand := fmt.Sprintf("claude --resume %s", target.SessionID)
-	writeChars := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write-chars", resumeCommand)
-	if out, err := writeChars.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send resume command: %w\n%s", err, string(out))
-	}
-	writeEnter := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write", "13")
-	if out, err := writeEnter.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send enter: %w\n%s", err, string(out))
-	}
-
-	fmt.Fprintf(os.Stderr, "Resumed session %s in zellij session %q\n", target.SessionID, sessionName)
+	fmt.Fprintf(os.Stderr, "Resumed session %s in %s session %q\n", target.SessionID, backend.Name(), sessionName)
 
 	// Log to database (fire-and-forget)
 	if db, err := store.Open(""); err == nil {

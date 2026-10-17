@@ -138,6 +138,9 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 		}
 	}
 
+	// Backend-observed agent states (herdr) take precedence over JSONL heuristics.
+	muxStateByName, _ := muxStatesByName()
+
 	// Enrich existing alive DB sessions with JSONL metadata (UPDATE only).
 	aliveSessions, _ := store.ListSessionsByAlive(db, true)
 	var enriched int
@@ -155,6 +158,9 @@ func syncSessionsToDB(db *sql.DB, agentFilter string, hours int, regenerateSumma
 			statusMsg = jsonl.LastMessage
 		}
 		status := session.DetectStatus(statusMsg, jsonl.LastRole, dbSess.WantsRunning(), jsonl.ErrorType, jsonl.IsAPIError)
+		if override := muxStatusOverride(muxStateByName[strings.ToLower(dbSess.ZellijSession)]); override != "" && status != session.StatusError {
+			status = override
+		}
 
 		role := dbSess.Role
 		if role == "" {
@@ -699,10 +705,11 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 	type zellijState struct {
 		name   string
 		exited bool
+		cwd    string
 	}
 	zellijMap := make(map[string]zellijState)
 	for _, zs := range zellijSessions {
-		zellijMap[strings.ToLower(zs.Name)] = zellijState{name: zs.Name, exited: zs.Exited}
+		zellijMap[strings.ToLower(zs.Name)] = zellijState{name: zs.Name, exited: zs.Exited, cwd: zs.CWD}
 	}
 
 	// Step 1: Update runtime_status for all desired_state=running DB sessions
@@ -748,7 +755,10 @@ func syncRuntimeStatus(db *sql.DB) (int, error) {
 			continue
 		}
 
-		cwd := zellijCWD(s.ZellijSession)
+		cwd := zellijMap[strings.ToLower(s.ZellijSession)].cwd
+		if cwd == "" {
+			cwd = zellijCWD(s.ZellijSession)
+		}
 		if cwd == "" {
 			continue
 		}
@@ -836,8 +846,10 @@ func parseGitHubRepo(remoteURL string) string {
 	return ""
 }
 
+// listZellijDetailed lists live sessions through the configured mux backend
+// (zellij by default, herdr with AGENTCTL_MUX=herdr). The name is historical.
 var listZellijDetailed = func() ([]mux.ZellijSessionState, error) {
-	return mux.ListZellijSessionsDetailed()
+	return mux.ListSessionsDetailed()
 }
 
 var lookupPRURL = func(repo, branch string) string {
@@ -863,17 +875,28 @@ var lookupPRMetadata = func(repo, prNumber string) prMetadata {
 }
 
 func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bool) {
-	layout, err := zellijDumpLayout(zs.Name)
-	if err != nil {
-		return discoveredSession{}, false
+	// Backends that report CWD and agent kind directly (herdr) need no layout dump.
+	cwd := zs.CWD
+	var agent provider.Agent
+	if zs.Agent != "" {
+		agent = provider.Agent(zs.Agent)
 	}
-
-	cwd := parseZellijLayoutCWD(layout)
+	if cwd == "" {
+		layout, err := zellijDumpLayout(zs.Name)
+		if err != nil {
+			return discoveredSession{}, false
+		}
+		cwd = parseZellijLayoutCWD(layout)
+		if agent == "" {
+			agent = inferAgentFromLayout(layout, zs.Name)
+		}
+	}
 	if cwd == "" || strings.Contains(cwd, "worktree-preview-") {
 		return discoveredSession{}, false
 	}
-
-	agent := inferAgentFromLayout(layout, zs.Name)
+	if agent == "" {
+		agent = inferAgentFromLayout("", zs.Name)
+	}
 	repo := gitRepoName(cwd)
 	branch := gitBranchName(cwd)
 	if repo == "" {
@@ -881,14 +904,18 @@ func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bo
 	}
 
 	status := "idle"
+	if override := muxStatusOverride(zs.State); override != "" {
+		status = override
+	}
 	runtimeStatus := "running"
 	if zs.Exited {
 		runtimeStatus = "exited"
 	}
 
-	sessionID := fmt.Sprintf("%s:%s:zellij-%s", agent, repo, zs.Name)
+	prefix := muxSessionIDPrefix()
+	sessionID := fmt.Sprintf("%s:%s:%s%s", agent, repo, prefix, zs.Name)
 	if repo == "" {
-		sessionID = fmt.Sprintf("%s::zellij-%s", agent, zs.Name)
+		sessionID = fmt.Sprintf("%s::%s%s", agent, prefix, zs.Name)
 	}
 
 	return discoveredSession{
@@ -896,7 +923,7 @@ func discoverSessionFromZellij(zs mux.ZellijSessionState) (discoveredSession, bo
 			ID:              sessionID,
 			Agent:           string(agent),
 			Repository:      repo,
-			SessionID:       "zellij-" + zs.Name,
+			SessionID:       prefix + zs.Name,
 			CWD:             cwd,
 			GitBranch:       branch,
 			ZellijSession:   zs.Name,

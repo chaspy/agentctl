@@ -3,13 +3,11 @@ package cmd
 import (
 	"database/sql"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/chaspy/agentctl/internal/mux"
 	"github.com/chaspy/agentctl/internal/provider"
 	"github.com/chaspy/agentctl/internal/store"
 	"github.com/spf13/cobra"
@@ -80,15 +78,15 @@ func runCodexResume(cmd *cobra.Command, args []string) error {
 
 	existing, err := codexResumeListZellij()
 	if err != nil {
-		return fmt.Errorf("listing zellij sessions: %w", err)
+		return fmt.Errorf("listing %s sessions: %w", muxName(), err)
 	}
 	for _, line := range existing {
 		if strings.TrimSpace(line) == sessionName {
-			return fmt.Errorf("zellij session %q already exists", sessionName)
+			return fmt.Errorf("%s session %q already exists", muxName(), sessionName)
 		}
 	}
 
-	sessionID := "zellij-" + sessionName
+	sessionID := muxSessionIDPrefix() + sessionName
 	sessionRecord := &store.Session{
 		ID:             codexResumeSessionDBID(target.Repository, sessionID),
 		Agent:          string(provider.AgentCodex),
@@ -259,55 +257,20 @@ func codexResumeSessionDBID(repository, sessionID string) string {
 }
 
 func startCodexResumeSession(sessionName, cwd, sourceSessionID string) error {
-	bgCmd := exec.Command("script", "-q", "/dev/null",
-		"env", "-u", "ZELLIJ", "-u", "CLAUDECODE",
-		"zellij", "-s", sessionName)
-	bgCmd.Dir = cwd
-	bgCmd.Stdin = nil
-	bgCmd.Stdout = nil
-	bgCmd.Stderr = nil
-	bgCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := bgCmd.Start(); err != nil {
-		return fmt.Errorf("failed to create zellij session: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Creating zellij session %q in %s...\n", sessionName, cwd)
-	if err := codexResumeWait(sessionName, 10*time.Second); err != nil {
+	backend, err := resolveMuxBackend()
+	if err != nil {
 		return err
 	}
-
-	dismissTip := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write", "27")
-	_ = dismissTip.Run()
-	time.Sleep(500 * time.Millisecond)
-
 	resumeCommand := fmt.Sprintf("codex --search resume %s", sourceSessionID)
-	writeChars := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write-chars", resumeCommand)
-	if out, err := writeChars.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send resume command: %w\n%s", err, string(out))
-	}
-	writeEnter := exec.Command("env", "-u", "ZELLIJ",
-		"zellij", "-s", sessionName, "action", "write", "13")
-	if out, err := writeEnter.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to send enter: %w\n%s", err, string(out))
-	}
-	return nil
+	_, err = backend.Spawn(mux.SpawnOptions{
+		Name:    sessionName,
+		CWD:     cwd,
+		Command: resumeCommand,
+		Agent:   string(provider.AgentCodex),
+	})
+	return err
 }
 
 func listZellijSessionsShort() ([]string, error) {
-	out, err := exec.Command("env", "-u", "ZELLIJ", "zellij", "list-sessions", "--short").Output()
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	result := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			result = append(result, line)
-		}
-	}
-	return result, nil
+	return listMuxSessionNames()
 }

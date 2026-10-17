@@ -202,15 +202,9 @@ func splitSessions(output string) []string {
 	return sessions
 }
 
-// ZellijSessionState represents a zellij session with its runtime state.
-type ZellijSessionState struct {
-	Name   string
-	Exited bool // true if the session is in EXITED state
-}
-
 // ListZellijSessionsDetailed returns zellij sessions with EXITED state info.
 // Uses the full (non-short) output of `zellij list-sessions`.
-var ListZellijSessionsDetailed = func() ([]ZellijSessionState, error) {
+var ListZellijSessionsDetailed = func() ([]SessionState, error) {
 	cmd := exec.Command("zellij", "list-sessions")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -230,11 +224,11 @@ var ListZellijSessionsDetailed = func() ([]ZellijSessionState, error) {
 //	session-name [Created ...]                                    <- active
 //
 // ANSI color codes are stripped.
-func parseZellijSessionsDetailed(output string) []ZellijSessionState {
+func parseZellijSessionsDetailed(output string) []SessionState {
 	// Strip ANSI escape codes
 	cleaned := stripAnsi(output)
 	lines := strings.Split(strings.TrimSpace(cleaned), "\n")
-	var sessions []ZellijSessionState
+	var sessions []SessionState
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -246,7 +240,7 @@ func parseZellijSessionsDetailed(output string) []ZellijSessionState {
 			name = line[:idx]
 		}
 		exited := strings.Contains(line, "EXITED")
-		sessions = append(sessions, ZellijSessionState{Name: name, Exited: exited})
+		sessions = append(sessions, SessionState{Name: name, Exited: exited})
 	}
 	return sessions
 }

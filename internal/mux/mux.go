@@ -37,6 +37,12 @@ func Resolve(name string) (Adapter, error) {
 			return nil, fmt.Errorf("zellij is not installed")
 		}
 		return adapter, nil
+	case "herdr":
+		adapter := newHerdrBackend()
+		if !adapter.available() {
+			return nil, fmt.Errorf("herdr is not installed")
+		}
+		return adapter, nil
 	case "auto":
 		return resolveAuto()
 	default:
@@ -45,6 +51,11 @@ func Resolve(name string) (Adapter, error) {
 }
 
 func resolveAuto() (Adapter, error) {
+	// An explicit AGENTCTL_MUX setting always wins over environment sniffing.
+	if os.Getenv(EnvMux) != "" {
+		return ResolveBackend()
+	}
+
 	zellij := zellijAdapter{}
 	tmux := tmuxAdapter{}
 
